@@ -1,0 +1,13 @@
+{
+  "type": "context",
+  "topic": "nowPlaying",
+  "value": {
+    "title": "Road 雨",
+    "artist": "OpenXPlay",
+    "album": null,
+    "durationMs": 240000,
+    "elapsedMs": 12000,
+    "playing": true,
+    "rate": 1.0
+  }
+}

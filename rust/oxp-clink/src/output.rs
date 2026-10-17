@@ -1,0 +1,1491 @@
+// SPDX-FileCopyrightText: 2026 OpenXPlay.org
+// SPDX-License-Identifier: AGPL-3.0-only
+// Created by riko chen on 2026-10-14
+
+use crate::{
+    interfaces::*,
+    media::{RtpPacketizer, RtpSender, RtpUnit, RtpWrite},
+    model::*,
+    placeholder::{BundledPlaceholderVideo, PlaceholderVideo},
+    require,
+    session::{ClinkSession, SessionCallbacks, SessionOptions},
+    video_delivery::{VideoQueue, VideoSwitch},
+    Result,
+};
+use oxp_media::{
+    nal::{self, Format},
+    transcode_policy::CodecProfile,
+    AvcConfig, TsMuxer,
+};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, VecDeque},
+    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+struct Handoff {
+    input_session: Option<i64>,
+    format: Option<Arc<VideoFormat>>,
+    revision: u64,
+    playing: bool,
+    request_keyframe: bool,
+    queue: VideoQueue,
+    media_formats: Vec<(u32, Arc<AudioFormat>)>,
+    media_stream: Option<u32>,
+    audio: VecDeque<AudioPacket>,
+    audio_bytes: usize,
+    voice_streams: BTreeSet<u32>,
+    microphone: Option<MicRequest>,
+    diagnostics: VecDeque<String>,
+    clock_mix: ClockMix,
+}
+impl Handoff {
+    fn diagnostic(&mut self, message: String) {
+        if self.diagnostics.len() < 32 {
+            self.diagnostics.push_back(message);
+        }
+    }
+}
+struct Run {
+    active: AtomicBool,
+    sink: Arc<dyn OutputSink>,
+    handoff: Mutex<Handoff>,
+    session: Mutex<Option<Arc<ClinkSession>>>,
+    voice: crate::voice_delivery::VoiceDelivery,
+    sender: RtpSender,
+}
+impl Run {
+    fn new(sink: Arc<dyn OutputSink>) -> Self {
+        Self {
+            active: AtomicBool::new(true),
+            sink,
+            handoff: Mutex::new(Handoff {
+                input_session: None,
+                format: None,
+                revision: 0,
+                playing: false,
+                request_keyframe: false,
+                queue: VideoQueue::default(),
+                media_formats: Vec::new(),
+                media_stream: None,
+                audio: VecDeque::new(),
+                audio_bytes: 0,
+                voice_streams: BTreeSet::new(),
+                microphone: None,
+                diagnostics: VecDeque::new(),
+                clock_mix: ClockMix::default(),
+            }),
+            session: Mutex::new(None),
+            voice: Default::default(),
+            sender: RtpSender::default(),
+        }
+    }
+}
+struct Callbacks {
+    run: Weak<Run>,
+}
+impl SessionCallbacks for Callbacks {
+    fn capabilities(&self, mut c: OutputCapabilities) {
+        // The transport stream writer only emits AVC.
+        c.decoders.retain(|d| d.codec_string.starts_with("avc1."));
+        if let Some(run) = self.run.upgrade() {
+            with_sink(&run, |sink| sink.capabilities(c));
+        }
+    }
+    fn control(&self, e: ControlEvent) {
+        if let Some(run) = self.run.upgrade() {
+            let accepted = match &e {
+                ControlEvent::MicPacket { stream, .. } => run
+                    .handoff
+                    .lock()
+                    .unwrap()
+                    .microphone
+                    .as_ref()
+                    .is_some_and(|r| r.stream == *stream),
+                _ => true,
+            };
+            if accepted {
+                with_sink(&run, |sink| sink.control(e));
+            }
+        }
+    }
+    fn play(&self, p: bool) {
+        if let Some(run) = self.run.upgrade() {
+            let mut h = run.handoff.lock().unwrap();
+            h.playing = p;
+            h.queue.reset();
+            h.revision = h.revision.wrapping_add(1);
+            if p {
+                h.request_keyframe = true;
+            }
+        }
+    }
+    fn link_stalled(&self, stalled: bool) {
+        if let Some(run) = self.run.upgrade() {
+            let mut h = run.handoff.lock().unwrap();
+            h.queue.set_stalled(stalled);
+            h.audio.clear();
+            h.audio_bytes = 0;
+            h.revision = h.revision.wrapping_add(1);
+        }
+    }
+    fn keyframe(&self) {
+        if let Some(run) = self.run.upgrade() {
+            run.handoff.lock().unwrap().request_keyframe = true;
+        }
+    }
+}
+/// Callbacks retain immutable shared frames in a bounded queue. Reopen after ENDED.
+pub struct ClinkOutput {
+    link: Arc<dyn ClinkLink>,
+    pin: Arc<dyn PinProvider>,
+    trust: Arc<dyn TrustStore>,
+    placeholder: Arc<dyn PlaceholderVideo>,
+    listener: Arc<dyn ClinkListener>,
+    options: SessionOptions,
+    current: Arc<Mutex<Option<Arc<Run>>>>,
+    opened: Arc<AtomicBool>,
+}
+impl ClinkOutput {
+    pub fn new(
+        link: Arc<dyn ClinkLink>,
+        pin: Arc<dyn PinProvider>,
+        trust: Arc<dyn TrustStore>,
+    ) -> Result<Self> {
+        Ok(Self {
+            link,
+            pin,
+            trust,
+            placeholder: Arc::new(BundledPlaceholderVideo::new()?),
+            listener: Arc::new(()),
+            options: Default::default(),
+            current: Arc::new(Mutex::new(None)),
+            opened: Arc::new(AtomicBool::new(false)),
+        })
+    }
+    pub fn with_options(mut self, options: SessionOptions) -> Result<Self> {
+        options.ports.validate()?;
+        self.options = options;
+        Ok(self)
+    }
+    pub fn with_listener(mut self, listener: Arc<dyn ClinkListener>) -> Self {
+        self.listener = listener;
+        self
+    }
+    pub fn with_placeholder(mut self, placeholder: Arc<dyn PlaceholderVideo>) -> Self {
+        self.placeholder = placeholder;
+        self
+    }
+    pub fn open(&self, sink: Arc<dyn OutputSink>) -> Result<()> {
+        require(
+            self.opened
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok(),
+            "output_already_open",
+        )?;
+        let run = Arc::new(Run::new(sink));
+        *self.current.lock().unwrap() = Some(run.clone());
+        let session = match ClinkSession::new(
+            self.link.clone(),
+            self.pin.clone(),
+            self.trust.clone(),
+            Arc::new(SessionListener(self.listener.clone())),
+            Arc::new(Callbacks {
+                run: Arc::downgrade(&run),
+            }),
+            self.options.clone(),
+        ) {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                self.opened.store(false, Ordering::Release);
+                *self.current.lock().unwrap() = None;
+                return Err(e);
+            }
+        };
+        {
+            let h = run.handoff.lock().unwrap();
+            session.microphone(h.microphone.clone())?;
+            *run.session.lock().unwrap() = Some(session.clone());
+        }
+        let voice_run = run.clone();
+        let voice_listener = self.listener.clone();
+        let voice = thread::Builder::new()
+            .name("clink-voice".into())
+            .spawn(move || {
+                let result = voice_run.voice.run(
+                    || voice_run.active.load(Ordering::Acquire),
+                    || voice_run.session.lock().unwrap().clone(),
+                    |p| voice_run.handoff.lock().unwrap().input_session == Some(p.session),
+                );
+                if let Err(e) = result {
+                    if voice_run.active.load(Ordering::Acquire) {
+                        voice_listener.error(&e.to_string());
+                    }
+                    if let Some(s) = voice_run.session.lock().unwrap().as_ref() {
+                        s.stop();
+                    }
+                }
+            });
+        if let Err(e) = voice {
+            run.active.store(false, Ordering::Release);
+            session.stop();
+            *self.current.lock().unwrap() = None;
+            self.opened.store(false, Ordering::Release);
+            return Err(e.into());
+        }
+        let rtp_run = run.clone();
+        let rtp = thread::Builder::new()
+            .name("clink-rtp".into())
+            .spawn(move || {
+                rtp_run
+                    .sender
+                    .run(|| rtp_run.active.load(Ordering::Acquire))
+            });
+        if let Err(e) = rtp {
+            run.active.store(false, Ordering::Release);
+            session.stop();
+            *self.current.lock().unwrap() = None;
+            self.opened.store(false, Ordering::Release);
+            return Err(e.into());
+        }
+        let media_run = run.clone();
+        let placeholder = self.placeholder.clone();
+        let listener = self.listener.clone();
+        let id = self.options.output_id.clone();
+        let media = thread::Builder::new()
+            .name("clink-media".into())
+            .spawn(move || {
+                if let Err(e) =
+                    media_worker(&media_run, placeholder.as_ref(), listener.as_ref(), &id)
+                {
+                    if media_run.active.load(Ordering::Acquire) {
+                        listener.error(&e.to_string());
+                    }
+                    if let Some(s) = media_run.session.lock().unwrap().as_ref() {
+                        s.stop();
+                    }
+                    media_run.active.store(false, Ordering::Release);
+                }
+            });
+        if let Err(e) = media {
+            run.active.store(false, Ordering::Release);
+            session.stop();
+            *self.current.lock().unwrap() = None;
+            self.opened.store(false, Ordering::Release);
+            return Err(e.into());
+        }
+        let lifecycle_run = run.clone();
+        let current = self.current.clone();
+        let opened = self.opened.clone();
+        let listener = self.listener.clone();
+        if let Err(e) = thread::Builder::new()
+            .name("clink-lifecycle".into())
+            .spawn(move || {
+                if lifecycle_run.active.load(Ordering::Acquire) {
+                    let _ = session.run();
+                }
+                lifecycle_run.active.store(false, Ordering::Release);
+                let mut c = current.lock().unwrap();
+                if c.as_ref().is_some_and(|r| Arc::ptr_eq(r, &lifecycle_run)) {
+                    *c = None;
+                }
+                drop(c);
+                opened.store(false, Ordering::Release);
+                listener.state(ClinkState::Ended);
+            })
+        {
+            run.active.store(false, Ordering::Release);
+            if let Some(s) = run.session.lock().unwrap().as_ref() {
+                s.stop();
+            }
+            *self.current.lock().unwrap() = None;
+            self.opened.store(false, Ordering::Release);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+    pub fn on_session(&self, state: &SessionState) {
+        let run = self.current.lock().unwrap().clone();
+        if let Some(run) = run {
+            let mut h = run.handoff.lock().unwrap();
+            if h.input_session != Some(state.id) || state.phase != SessionPhase::Active {
+                h.input_session = if state.phase == SessionPhase::Ended {
+                    None
+                } else {
+                    Some(state.id)
+                };
+                h.queue.reset();
+                h.audio.clear();
+                h.audio_bytes = 0;
+                h.media_formats.clear();
+                h.media_stream = None;
+                h.voice_streams.clear();
+                h.clock_mix = ClockMix::default();
+                run.voice.reset();
+                h.microphone = None;
+                if let Some(s) = run.session.lock().unwrap().as_ref() {
+                    let _ = s.microphone(None);
+                }
+                h.revision = h.revision.wrapping_add(1);
+                h.request_keyframe = true;
+            }
+        }
+    }
+    pub fn on_video_format(&self, screen: u32, format: Option<Arc<VideoFormat>>) {
+        if screen != 0 {
+            return;
+        }
+        let run = self.current.lock().unwrap().clone();
+        if let Some(run) = run {
+            let mut h = run.handoff.lock().unwrap();
+            if !same_format(&h.format, &format) {
+                h.format = format;
+                h.queue.reset();
+                h.revision = h.revision.wrapping_add(1);
+                h.request_keyframe = true;
+            }
+        }
+    }
+    pub fn on_video_frame(&self, frame: VideoFrame) {
+        if frame.screen != 0 {
+            return;
+        }
+        let run = self.current.lock().unwrap().clone();
+        if let Some(run) = run {
+            let mut h = run.handoff.lock().unwrap();
+            if !run.active.load(Ordering::Acquire)
+                || !h.playing
+                || Some(frame.session) != h.input_session
+                || h.format.is_none()
+            {
+                return;
+            }
+            h.clock_mix.video(frame.pts_us, Instant::now());
+            if h.queue.offer(frame) {
+                h.request_keyframe = true;
+            }
+        }
+    }
+    pub fn on_audio_format(&self, stream: u32, format: Option<Arc<AudioFormat>>) {
+        if let Some(run) = self.current.lock().unwrap().clone() {
+            let mut h = run.handoff.lock().unwrap();
+            if !run.active.load(Ordering::Acquire) {
+                return;
+            }
+            let previous = h.media_stream;
+            h.media_formats.retain(|(s, _)| *s != stream);
+            if let Some(f) = format.as_ref().filter(|f| f.role == AudioRole::Media) {
+                if f.codec == AudioCodec::AacLc
+                    && f.sample_rate == 48000
+                    && f.channels == 2
+                    && f.config.as_deref() == Some(&[0x11, 0x90])
+                {
+                    h.media_formats.push((stream, f.clone()));
+                } else {
+                    h.diagnostic(format!("unsupported_media_audio:{stream}"));
+                }
+            }
+            h.media_stream = h.media_formats.last().map(|(s, _)| *s);
+            if previous != h.media_stream || previous == Some(stream) {
+                h.audio.clear();
+                h.audio_bytes = 0;
+            }
+            h.voice_streams.remove(&stream);
+            if format.as_ref().is_some_and(|f| {
+                f.role != AudioRole::Media
+                    && f.codec == AudioCodec::PcmS16le
+                    && (8000..=48000).contains(&f.sample_rate)
+                    && (1..=2).contains(&f.channels)
+            }) {
+                h.voice_streams.insert(stream);
+            }
+            run.voice.format(stream, format);
+        }
+    }
+    pub fn on_audio_packet(&self, packet: AudioPacket) {
+        if let Some(run) = self.current.lock().unwrap().clone() {
+            let mut h = run.handoff.lock().unwrap();
+            if !run.active.load(Ordering::Acquire) || h.input_session != Some(packet.session) {
+                return;
+            }
+            if h.media_stream == Some(packet.stream) {
+                if !(1..=8184).contains(&packet.data.len()) {
+                    return;
+                }
+                if let Some(skew) = h.clock_mix.audio(packet.pts_us, Instant::now()) {
+                    h.diagnostic(format!("audio clock mixed skew_ms={}", skew / 1000));
+                }
+                while !h.audio.is_empty()
+                    && media_queue_full(
+                        h.audio.len(),
+                        h.audio_bytes + packet.data.len(),
+                        packet
+                            .pts_us
+                            .saturating_sub(h.audio.front().unwrap().pts_us),
+                    )
+                {
+                    h.audio_bytes -= h.audio.pop_front().unwrap().data.len();
+                }
+                h.audio_bytes += packet.data.len();
+                h.audio.push_back(packet);
+            } else if h.voice_streams.contains(&packet.stream) {
+                run.voice.packet(packet);
+            }
+        }
+    }
+    pub fn on_microphone(&self, stream: u32, request: Option<MicRequest>) {
+        if let Some(run) = self.current.lock().unwrap().clone() {
+            let mut h = run.handoff.lock().unwrap();
+            if !run.active.load(Ordering::Acquire) {
+                return;
+            }
+            if request.as_ref().is_some_and(|r| {
+                r.stream != stream
+                    || r.codec != AudioCodec::PcmS16le
+                    || !(8000..=48000).contains(&r.sample_rate)
+                    || !(1..=2).contains(&r.channels)
+                    || r.frame_ms != 20
+                    || r.sample_rate % 50 != 0
+            }) {
+                return;
+            }
+            if let Some(s) = run.session.lock().unwrap().as_ref() {
+                if s.microphone(request.clone()).is_err() {
+                    return;
+                }
+            }
+            h.microphone = request;
+        }
+    }
+    /// Shells wait off the callback thread so microphone stop reaches the peer before process exit.
+    pub fn await_closed(&self, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while self.opened.load(Ordering::Acquire) {
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        true
+    }
+    pub fn close(&self) {
+        let run = self.current.lock().unwrap().clone();
+        if let Some(run) = run {
+            run.active.store(false, Ordering::Release);
+            if let Some(s) = run.session.lock().unwrap().as_ref() {
+                s.stop();
+            }
+        }
+    }
+}
+impl Drop for ClinkOutput {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+struct SessionListener(Arc<dyn ClinkListener>);
+impl ClinkListener for SessionListener {
+    fn state(&self, s: ClinkState) {
+        if s != ClinkState::Ended {
+            self.0.state(s);
+        }
+    }
+    fn error(&self, e: &str) {
+        self.0.error(e);
+    }
+}
+fn same_format(a: &Option<Arc<VideoFormat>>, b: &Option<Arc<VideoFormat>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+fn with_sink(run: &Run, f: impl FnOnce(&dyn OutputSink)) {
+    // The hub fences removed hosts; callbacks must not serialize against input delivery or close.
+    if run.active.load(Ordering::Acquire) {
+        f(run.sink.as_ref());
+    }
+}
+fn media_worker(
+    run: &Run,
+    placeholder: &dyn PlaceholderVideo,
+    listener: &dyn ClinkListener,
+    id: &str,
+) -> Result<()> {
+    let placeholder_config = AvcConfig::parse(&placeholder.format().config)?;
+    require(
+        !placeholder.frames().is_empty()
+            && placeholder.fps() > 0
+            && nal::is_key_frame(&placeholder.frames()[0], VideoCodec::H264, Format::Avcc)?,
+        "invalid_placeholder",
+    )?;
+    let audio_config = oxp_media::AudioSpecificConfig::new(2, 48000, 2)?;
+    let mut gate = VideoSwitch::default();
+    let mut revision = None;
+    let mut generation: Option<Arc<ClinkSession>> = None;
+    let mut format = None;
+    let mut avc = None;
+    let mut placeholder_index = 0;
+    let mut next_placeholder = Instant::now();
+    let mut output_pts = -1i64;
+    let mut video_clock = VideoClock::default();
+    let mut keyframes = KeyframeRequests::default();
+    let mut transport_pts = -1i64;
+    let mut audio_offset: Option<i64> = None;
+    let mut live_offset = 0i64;
+    let mut sent = 0;
+    let mut reported_at = None;
+    let mut mismatch_reported = None;
+    let mut path = RtpPath::default();
+    let mut write: Option<(Arc<ClinkSession>, RtpWrite)> = None;
+    // What the write still in flight after the sender's wait carries; its clocks restart when it lands.
+    let mut late_video = false;
+    let mut late_live = false;
+    let mut adts = Vec::new();
+    let mut muxer = None;
+    while run.active.load(Ordering::Acquire) {
+        let session = run.session.lock().unwrap().clone();
+        // While a late write is in flight, media stays in the bounded queues (video drops to the next
+        // keyframe, audio drops oldest) exactly as when this thread blocked in the socket write.
+        let mut writable = path.writable(&run.sender)?;
+        if let Some(elapsed) = run.sender.take_recovered() {
+            listener.diagnostic(&format!(
+                "rtp send recovered after ms={}",
+                elapsed.as_millis()
+            ));
+            let now = Instant::now();
+            if late_video {
+                video_clock.written_at = Some(now);
+            }
+            if late_live && video_clock.live_frame_at.is_some() {
+                video_clock.live_frame_at = Some(now);
+            }
+            late_video = false;
+            late_live = false;
+        }
+        let (frame, request, diagnostics) = {
+            let mut h = run.handoff.lock().unwrap();
+            let changed = match (&generation, &session) {
+                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+            if revision != Some(h.revision) || changed {
+                gate.play(h.playing);
+                audio_offset = None;
+                if changed {
+                    muxer = None;
+                    keyframes = KeyframeRequests::default();
+                    video_clock.live_frame_at = None;
+                }
+                placeholder_index = 0;
+                next_placeholder = Instant::now();
+                revision = Some(h.revision);
+                generation = session.clone();
+                if !same_format(&format, &h.format) {
+                    format = h.format.clone();
+                    avc = None;
+                    mismatch_reported = None;
+                }
+            }
+            if h.queue.take_gap() {
+                gate.reset();
+                placeholder_index = 0;
+                next_placeholder = Instant::now();
+            }
+            let frame = if writable { h.queue.poll() } else { None };
+            let request = h.request_keyframe;
+            if session
+                .as_ref()
+                .is_some_and(|s| s.is_playing() && !s.is_stalled())
+            {
+                h.request_keyframe = false;
+            }
+            (frame, request, std::mem::take(&mut h.diagnostics))
+        };
+        for message in diagnostics {
+            listener.diagnostic(&message);
+        }
+        let session = match session {
+            Some(s) if s.is_playing() && !s.is_stalled() => s,
+            _ => {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+        };
+        let snapshot = session.snapshot();
+        let muxer = muxer.get_or_insert_with(|| {
+            TsMuxer::with_options(
+                path.sink(),
+                oxp_media::ts::TsOptions {
+                    audio_enabled: snapshot.media_audio,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        });
+        if !write
+            .as_ref()
+            .is_some_and(|(s, _)| Arc::ptr_eq(s, &session))
+        {
+            let target = session.clone();
+            let to_session: RtpWrite = Arc::new(move |p: &[u8]| target.send_rtp(p));
+            write = Some((session.clone(), to_session));
+        }
+        let write = &write.as_ref().unwrap().1;
+        require(
+            (snapshot.mode.width, snapshot.mode.height)
+                == (placeholder.format().width, placeholder.format().height),
+            "placeholder_timing_mismatch",
+        )?;
+        let origin = Origin {
+            output_id: id.into(),
+            client_id: snapshot.head_unit_id.clone(),
+        };
+        // A request during a stalled send stays pending instead of being lost.
+        if !writable {
+            keyframes.defer(request);
+        } else if keyframes.poll(request, Instant::now()) {
+            with_sink(run, |sink| {
+                sink.control(ControlEvent::KeyFrameRequest {
+                    screen: 0,
+                    origin: origin.clone(),
+                })
+            });
+        }
+        let had_frame = frame.is_some();
+        if let Some(frame) = frame {
+            if let Some(f) = format.as_ref().filter(|f| f.codec == VideoCodec::H264) {
+                if avc.is_none() {
+                    avc = Some(AvcConfig::parse(&f.config)?);
+                }
+                let config = avc.as_ref().unwrap();
+                // The same acceptance rule the transcoding policy uses.
+                let source = CodecProfile::avc(config.profile, config.compatibility, config.level);
+                let supported = snapshot.decoders.iter().any(|d| {
+                    CodecProfile::parse(&d.codec_string).is_some_and(|d| d.accepts(&source))
+                });
+                if !supported && mismatch_reported.as_deref() != Some(f.codec_string.as_str()) {
+                    mismatch_reported = Some(f.codec_string.clone());
+                    listener.profile_mismatch(
+                        &f.codec_string,
+                        &snapshot
+                            .decoders
+                            .iter()
+                            .map(|d| d.codec_string.clone())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                let was_live = gate.live;
+                if gate.accept(frame.key_frame) {
+                    if !was_live {
+                        live_offset = (output_pts + 1_000_000 / placeholder.fps() as i64)
+                            .max(0)
+                            .max(frame.pts_us + audio_offset.unwrap_or(-frame.pts_us))
+                            - frame.pts_us;
+                    }
+                    let pts = (output_pts + 1)
+                        .max(transport_pts + 1)
+                        .max(frame.pts_us + live_offset);
+                    let result = path.emit(&run.sender, write, listener, pts, || {
+                        muxer.write_video(&frame.data, config, pts, frame.key_frame)
+                    })?;
+                    output_pts = pts;
+                    transport_pts = pts;
+                    if result == Emit::Dropped {
+                        gate.reset();
+                        keyframes.defer(true);
+                    } else {
+                        sent += 1;
+                        let now = Instant::now();
+                        video_clock.live_frame_at = Some(now);
+                        video_clock.written_at = Some(now);
+                    }
+                    if result == Emit::Late {
+                        writable = false;
+                        late_video = true;
+                        late_live = true;
+                    }
+                }
+            } else if mismatch_reported.as_deref() != Some("unsupported_h265") {
+                mismatch_reported = Some("unsupported_h265".into());
+                listener.error("Carlink v0 requires H.264 input");
+            }
+        }
+        let now = Instant::now();
+        if writable
+            && gate.placeholder()
+            && now >= next_placeholder
+            && video_clock.placeholder_due(now)
+        {
+            let data = &placeholder.frames()[placeholder_index];
+            let pts = (output_pts + 1_000_000 / placeholder.fps() as i64)
+                .max(0)
+                .max(transport_pts + 1);
+            let key = placeholder_index == 0;
+            let result = path.emit(&run.sender, write, listener, pts, || {
+                muxer.write_video(data, &placeholder_config, pts, key)
+            })?;
+            output_pts = pts;
+            transport_pts = pts;
+            if result == Emit::Dropped {
+                placeholder_index = 0;
+            } else {
+                sent += 1;
+                video_clock.written_at = Some(Instant::now());
+                placeholder_index = (placeholder_index + 1) % placeholder.frames().len();
+            }
+            if result == Emit::Late {
+                writable = false;
+                late_video = true;
+            }
+            next_placeholder = now + Duration::from_nanos(1_000_000_000 / placeholder.fps() as u64);
+        }
+        if snapshot.media_audio {
+            for _ in 0..4 {
+                if !writable {
+                    break;
+                }
+                let audio = {
+                    let mut h = run.handoff.lock().unwrap();
+                    if !gate.live && audio_offset.is_none() {
+                        if let Some(p) = h.audio.front() {
+                            audio_offset = Some(output_pts.max(0) - p.pts_us);
+                        }
+                    }
+                    let offset = if gate.live {
+                        live_offset
+                    } else {
+                        audio_offset.unwrap_or(0)
+                    };
+                    poll_audio(&mut h, offset, video_clock.pts(output_pts, Instant::now()))
+                };
+                if let Some(p) = audio {
+                    let mapped = p.pts_us
+                        + if gate.live {
+                            live_offset
+                        } else {
+                            audio_offset.unwrap_or(0)
+                        };
+                    if mapped >= 0 && mapped >= transport_pts - 50_000 {
+                        let pts = mapped.max(transport_pts);
+                        adts.clear();
+                        adts.extend_from_slice(&oxp_media::Adts::build_header(
+                            &audio_config,
+                            p.data.len(),
+                        )?);
+                        adts.extend_from_slice(&p.data);
+                        let result = path.emit(&run.sender, write, listener, pts, || {
+                            muxer.write_audio(&adts, pts)
+                        })?;
+                        transport_pts = pts;
+                        if result == Emit::Late {
+                            writable = false;
+                        }
+                    }
+                }
+            }
+        }
+        if !run.active.load(Ordering::Acquire) {
+            break;
+        }
+        if reported_at.is_none_or(|t: Instant| now.duration_since(t) >= Duration::from_secs(1)) {
+            let dropped = run.handoff.lock().unwrap().queue.dropped;
+            listener.statistics(sent, dropped);
+            with_sink(run, |sink| {
+                sink.stats(OutputStats {
+                    origin,
+                    screen: 0,
+                    decode_time_us: None,
+                    decode_queue: 0,
+                    dropped,
+                    rendered: 0,
+                    end_to_end_latency_us: None,
+                    audio_buffered_us: None,
+                    audio_underruns: 0,
+                })
+            });
+            reported_at = Some(now);
+        }
+        if !had_frame {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Emit {
+    Sent,
+    /// Still in flight after the sender's wait.
+    Late,
+    /// Beyond [RtpUnit::MAX_BYTES]; nothing was sent.
+    Dropped,
+}
+/// The media worker's side of the RTP path: the muxer streams TS packets straight into the one
+/// reusable unit, which [RtpSender] writes on its own thread; nothing is retained per packet.
+struct RtpPath {
+    rtp: RtpPacketizer,
+    /// None while the writer holds the unit.
+    unit: Rc<RefCell<Option<RtpUnit>>>,
+}
+impl Default for RtpPath {
+    fn default() -> Self {
+        Self {
+            rtp: RtpPacketizer::default(),
+            unit: Rc::new(RefCell::new(Some(RtpUnit::default()))),
+        }
+    }
+}
+impl RtpPath {
+    /// The muxer's packet sink; it borrows each TS packet into the unit.
+    fn sink(&self) -> impl FnMut(&[u8; 188]) {
+        let unit = self.unit.clone();
+        move |p: &[u8; 188]| {
+            if let Some(u) = unit.borrow_mut().as_mut() {
+                u.append(p);
+            }
+        }
+    }
+    /// True when no write is in flight, so the unit may be refilled. Surfaces a writer failure.
+    fn writable(&self, sender: &RtpSender) -> Result<bool> {
+        if self.unit.borrow().is_none() {
+            *self.unit.borrow_mut() = sender.reclaim()?;
+        }
+        Ok(self.unit.borrow().is_some())
+    }
+    /// Runs one muxer call into the unit and hands it to `sender`. Only while [Self::writable].
+    fn emit(
+        &mut self,
+        sender: &RtpSender,
+        write: &RtpWrite,
+        listener: &dyn ClinkListener,
+        pts: i64,
+        mux: impl FnOnce() -> oxp_media::Result<()>,
+    ) -> Result<Emit> {
+        self.rtp.start(
+            self.unit
+                .borrow_mut()
+                .as_mut()
+                .ok_or("rtp_write_in_flight")?,
+            pts,
+        )?;
+        mux()?;
+        let unit = self.unit.borrow_mut().take().unwrap();
+        if !self.rtp.finish(&unit) {
+            listener.diagnostic(&format!("rtp unit_dropped limit={}", unit.max_bytes()));
+            *self.unit.borrow_mut() = Some(unit);
+            return Ok(Emit::Dropped);
+        }
+        match sender.submit(unit, write.clone())? {
+            Some(unit) => {
+                *self.unit.borrow_mut() = Some(unit);
+                Ok(Emit::Sent)
+            }
+            None => {
+                listener.diagnostic(&format!(
+                    "rtp send stalled ms={}",
+                    sender.wait().as_millis()
+                ));
+                Ok(Emit::Late)
+            }
+        }
+    }
+}
+/// Audio and live video share one mapping onto the transport clock, so their input timestamps must
+/// come from one clock. Media audio far from the running video clock is held until the queue drops
+/// it (ahead) or dropped as late (behind), and anchoring live video to it made the PTS jump by hours
+/// on 2026-10-15. Reported once per input session.
+#[derive(Default)]
+struct ClockMix {
+    video: Option<(i64, Instant)>,
+    reported: bool,
+}
+impl ClockMix {
+    /// Above the audio queue's 1.5 s span plus the phone's video batches of up to ~1 s; the video
+    /// clock keeps running while the screen is static.
+    const MAX_SKEW_US: u64 = 5_000_000;
+    fn video(&mut self, pts_us: i64, now: Instant) {
+        self.video = Some((pts_us, now));
+    }
+    /// The skew from the running video clock the first time media audio strays beyond the limit.
+    fn audio(&mut self, pts_us: i64, now: Instant) -> Option<i64> {
+        let (video_pts, at) = self.video?;
+        let elapsed = now
+            .saturating_duration_since(at)
+            .as_micros()
+            .min(i64::MAX as u128) as i64;
+        let skew = pts_us.saturating_sub(video_pts.saturating_add(elapsed));
+        if self.reported || skew.unsigned_abs() <= Self::MAX_SKEW_US {
+            return None;
+        }
+        self.reported = true;
+        Some(skew)
+    }
+}
+
+#[derive(Default)]
+struct KeyframeRequests {
+    requested_at: Option<Instant>,
+    pending: bool,
+}
+impl KeyframeRequests {
+    fn defer(&mut self, request: bool) {
+        self.pending |= request;
+    }
+    fn poll(&mut self, request: bool, now: Instant) -> bool {
+        self.pending |= request;
+        if self.pending
+            && self
+                .requested_at
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+        {
+            self.pending = false;
+            self.requested_at = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+}
+#[derive(Default)]
+struct VideoClock {
+    written_at: Option<Instant>,
+    live_frame_at: Option<Instant>,
+}
+impl VideoClock {
+    fn pts(&self, output_pts: i64, now: Instant) -> i64 {
+        // Video arrives in batches, but audio must advance even while the screen is static.
+        output_pts
+            + self
+                .written_at
+                .map_or(0, |t| now.duration_since(t).as_micros() as i64)
+    }
+    fn placeholder_due(&self, now: Instant) -> bool {
+        self.live_frame_at
+            .is_none_or(|t| now.duration_since(t) > Duration::from_secs(3))
+    }
+}
+fn poll_audio(h: &mut Handoff, offset: i64, clock_pts: i64) -> Option<AudioPacket> {
+    if h.audio
+        .front()
+        .is_some_and(|p| p.pts_us + offset <= clock_pts + 50_000)
+    {
+        let p = h.audio.pop_front().unwrap();
+        h.audio_bytes -= p.data.len();
+        Some(p)
+    } else {
+        None
+    }
+}
+
+impl oxp_core::ProjectionOutput for ClinkOutput {
+    fn id(&self) -> &str {
+        "clink"
+    }
+    fn open(&self, host: Arc<dyn oxp_core::OutputHost>) -> Result<()> {
+        ClinkOutput::open(self, host)
+    }
+    fn on_session(&self, state: &SessionState, _: &oxp_core::model::SessionConfig) {
+        ClinkOutput::on_session(self, state);
+    }
+    fn on_video_format(&self, screen: u32, format: Option<Arc<VideoFormat>>) {
+        ClinkOutput::on_video_format(self, screen, format);
+    }
+    fn on_video_frame(&self, frame: VideoFrame) {
+        ClinkOutput::on_video_frame(self, frame);
+    }
+    fn on_audio_format(&self, s: u32, f: Option<Arc<AudioFormat>>) {
+        ClinkOutput::on_audio_format(self, s, f);
+    }
+    fn on_audio_packet(&self, p: AudioPacket) {
+        ClinkOutput::on_audio_packet(self, p);
+    }
+    fn on_microphone(&self, s: u32, r: Option<MicRequest>) {
+        ClinkOutput::on_microphone(self, s, r);
+    }
+    fn close(&self) {
+        ClinkOutput::close(self);
+    }
+}
+
+fn media_queue_full(packet_count: usize, total_bytes: usize, span_us: i64) -> bool {
+    packet_count >= 96 || total_bytes > 524_288 || span_us > 1_500_000
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+    struct Host;
+    impl OutputHost for Host {
+        fn capabilities(&self, _: OutputCapabilities) {}
+        fn control(&self, _: ControlEvent) {}
+        fn stats(&self, _: OutputStats) {}
+    }
+    #[test]
+    fn keyframe_requests_are_deferred_coalesced_and_reset_with_session() {
+        let now = Instant::now();
+        let mut requests = KeyframeRequests::default();
+        assert!(requests.poll(true, now));
+        assert!(!requests.poll(true, now + Duration::from_millis(100)));
+        assert!(!requests.poll(true, now + Duration::from_millis(500)));
+        assert!(!requests.poll(false, now + Duration::from_millis(999)));
+        assert!(requests.poll(false, now + Duration::from_secs(1)));
+        assert!(!requests.poll(false, now + Duration::from_secs(2)));
+        requests = KeyframeRequests::default();
+        assert!(requests.poll(true, now + Duration::from_millis(1100)));
+    }
+    #[test]
+    fn static_video_releases_audio_against_running_clock() {
+        let run = Run::new(Arc::new(Host));
+        let now = Instant::now();
+        let clock = VideoClock {
+            written_at: Some(now),
+            live_frame_at: Some(now),
+        };
+        let mut h = run.handoff.lock().unwrap();
+        h.audio.push_back(AudioPacket {
+            stream: 0,
+            session: 1,
+            pts_us: 1_200_000,
+            data: Arc::from([1; 4]),
+        });
+        h.audio_bytes = 4;
+        assert!(poll_audio(&mut h, -1_000_000, clock.pts(0, now)).is_none());
+        assert!(poll_audio(
+            &mut h,
+            -1_000_000,
+            clock.pts(0, now + Duration::from_millis(150))
+        )
+        .is_some());
+        assert!(h.audio.is_empty());
+        assert_eq!(h.audio_bytes, 0);
+        assert_eq!(VideoClock::default().pts(-1, now), -1);
+    }
+    #[test]
+    fn reset_freezes_live_frame_until_long_gap() {
+        let now = Instant::now();
+        let mut clock = VideoClock::default();
+        let mut gate = VideoSwitch::default();
+        gate.play(true);
+        assert!(gate.placeholder() && clock.placeholder_due(now));
+        assert!(gate.accept(true));
+        clock.live_frame_at = Some(now);
+        gate.reset();
+        assert!(gate.placeholder());
+        assert!(!clock.placeholder_due(now + Duration::from_secs(3)));
+        assert!(clock.placeholder_due(now + Duration::from_millis(3001)));
+        clock.live_frame_at = None;
+        assert!(clock.placeholder_due(now));
+    }
+    #[test]
+    fn host_can_reenter_output_and_wait_for_close_on_another_thread() {
+        struct ReentrantHost {
+            output: Arc<ClinkOutput>,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl OutputHost for ReentrantHost {
+            fn capabilities(&self, _: OutputCapabilities) {}
+            fn stats(&self, _: OutputStats) {}
+            fn control(&self, _: ControlEvent) {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.output.on_video_format(0, None);
+                let run = self.output.current.lock().unwrap().clone().unwrap();
+                assert!(run.handoff.try_lock().is_ok());
+                assert!(run.session.try_lock().is_ok());
+                let output = self.output.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let worker = thread::spawn(move || {
+                    output.close();
+                    tx.send(()).unwrap();
+                });
+                let closed = rx.recv_timeout(Duration::from_secs(1));
+                assert!(closed.is_ok(), "host callback blocked output close");
+                worker.join().unwrap();
+            }
+        }
+        let output = Arc::new(
+            ClinkOutput::new(
+                Arc::new(StaticClinkLink(ClinkAddresses::new(
+                    std::net::Ipv4Addr::LOCALHOST,
+                    std::net::Ipv4Addr::LOCALHOST,
+                ))),
+                Arc::new(Pin),
+                Arc::new(Trust),
+            )
+            .unwrap(),
+        );
+        let host = Arc::new(ReentrantHost {
+            output: output.clone(),
+            calls: Default::default(),
+        });
+        let run = Arc::new(Run::new(host.clone()));
+        *output.current.lock().unwrap() = Some(run.clone());
+        let callbacks = Callbacks {
+            run: Arc::downgrade(&run),
+        };
+        let event = || ControlEvent::KeyFrameRequest {
+            screen: 0,
+            origin: Origin {
+                output_id: "clink".into(),
+                client_id: "test".into(),
+            },
+        };
+        callbacks.control(event());
+        assert!(!run.active.load(Ordering::Acquire));
+        callbacks.control(event());
+        assert_eq!(host.calls.load(Ordering::Relaxed), 1);
+        *output.current.lock().unwrap() = None;
+    }
+    struct Pin;
+    impl PinProvider for Pin {
+        fn request_pin(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+    struct Trust;
+    impl TrustStore for Trust {
+        fn load_identity(&self) -> Result<Option<crate::protocol::AuthIdentity>> {
+            Ok(None)
+        }
+        fn save_identity(&self, _: &crate::protocol::AuthIdentity) -> Result<()> {
+            Ok(())
+        }
+        fn load_peer_key(&self, _: &str) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn save_peer_key(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn forget_peer(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn media_queue_limits_retain_one_second_bursts_and_drop_oldest() {
+        let mut q = std::collections::VecDeque::<(usize, i64)>::new();
+        let mut bytes = 0;
+        let offer = |q: &mut std::collections::VecDeque<(usize, i64)>,
+                     bytes: &mut usize,
+                     packet: (usize, i64)| {
+            while !q.is_empty()
+                && media_queue_full(
+                    q.len(),
+                    *bytes + packet.0,
+                    packet.1.saturating_sub(q.front().unwrap().1),
+                )
+            {
+                *bytes -= q.pop_front().unwrap().0;
+            }
+            *bytes += packet.0;
+            q.push_back(packet);
+        };
+        for n in 0..50 {
+            offer(&mut q, &mut bytes, (400, n * 20_000));
+        }
+        assert_eq!(q.len(), 50);
+        for n in 50..150 {
+            offer(&mut q, &mut bytes, (400, n * 20_000));
+        }
+        assert_eq!(q.len(), 76);
+        assert_eq!(q.front().unwrap().1, 74 * 20_000);
+        q.clear();
+        bytes = 0;
+        for _ in 0..97 {
+            offer(&mut q, &mut bytes, (1, 0));
+        }
+        assert_eq!(q.len(), 96);
+        q.clear();
+        bytes = 0;
+        for _ in 0..65 {
+            offer(&mut q, &mut bytes, (8184, 0));
+        }
+        assert_eq!(q.len(), 64);
+        assert!(media_queue_full(0, 0, i64::MAX.saturating_sub(i64::MIN)));
+        assert!(!media_queue_full(0, 0, i64::MIN.saturating_sub(i64::MAX)));
+        assert!(!media_queue_full(95, 524_288, 1_500_000));
+        assert!(media_queue_full(96, 0, 0));
+        assert!(media_queue_full(0, 524_289, 0));
+        assert!(media_queue_full(0, 0, 1_500_001));
+    }
+
+    #[test]
+    fn newest_media_bounded_queue_video_independence_and_session_reset() {
+        let o = ClinkOutput::new(
+            Arc::new(StaticClinkLink(ClinkAddresses::new(
+                std::net::Ipv4Addr::LOCALHOST,
+                std::net::Ipv4Addr::LOCALHOST,
+            ))),
+            Arc::new(Pin),
+            Arc::new(Trust),
+        )
+        .unwrap();
+        let run = Arc::new(Run::new(Arc::new(Host)));
+        *o.current.lock().unwrap() = Some(run.clone());
+        o.on_session(&SessionState {
+            id: 1,
+            phase: SessionPhase::Active,
+            reason: None,
+        });
+        let media = |stream| {
+            Some(Arc::new(AudioFormat {
+                stream,
+                role: AudioRole::Media,
+                codec: AudioCodec::AacLc,
+                sample_rate: 48000,
+                channels: 2,
+                config: Some(Arc::from([0x11, 0x90])),
+            }))
+        };
+        let packet = |stream, session, pts| AudioPacket {
+            stream,
+            session,
+            data: vec![1; 400].into(),
+            pts_us: pts,
+        };
+        o.on_audio_format(0, media(0));
+        for n in 0..1000 {
+            o.on_audio_packet(packet(0, 1, 8_000_000_000 + n * 21333));
+        }
+        {
+            let h = run.handoff.lock().unwrap();
+            assert!(h.audio.len() <= 96 && h.audio_bytes <= 524_288);
+            assert!(h.audio.back().unwrap().pts_us - h.audio.front().unwrap().pts_us <= 1_500_000);
+        }
+        o.on_video_format(0, Some(Arc::new(o.placeholder.format().clone())));
+        run.handoff.lock().unwrap().playing = true;
+        o.on_video_frame(VideoFrame {
+            screen: 0,
+            session: 1,
+            data: o.placeholder.frames()[0].clone(),
+            pts_us: 0,
+            key_frame: true,
+            received_at_nanos: 0,
+        });
+        assert!(run.handoff.lock().unwrap().queue.poll().is_some());
+        o.on_audio_format(3, media(3));
+        o.on_audio_packet(packet(0, 1, 0));
+        assert!(run.handoff.lock().unwrap().audio.is_empty());
+        o.on_audio_packet(packet(3, 0, 0));
+        assert!(run.handoff.lock().unwrap().audio.is_empty());
+        o.on_audio_packet(packet(3, 1, 0));
+        assert_eq!(run.handoff.lock().unwrap().audio.len(), 1);
+        o.on_audio_format(
+            4,
+            Some(Arc::new(AudioFormat {
+                stream: 4,
+                role: AudioRole::Media,
+                codec: AudioCodec::PcmS16le,
+                sample_rate: 16000,
+                channels: 1,
+                config: None,
+            })),
+        );
+        assert_eq!(
+            run.handoff.lock().unwrap().diagnostics.front().unwrap(),
+            "unsupported_media_audio:4"
+        );
+        o.on_audio_format(3, None);
+        assert_eq!(run.handoff.lock().unwrap().media_stream, Some(0));
+        o.on_microphone(
+            2,
+            Some(MicRequest {
+                stream: 2,
+                codec: AudioCodec::PcmS16le,
+                sample_rate: 16000,
+                channels: 1,
+                frame_ms: 20,
+            }),
+        );
+        o.on_session(&SessionState {
+            id: 1,
+            phase: SessionPhase::Ended,
+            reason: None,
+        });
+        let h = run.handoff.lock().unwrap();
+        assert!(h.audio.is_empty() && h.media_stream.is_none() && h.microphone.is_none());
+        drop(h);
+        o.close();
+    }
+    #[test]
+    fn audio_on_another_clock_is_reported_once_per_session() {
+        let now = Instant::now();
+        let mut mix = ClockMix::default();
+        assert!(mix.audio(3_600_000_000, now).is_none(), "no video yet");
+        mix.video(10_000_000, now);
+        // Queued audio and batched video stay within the limit; the video clock runs while the
+        // screen is static.
+        assert!(mix.audio(8_500_000, now).is_none());
+        assert!(mix.audio(14_000_000, now).is_none());
+        assert!(mix
+            .audio(70_000_000, now + Duration::from_secs(60))
+            .is_none());
+        assert_eq!(Some(-6_000_000), mix.audio(4_000_000, now));
+        assert!(mix.audio(3_600_000_000, now).is_none(), "reported once");
+
+        let o = ClinkOutput::new(
+            Arc::new(StaticClinkLink(ClinkAddresses::new(
+                std::net::Ipv4Addr::LOCALHOST,
+                std::net::Ipv4Addr::LOCALHOST,
+            ))),
+            Arc::new(Pin),
+            Arc::new(Trust),
+        )
+        .unwrap();
+        let run = Arc::new(Run::new(Arc::new(Host)));
+        *o.current.lock().unwrap() = Some(run.clone());
+        let media = Some(Arc::new(AudioFormat {
+            stream: 0,
+            role: AudioRole::Media,
+            codec: AudioCodec::AacLc,
+            sample_rate: 48000,
+            channels: 2,
+            config: Some(Arc::from([0x11, 0x90])),
+        }));
+        let packet = |session, pts_us| AudioPacket {
+            stream: 0,
+            session,
+            data: vec![1; 400].into(),
+            pts_us,
+        };
+        let frame = |session, pts_us| VideoFrame {
+            screen: 0,
+            session,
+            data: o.placeholder.frames()[0].clone(),
+            pts_us,
+            key_frame: true,
+            received_at_nanos: 0,
+        };
+        let mixed = |run: &Run| {
+            run.handoff
+                .lock()
+                .unwrap()
+                .diagnostics
+                .iter()
+                .filter_map(|d| d.strip_prefix("audio clock mixed skew_ms="))
+                .map(|ms| ms.parse::<i64>().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let session = |id| SessionState {
+            id,
+            phase: SessionPhase::Active,
+            reason: None,
+        };
+        o.on_session(&session(1));
+        o.on_audio_format(0, media.clone());
+        o.on_video_format(0, Some(Arc::new(o.placeholder.format().clone())));
+        run.handoff.lock().unwrap().playing = true;
+        o.on_video_frame(frame(1, 5_000_000));
+        o.on_audio_packet(packet(1, 5_020_000));
+        assert!(mixed(&run).is_empty());
+        // An hour ahead: such audio would never be released, and anchoring video to it jumps the PTS.
+        o.on_audio_packet(packet(1, 3_605_000_000));
+        o.on_audio_packet(packet(1, 3_605_020_000));
+        let skews = mixed(&run);
+        assert_eq!(1, skews.len());
+        assert!((3_599_000..=3_600_000).contains(&skews[0]), "{skews:?}");
+        // A new input session re-arms the report.
+        o.on_session(&session(2));
+        o.on_audio_format(0, media);
+        o.on_video_frame(frame(2, 20_000_000));
+        o.on_audio_packet(packet(2, 10_000_000));
+        let skews = mixed(&run);
+        assert_eq!(2, skews.len());
+        assert!((-10_001..=-9_999).contains(&skews[1]), "{skews:?}");
+        o.close();
+    }
+
+    #[test]
+    fn stalled_socket_releases_the_media_worker_within_one_second() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client =
+            Arc::new(std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+        // The head unit stops reading.
+        let (mut peer, _) = listener.accept().unwrap();
+        let sender = Arc::new(RtpSender::default());
+        assert_eq!(Duration::from_secs(1), sender.wait());
+        let active = Arc::new(AtomicBool::new(true));
+        let writer = {
+            let (sender, active) = (sender.clone(), active.clone());
+            thread::spawn(move || sender.run(|| active.load(Ordering::Acquire)))
+        };
+        let socket = client.clone();
+        let write: RtpWrite = Arc::new(move |p: &[u8]| -> Result<bool> {
+            (&*socket).write_all(p)?;
+            Ok(true)
+        });
+        let config =
+            AvcConfig::parse(&BundledPlaceholderVideo::new().unwrap().format().config).unwrap();
+        // One 1 MiB IDR access unit in AVCC framing.
+        let mut frame = vec![0u8; 1 << 20];
+        frame[..4].copy_from_slice(&((1u32 << 20) - 4).to_be_bytes());
+        frame[4] = 0x65;
+        let mut path = RtpPath::default();
+        let mut muxer = TsMuxer::new(path.sink());
+        let mut late = false;
+        for n in 0..256 {
+            assert!(path.writable(&sender).unwrap());
+            let pts = n * 33_333;
+            let started = Instant::now();
+            let result = path
+                .emit(&sender, &write, &(), pts, || {
+                    muxer.write_video(&frame, &config, pts, true)
+                })
+                .unwrap();
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_millis(1500),
+                "the media worker blocked in a socket write for {elapsed:?}"
+            );
+            if result == Emit::Late {
+                assert!(elapsed >= sender.wait());
+                late = true;
+                break;
+            }
+            assert_eq!(Emit::Sent, result);
+        }
+        assert!(late, "the socket never stalled");
+        // The media worker keeps running: polling never blocks, and video waiting meanwhile drops at
+        // the queue's 600 ms bound.
+        let mut queue = VideoQueue::default();
+        let started = Instant::now();
+        for n in 0..120 {
+            assert!(!path.writable(&sender).unwrap());
+            queue.offer(VideoFrame {
+                screen: 0,
+                session: 1,
+                data: vec![0; 1024].into(),
+                pts_us: n * 33_333,
+                key_frame: n % 30 == 0,
+                received_at_nanos: 0,
+            });
+        }
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(queue.dropped > 0);
+        let (retained, in_flight) = sender.retained();
+        assert!(in_flight && retained <= RtpUnit::MAX_BYTES);
+        // Once the head unit reads again the late write lands and the unit returns for reuse.
+        let drain = thread::spawn(move || {
+            let mut buffer = vec![0; 1 << 16];
+            while matches!(peer.read(&mut buffer), Ok(n) if n > 0) {}
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.writable(&sender).unwrap() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(sender.take_recovered().unwrap() >= sender.wait());
+        active.store(false, Ordering::Release);
+        writer.join().unwrap();
+        drop(write);
+        client.shutdown(std::net::Shutdown::Both).unwrap();
+        drain.join().unwrap();
+    }
+}

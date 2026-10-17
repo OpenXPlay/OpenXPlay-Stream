@@ -1,0 +1,72 @@
+[
+  {
+    "path": "index.html",
+    "allowed": true,
+    "reason": "entry"
+  },
+  {
+    "path": "assets/a.png",
+    "allowed": true,
+    "reason": "nested asset"
+  },
+  {
+    "path": "../secret.js",
+    "allowed": false,
+    "reason": "parent traversal"
+  },
+  {
+    "path": ".secret.js",
+    "allowed": false,
+    "reason": "dotfile"
+  },
+  {
+    "path": "a/../b.js",
+    "allowed": false,
+    "reason": "parent segment"
+  },
+  {
+    "path": "%2e%2e/a.js",
+    "allowed": false,
+    "reason": "encoded traversal"
+  },
+  {
+    "path": "%252e%252e/a.js",
+    "allowed": false,
+    "reason": "nested encoding"
+  },
+  {
+    "path": "a%2fb.js",
+    "allowed": false,
+    "reason": "encoded separator"
+  },
+  {
+    "path": "a\\b.js",
+    "allowed": false,
+    "reason": "backslash"
+  },
+  {
+    "path": "UP.js",
+    "allowed": false,
+    "reason": "uppercase"
+  },
+  {
+    "path": "a.exe",
+    "allowed": false,
+    "reason": "extension"
+  },
+  {
+    "path": "a/.x.png",
+    "allowed": false,
+    "reason": "nested dotfile"
+  },
+  {
+    "path": "/index.html",
+    "allowed": false,
+    "reason": "absolute path"
+  },
+  {
+    "path": "a//b.js",
+    "allowed": false,
+    "reason": "empty segment"
+  }
+]

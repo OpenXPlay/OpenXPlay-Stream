@@ -1,0 +1,1 @@
+{"type":"mic","stream":1,"request":{"codec":"PCM_S16LE","sampleRate":16000,"channels":1,"frameMs":20}}

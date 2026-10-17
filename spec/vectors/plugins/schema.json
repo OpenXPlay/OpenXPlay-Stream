@@ -1,0 +1,3285 @@
+[
+  {
+    "name": "complete manifest",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "manifest rejects id",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "Bad.ID",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest rejects version",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.2",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest rejects permissions",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "network"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest rejects icon",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.gif",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest rejects spec",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/1",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "future optional field ignored",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ],
+      "future": true
+    },
+    "valid": true
+  },
+  {
+    "name": "empty index",
+    "schema": "index",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "plugins": []
+    },
+    "valid": true
+  },
+  {
+    "name": "wrong index spec",
+    "schema": "index",
+    "value": {
+      "spec": "other",
+      "plugins": []
+    },
+    "valid": false
+  },
+  {
+    "name": "session snapshot",
+    "schema": "topic-session",
+    "value": {
+      "carplay": "connected"
+    },
+    "valid": true
+  },
+  {
+    "name": "session unavailable",
+    "schema": "topic-session",
+    "value": null,
+    "valid": true
+  },
+  {
+    "name": "session invalid",
+    "schema": "topic-session",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "channel session",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "session",
+      "value": {
+        "carplay": "connected"
+      },
+      "seq": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin session",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "session",
+      "value": {
+        "carplay": "connected"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "nowPlaying snapshot",
+    "schema": "topic-nowPlaying",
+    "value": {
+      "title": "Track",
+      "artist": "Artist",
+      "album": "Album",
+      "durationMs": 120000,
+      "elapsedMs": 1000,
+      "playing": true,
+      "rate": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "nowPlaying unavailable",
+    "schema": "topic-nowPlaying",
+    "value": null,
+    "valid": true
+  },
+  {
+    "name": "nowPlaying invalid",
+    "schema": "topic-nowPlaying",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "channel nowPlaying",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "nowPlaying",
+      "value": {
+        "title": "Track",
+        "artist": "Artist",
+        "album": "Album",
+        "durationMs": 120000,
+        "elapsedMs": 1000,
+        "playing": true,
+        "rate": 1
+      },
+      "seq": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin nowPlaying",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "nowPlaying",
+      "value": {
+        "title": "Track",
+        "artist": "Artist",
+        "album": "Album",
+        "durationMs": 120000,
+        "elapsedMs": 1000,
+        "playing": true,
+        "rate": 1
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "call snapshot",
+    "schema": "topic-call",
+    "value": {
+      "state": "ringing"
+    },
+    "valid": true
+  },
+  {
+    "name": "call unavailable",
+    "schema": "topic-call",
+    "value": null,
+    "valid": true
+  },
+  {
+    "name": "call invalid",
+    "schema": "topic-call",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "channel call",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "call",
+      "value": {
+        "state": "ringing"
+      },
+      "seq": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin call",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "call",
+      "value": {
+        "state": "ringing"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "activity snapshot",
+    "schema": "topic-activity",
+    "value": {
+      "siri": false,
+      "phoneCall": false,
+      "navigation": true
+    },
+    "valid": true
+  },
+  {
+    "name": "activity unavailable",
+    "schema": "topic-activity",
+    "value": null,
+    "valid": true
+  },
+  {
+    "name": "activity invalid",
+    "schema": "topic-activity",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "channel activity",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "activity",
+      "value": {
+        "siri": false,
+        "phoneCall": false,
+        "navigation": true
+      },
+      "seq": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin activity",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "activity",
+      "value": {
+        "siri": false,
+        "phoneCall": false,
+        "navigation": true
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "host ping",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "ping",
+      "seq": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "host wrong namespace",
+    "schema": "host-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "ping",
+      "seq": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "host malformed region",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "layout",
+      "regions": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": -1,
+          "h": 4
+        }
+      ],
+      "cover": "panel"
+    },
+    "valid": false
+  },
+  {
+    "name": "channel protocol error",
+    "schema": "channel-message",
+    "value": {
+      "type": "error",
+      "code": "protocol"
+    },
+    "valid": true
+  },
+  {
+    "name": "channel unknown error",
+    "schema": "channel-message",
+    "value": {
+      "type": "error",
+      "code": "oops"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin badge limit",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "quick-action-state",
+      "id": "tap",
+      "badge": "1234"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin hello",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "hello",
+      "spec": "oxp-web-plugin/0",
+      "sdk": "0.1.0"
+    },
+    "valid": true
+  },
+  {
+    "name": "host init complete variant 36",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": true
+  },
+  {
+    "name": "host init missing locale 37",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": false
+  },
+  {
+    "name": "host geometry complete variant 38",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": true
+  },
+  {
+    "name": "host geometry missing locale 39",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": false
+  },
+  {
+    "name": "host ping complete variant 40",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "ping",
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "host ping missing seq 41",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "ping"
+    },
+    "valid": false
+  },
+  {
+    "name": "host pong complete variant 42",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "pong",
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "host pong missing seq 43",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "pong"
+    },
+    "valid": false
+  },
+  {
+    "name": "host visibility complete variant 44",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "visibility",
+      "visible": false
+    },
+    "valid": true
+  },
+  {
+    "name": "host visibility missing visible 45",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "visibility"
+    },
+    "valid": false
+  },
+  {
+    "name": "host receiver-state complete variant 46",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "receiver-state",
+      "state": "waiting"
+    },
+    "valid": true
+  },
+  {
+    "name": "host receiver-state missing state 47",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "receiver-state"
+    },
+    "valid": false
+  },
+  {
+    "name": "host collapse complete variant 48",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "collapse"
+    },
+    "valid": true
+  },
+  {
+    "name": "host ready complete variant 49",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "ready",
+      "spec": "oxp-web-plugin/0"
+    },
+    "valid": true
+  },
+  {
+    "name": "host ready missing spec 50",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "ready"
+    },
+    "valid": false
+  },
+  {
+    "name": "host layout complete variant 51",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "layout",
+      "regions": [],
+      "cover": "none"
+    },
+    "valid": true
+  },
+  {
+    "name": "host layout missing regions 52",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "layout",
+      "cover": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "host diagnostic complete variant 53",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "diagnostic",
+      "level": "info",
+      "code": "example",
+      "detail": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "host diagnostic missing level 54",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "diagnostic",
+      "code": "example",
+      "detail": "example"
+    },
+    "valid": false
+  },
+  {
+    "name": "host ignores future messages",
+    "schema": "host-message",
+    "value": {
+      "type": "future-message",
+      "oxp": "host/0",
+      "data": {}
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin hello complete variant 56",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "hello",
+      "spec": "oxp-web-plugin/0",
+      "sdk": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin hello missing spec 57",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "hello",
+      "sdk": "example"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin welcome complete variant 58",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "welcome",
+      "pluginId": "org.openxplay.fixture",
+      "surface": {
+        "id": "example",
+        "kind": "companion",
+        "w": 0,
+        "h": 0
+      },
+      "permissions": [],
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "parked": "confirmed",
+      "state": {}
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin welcome missing pluginId 59",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "welcome",
+      "surface": {
+        "id": "example",
+        "kind": "companion",
+        "w": 0,
+        "h": 0
+      },
+      "permissions": [],
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "parked": "confirmed",
+      "state": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin ping complete variant 60",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "ping",
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin ping missing seq 61",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "ping"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin pong complete variant 62",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "pong",
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin pong missing seq 63",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "pong"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin storage-get complete variant 64",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage-get",
+      "id": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin storage-get missing id 65",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage-get"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin storage-set complete variant 66",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage-set",
+      "id": "example",
+      "value": {}
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin storage-set missing id 67",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage-set",
+      "value": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin open complete variant 68",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "open",
+      "surface": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin open missing surface 69",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "open"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin close complete variant 70",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "close"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin quick-action-state complete variant 71",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "quick-action-state",
+      "id": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin quick-action-state missing id 72",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "quick-action-state"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin surface complete variant 73",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface",
+      "w": 0,
+      "h": 0,
+      "visible": false,
+      "calm": false
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin surface missing w 74",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface",
+      "h": 0,
+      "visible": false,
+      "calm": false
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin parked complete variant 75",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "parked",
+      "value": "confirmed"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin parked missing value 76",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "parked"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin quick-action complete variant 77",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "quick-action",
+      "id": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin quick-action missing id 78",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "quick-action"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin artwork complete variant 79",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "artwork",
+      "bitmap": null
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin artwork missing bitmap 80",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "artwork"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin state complete variant 81",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "session",
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin state missing topic 82",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "value": null
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin state complete variant 83",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "nowPlaying",
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin state missing topic 84",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "value": null
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin state complete variant 85",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "call",
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin state missing topic 86",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "value": null
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin state complete variant 87",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "topic": "activity",
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin state missing topic 88",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "state",
+      "value": null
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin storage complete variant 89",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage",
+      "id": "example",
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin storage missing id 90",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage",
+      "value": null
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin storage-ok complete variant 91",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage-ok",
+      "id": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin storage-ok missing id 92",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "storage-ok"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin error complete variant 93",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "error",
+      "code": "quota"
+    },
+    "valid": true
+  },
+  {
+    "name": "plugin error missing code 94",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "error"
+    },
+    "valid": false
+  },
+  {
+    "name": "plugin ignores future messages",
+    "schema": "plugin-message",
+    "value": {
+      "type": "future-message",
+      "oxp": "plugin/0",
+      "data": {}
+    },
+    "valid": true
+  },
+  {
+    "name": "channel hello complete variant 96",
+    "schema": "channel-message",
+    "value": {
+      "type": "hello",
+      "spec": "oxp-web-plugin/0",
+      "host": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "channel hello missing spec 97",
+    "schema": "channel-message",
+    "value": {
+      "type": "hello",
+      "host": "example"
+    },
+    "valid": false
+  },
+  {
+    "name": "channel subscribe complete variant 98",
+    "schema": "channel-message",
+    "value": {
+      "type": "subscribe",
+      "topics": []
+    },
+    "valid": true
+  },
+  {
+    "name": "channel subscribe missing topics 99",
+    "schema": "channel-message",
+    "value": {
+      "type": "subscribe"
+    },
+    "valid": false
+  },
+  {
+    "name": "channel storage-get complete variant 100",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage-get",
+      "id": "example",
+      "plugin": "org.openxplay.fixture"
+    },
+    "valid": true
+  },
+  {
+    "name": "channel storage-get missing id 101",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage-get",
+      "plugin": "org.openxplay.fixture"
+    },
+    "valid": false
+  },
+  {
+    "name": "channel storage-set complete variant 102",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage-set",
+      "id": "example",
+      "plugin": "org.openxplay.fixture",
+      "value": {}
+    },
+    "valid": true
+  },
+  {
+    "name": "channel storage-set missing id 103",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage-set",
+      "plugin": "org.openxplay.fixture",
+      "value": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "channel welcome complete variant 104",
+    "schema": "channel-message",
+    "value": {
+      "type": "welcome",
+      "spec": "oxp-web-plugin/0",
+      "plugins": [],
+      "topics": [],
+      "storage": {
+        "quotaBytes": 65536,
+        "persistent": false
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "channel welcome missing spec 105",
+    "schema": "channel-message",
+    "value": {
+      "type": "welcome",
+      "plugins": [],
+      "topics": [],
+      "storage": {
+        "quotaBytes": 65536,
+        "persistent": false
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "channel state complete variant 106",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "session",
+      "value": null,
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "channel state missing topic 107",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "value": null,
+      "seq": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "channel state complete variant 108",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "nowPlaying",
+      "value": null,
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "channel state missing topic 109",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "value": null,
+      "seq": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "channel state complete variant 110",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "call",
+      "value": null,
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "channel state missing topic 111",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "value": null,
+      "seq": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "channel state complete variant 112",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "topic": "activity",
+      "value": null,
+      "seq": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "channel state missing topic 113",
+    "schema": "channel-message",
+    "value": {
+      "type": "state",
+      "value": null,
+      "seq": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "channel storage complete variant 114",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage",
+      "id": "example",
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "channel storage missing id 115",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage",
+      "value": null
+    },
+    "valid": false
+  },
+  {
+    "name": "channel storage-ok complete variant 116",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage-ok",
+      "id": "example"
+    },
+    "valid": true
+  },
+  {
+    "name": "channel storage-ok missing id 117",
+    "schema": "channel-message",
+    "value": {
+      "type": "storage-ok"
+    },
+    "valid": false
+  },
+  {
+    "name": "channel error complete variant 118",
+    "schema": "channel-message",
+    "value": {
+      "type": "error",
+      "code": "quota"
+    },
+    "valid": true
+  },
+  {
+    "name": "channel error missing code 119",
+    "schema": "channel-message",
+    "value": {
+      "type": "error"
+    },
+    "valid": false
+  },
+  {
+    "name": "channel ignores future messages",
+    "schema": "channel-message",
+    "value": {
+      "type": "future-message",
+      "data": {}
+    },
+    "valid": true
+  },
+  {
+    "name": "manifest rejects companion over 160",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 161,
+            "h": 100
+          },
+          "anchor": "top-left"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest rejects driving fullscreen",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "runtime companion placement",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "anchor": "bottom-right",
+      "size": {
+        "w": 100,
+        "h": 80
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "invalid companion anchor",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "anchor": "center"
+    },
+    "valid": false
+  },
+  {
+    "name": "oversized companion request",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "size": {
+        "w": 161,
+        "h": 80
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "relative video may have negative origin",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface",
+      "w": 120,
+      "h": 120,
+      "visible": false,
+      "calm": true,
+      "closing": true,
+      "video": {
+        "x": -700,
+        "y": -300,
+        "w": 840,
+        "h": 494
+      },
+      "viewport": {
+        "w": 876,
+        "h": 518
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "invalid closing flag",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface",
+      "w": 120,
+      "h": 120,
+      "visible": false,
+      "calm": false,
+      "closing": "yes",
+      "video": {
+        "x": -20,
+        "y": -10,
+        "w": 840,
+        "h": 494
+      },
+      "viewport": {
+        "w": 876,
+        "h": 518
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid video dimensions",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface",
+      "w": 120,
+      "h": 120,
+      "visible": false,
+      "calm": false,
+      "closing": true,
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": -1,
+        "h": 494
+      },
+      "viewport": {
+        "w": 876,
+        "h": 518
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "optional localized surface label",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left",
+          "label": {
+            "en": "Pet",
+            "zh-CN": "\u4f19\u4f34"
+          }
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "companion drag start",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "move": {
+        "phase": "start",
+        "dx": -42,
+        "dy": 20
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "companion drag move",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "move": {
+        "phase": "move",
+        "dx": -42,
+        "dy": 20
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "companion drag end",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "move": {
+        "phase": "end",
+        "dx": -42,
+        "dy": 20
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "host preferences",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "host-prefs",
+      "value": {
+        "dock": {
+          "x": 200,
+          "y": 200
+        },
+        "companions": {
+          "org.openxplay.cats/pet": {
+            "x": 60,
+            "y": 80
+          }
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "preferences require object",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "host-prefs",
+      "value": []
+    },
+    "valid": false
+  },
+  {
+    "name": "preferences UTF-8 byte limit",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "host-prefs",
+      "value": {
+        "text": "\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c\u754c"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid drag phase",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "move": {
+        "phase": "drag",
+        "dx": 0,
+        "dy": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "init receiver preferences",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel",
+      "hostPrefs": {
+        "dock": {
+          "x": 200,
+          "y": 100
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "geometry receiver preferences",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel",
+      "hostPrefs": {
+        "dock": {
+          "x": 200,
+          "y": 100
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "invalid drag {'phase': 'start', 'dx': 0}",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "move": {
+        "phase": "start",
+        "dx": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid drag {'phase': 'move', 'dx': '2', 'dy': 1}",
+    "schema": "plugin-message",
+    "value": {
+      "oxp": "plugin/0",
+      "type": "surface-request",
+      "move": {
+        "phase": "move",
+        "dx": "2",
+        "dy": 1
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route complete",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route absent",
+    "schema": "topic-route",
+    "value": null,
+    "valid": true
+  },
+  {
+    "name": "relay route empty",
+    "schema": "topic-route",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "relay route partial Linux snapshot",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": null,
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route active unknown fields",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": null,
+      "etaMs": null,
+      "distanceRemainingM": null,
+      "maneuver": null,
+      "appName": null
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route inactive known state",
+    "schema": "topic-route",
+    "value": {
+      "active": false,
+      "destination": null,
+      "etaMs": null,
+      "distanceRemainingM": null,
+      "maneuver": null,
+      "appName": null
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null destination",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": null,
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null etaMs",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": null,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null distanceRemainingM",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": null,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null appName",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": null
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null maneuver type",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": null,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null maneuver road",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": null,
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route null maneuver distanceM",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": null
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route unknown maneuver",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": null,
+      "etaMs": null,
+      "distanceRemainingM": null,
+      "maneuver": {
+        "type": null,
+        "road": null,
+        "distanceM": null
+      },
+      "appName": null
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route maneuver code 0",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 0,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route maneuver code 255",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 255,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": true
+  },
+  {
+    "name": "relay route missing active",
+    "schema": "topic-route",
+    "value": {
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing destination",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing etaMs",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing distanceRemainingM",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing maneuver",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing appName",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing maneuver type",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing maneuver road",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route missing maneuver distanceM",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St"
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid active null",
+    "schema": "topic-route",
+    "value": {
+      "active": null,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid active 1",
+    "schema": "topic-route",
+    "value": {
+      "active": 1,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid destination 7",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": 7,
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid appName 7",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": 7
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid etaMs -1",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": -1,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid etaMs \"1\"",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": "1",
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid distanceRemainingM -1",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": -1,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid distanceRemainingM \"1\"",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": "1",
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver []",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": [],
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver type \"turn-right\"",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": "turn-right",
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver type \"2\"",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": "2",
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver type -1",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": -1,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver type 256",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 256,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver type 1.5",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 1.5,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver type true",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": true,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver road 1",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": 1,
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver distanceM -1",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": -1
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "relay route invalid maneuver distanceM \"1\"",
+    "schema": "topic-route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": "1"
+      },
+      "appName": "Maps"
+    },
+    "valid": false
+  },
+  {
+    "name": "host init faded True",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left",
+        "faded": true
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": true
+  },
+  {
+    "name": "host init faded False",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left",
+        "faded": false
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": true
+  },
+  {
+    "name": "host init faded yes",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left",
+        "faded": "yes"
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": false
+  },
+  {
+    "name": "host geometry faded True",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left",
+        "faded": true
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": true
+  },
+  {
+    "name": "host geometry faded False",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left",
+        "faded": false
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": true
+  },
+  {
+    "name": "host geometry faded yes",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left",
+        "faded": "yes"
+      },
+      "channel": "/plugins/channel"
+    },
+    "valid": false
+  },
+  {
+    "name": "host wake",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "wake"
+    },
+    "valid": true
+  },
+  {
+    "name": "receiver resets all button positions",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "reset-positions"
+    },
+    "valid": true
+  },
+  {
+    "name": "reset requires host marker",
+    "schema": "host-message",
+    "value": {
+      "type": "reset-positions"
+    },
+    "valid": false
+  },
+  {
+    "name": "host user-dragged dock preference",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "host-prefs",
+      "value": {
+        "dock": {
+          "x": 200,
+          "y": 200,
+          "dragged": true
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "host legacy automatic dock rectangle preference",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "host-prefs",
+      "value": {
+        "dock": {
+          "x": 1064,
+          "y": 246,
+          "w": 48,
+          "h": 48
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "init developer true (True)",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "init",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel",
+      "developer": true
+    },
+    "valid": true
+  },
+  {
+    "name": "geometry developer false (True)",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel",
+      "developer": false
+    },
+    "valid": true
+  },
+  {
+    "name": "geometry developer true (False)",
+    "schema": "host-message",
+    "value": {
+      "oxp": "host/0",
+      "type": "geometry",
+      "locale": "example",
+      "theme": "light",
+      "reducedMotion": false,
+      "viewport": {
+        "w": 0,
+        "h": 0
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "gear": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "side": "left"
+      },
+      "channel": "/plugins/channel",
+      "developer": "true"
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest author and attribution",
+    "schema": "manifest",
+    "value": {
+      "spec": "oxp-web-plugin/0",
+      "id": "org.openxplay.fixture",
+      "version": "1.0.0",
+      "license": "MIT",
+      "name": {
+        "en": "Fixture"
+      },
+      "description": {
+        "en": "Contract fixture"
+      },
+      "icon": "icon.svg",
+      "permissions": [
+        "session",
+        "nowPlaying",
+        "nowPlaying.artwork",
+        "call",
+        "activity",
+        "storage"
+      ],
+      "surfaces": [
+        {
+          "id": "widget",
+          "kind": "companion",
+          "entry": "index.html",
+          "usage": "driving",
+          "size": {
+            "w": 120,
+            "h": 120
+          },
+          "anchor": "top-left"
+        },
+        {
+          "id": "panel",
+          "kind": "panel",
+          "entry": "index.html",
+          "usage": "driving"
+        },
+        {
+          "id": "full",
+          "kind": "fullscreen",
+          "entry": "index.html",
+          "usage": "parked"
+        },
+        {
+          "id": "ambient",
+          "kind": "ambient",
+          "entry": "index.html",
+          "usage": "driving"
+        }
+      ],
+      "quickActions": [
+        {
+          "id": "tap",
+          "icon": "icon.svg",
+          "label": {
+            "en": "Tap"
+          }
+        }
+      ],
+      "author": "OpenXPlay.org",
+      "attributions": [
+        {
+          "text": {
+            "en": "Fixture by Artist, CC BY-NC-SA 4.0"
+          },
+          "links": [
+            {
+              "label": "Licence",
+              "url": "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+            }
+          ]
+        }
+      ]
+    },
+    "valid": true
+  }
+]

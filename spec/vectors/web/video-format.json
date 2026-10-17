@@ -1,0 +1,12 @@
+{
+  "type": "video-format",
+  "screen": 0,
+  "format": {
+    "codec": "H264",
+    "codecString": "avc1.42C01E",
+    "config": "AULAHv/hAAlnQsAe9AUB7IABAARozjyA",
+    "width": 640,
+    "height": 480,
+    "fpsHint": 30
+  }
+}

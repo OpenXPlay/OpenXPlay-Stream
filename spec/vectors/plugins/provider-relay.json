@@ -1,0 +1,1958 @@
+{
+  "spec": "oxp-web-plugin/0",
+  "provider": "relay",
+  "topics": [
+    "session",
+    "nowPlaying",
+    "call",
+    "activity",
+    "route",
+    "audioSource"
+  ],
+  "vectors": [
+    {
+      "name": "relay session 0",
+      "provider": "relay",
+      "topic": "session",
+      "value": {
+        "carplay": "connected"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay session 1",
+      "provider": "relay",
+      "topic": "session",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay session 2",
+      "provider": "relay",
+      "topic": "session",
+      "value": {},
+      "valid": false
+    },
+    {
+      "name": "relay nowPlaying 3",
+      "provider": "relay",
+      "topic": "nowPlaying",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay nowPlaying 4",
+      "provider": "relay",
+      "topic": "nowPlaying",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay nowPlaying 5",
+      "provider": "relay",
+      "topic": "nowPlaying",
+      "value": {},
+      "valid": false
+    },
+    {
+      "name": "relay call 6",
+      "provider": "relay",
+      "topic": "call",
+      "value": {
+        "state": "idle"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay call 7",
+      "provider": "relay",
+      "topic": "call",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay call 8",
+      "provider": "relay",
+      "topic": "call",
+      "value": {},
+      "valid": false
+    },
+    {
+      "name": "relay activity 9",
+      "provider": "relay",
+      "topic": "activity",
+      "value": {
+        "siri": false,
+        "phoneCall": false,
+        "navigation": false
+      },
+      "valid": true
+    },
+    {
+      "name": "relay activity 10",
+      "provider": "relay",
+      "topic": "activity",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay activity 11",
+      "provider": "relay",
+      "topic": "activity",
+      "value": {},
+      "valid": false
+    },
+    {
+      "name": "relay audioSource 15",
+      "provider": "relay",
+      "topic": "audioSource",
+      "value": {
+        "appName": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relay audioSource 16",
+      "provider": "relay",
+      "topic": "audioSource",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay audioSource 17",
+      "provider": "relay",
+      "topic": "audioSource",
+      "value": {},
+      "valid": false
+    },
+    {
+      "name": "relay rejects foreign topic",
+      "provider": "relay",
+      "topic": "motion",
+      "value": {
+        "speedMps": 0,
+        "accuracyM": 2,
+        "source": "geolocation"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route complete",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route absent",
+      "provider": "relay",
+      "topic": "route",
+      "value": null,
+      "valid": true
+    },
+    {
+      "name": "relay route empty",
+      "provider": "relay",
+      "topic": "route",
+      "value": {},
+      "valid": false
+    },
+    {
+      "name": "relay route partial Linux snapshot",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": null,
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route active unknown fields",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": null,
+        "etaMs": null,
+        "distanceRemainingM": null,
+        "maneuver": null,
+        "appName": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route inactive known state",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": false,
+        "destination": null,
+        "etaMs": null,
+        "distanceRemainingM": null,
+        "maneuver": null,
+        "appName": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null destination",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": null,
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null etaMs",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": null,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null distanceRemainingM",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": null,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null appName",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null maneuver type",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": null,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null maneuver road",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": null,
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null maneuver distanceM",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": null
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route unknown maneuver",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": null,
+        "etaMs": null,
+        "distanceRemainingM": null,
+        "maneuver": {
+          "type": null,
+          "road": null,
+          "distanceM": null
+        },
+        "appName": null
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route maneuver code 0",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 0,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route maneuver code 255",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 255,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route missing active",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing destination",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing etaMs",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing distanceRemainingM",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing appName",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver type",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver road",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver distanceM",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St"
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid active null",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": null,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid active 1",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": 1,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid destination 7",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": 7,
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid appName 7",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": 7
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid etaMs -1",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": -1,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid etaMs \"1\"",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": "1",
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid distanceRemainingM -1",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": -1,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid distanceRemainingM \"1\"",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": "1",
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver []",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": [],
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type \"turn-right\"",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": "turn-right",
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type \"2\"",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": "2",
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type -1",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": -1,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type 256",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 256,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type 1.5",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 1.5,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type true",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": true,
+          "road": "Main St",
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver road 1",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": 1,
+          "distanceM": 250.25
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver distanceM -1",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": -1
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver distanceM \"1\"",
+      "provider": "relay",
+      "topic": "route",
+      "value": {
+        "active": true,
+        "destination": "Home",
+        "etaMs": 90000.5,
+        "distanceRemainingM": 1000.0,
+        "maneuver": {
+          "type": 2,
+          "road": "Main St",
+          "distanceM": "1"
+        },
+        "appName": "Maps"
+      },
+      "valid": false
+    }
+  ],
+  "messages": [
+    {
+      "name": "relay session 0 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "session",
+        "value": {
+          "carplay": "connected"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay session 1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "session",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay session 2 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "session",
+        "value": {},
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay nowPlaying 3 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "nowPlaying",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay nowPlaying 4 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "nowPlaying",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay nowPlaying 5 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "nowPlaying",
+        "value": {},
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay call 6 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "call",
+        "value": {
+          "state": "idle"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay call 7 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "call",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay call 8 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "call",
+        "value": {},
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay activity 9 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "activity",
+        "value": {
+          "siri": false,
+          "phoneCall": false,
+          "navigation": false
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay activity 10 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "activity",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay activity 11 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "activity",
+        "value": {},
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay audioSource 15 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "audioSource",
+        "value": {
+          "appName": null
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay audioSource 16 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "audioSource",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay audioSource 17 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "audioSource",
+        "value": {},
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay rejects foreign topic message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "motion",
+        "value": {
+          "speedMps": 0,
+          "accuracyM": 2,
+          "source": "geolocation"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route complete message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route absent message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": null,
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route empty message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {},
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route partial Linux snapshot message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": null,
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route active unknown fields message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": null,
+          "etaMs": null,
+          "distanceRemainingM": null,
+          "maneuver": null,
+          "appName": null
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route inactive known state message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": false,
+          "destination": null,
+          "etaMs": null,
+          "distanceRemainingM": null,
+          "maneuver": null,
+          "appName": null
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null destination message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": null,
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null etaMs message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": null,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null distanceRemainingM message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": null,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null appName message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": null
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null maneuver type message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": null,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null maneuver road message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": null,
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route null maneuver distanceM message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": null
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route unknown maneuver message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": null,
+          "etaMs": null,
+          "distanceRemainingM": null,
+          "maneuver": {
+            "type": null,
+            "road": null,
+            "distanceM": null
+          },
+          "appName": null
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route maneuver code 0 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 0,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route maneuver code 255 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 255,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": true
+    },
+    {
+      "name": "relay route missing active message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing destination message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing etaMs message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing distanceRemainingM message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing appName message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          }
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver type message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver road message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route missing maneuver distanceM message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St"
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid active null message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": null,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid active 1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": 1,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid destination 7 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": 7,
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid appName 7 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": 7
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid etaMs -1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": -1,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid etaMs \"1\" message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": "1",
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid distanceRemainingM -1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": -1,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid distanceRemainingM \"1\" message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": "1",
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver [] message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": [],
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type \"turn-right\" message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": "turn-right",
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type \"2\" message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": "2",
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type -1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": -1,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type 256 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 256,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type 1.5 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 1.5,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver type true message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": true,
+            "road": "Main St",
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver road 1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": 1,
+            "distanceM": 250.25
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver distanceM -1 message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": -1
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    },
+    {
+      "name": "relay route invalid maneuver distanceM \"1\" message",
+      "schema": "channel-message",
+      "value": {
+        "type": "state",
+        "topic": "route",
+        "value": {
+          "active": true,
+          "destination": "Home",
+          "etaMs": 90000.5,
+          "distanceRemainingM": 1000.0,
+          "maneuver": {
+            "type": 2,
+            "road": "Main St",
+            "distanceM": "1"
+          },
+          "appName": "Maps"
+        },
+        "seq": 1
+      },
+      "valid": false
+    }
+  ]
+}

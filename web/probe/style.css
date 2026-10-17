@@ -1,0 +1,8 @@
+/* SPDX-FileCopyrightText: 2026 OpenXPlay.org
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Created by riko chen on 2026-10-14
+ */
+
+body { margin: 24px; color: #eee; background: #111; font: 15px system-ui, sans-serif; }
+table { width: 100%; border-collapse: collapse; margin-top: 20px; } th, td { padding: 8px; border: 1px solid #444; text-align: left; overflow-wrap: anywhere; }
+caption { text-align: left; margin-bottom: 8px; } button { padding: 10px 16px; } textarea { width: 100%; min-height: 300px; }

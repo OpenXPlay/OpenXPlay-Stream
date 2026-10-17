@@ -1,0 +1,9 @@
+{
+  "type": "context",
+  "topic": "activity",
+  "value": {
+    "siri": true,
+    "phoneCall": false,
+    "navigation": true
+  }
+}

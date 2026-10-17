@@ -1,0 +1,7 @@
+{
+  "type": "context",
+  "topic": "session",
+  "value": {
+    "carplay": "connected"
+  }
+}

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 OpenXPlay.org
+# SPDX-License-Identifier: AGPL-3.0-only
+# Created by riko chen on 2026-10-14
+
+[workspace]
+members = ["oxp-media", "oxp-core", "oxp-clink", "oxp-wire", "oxp-web", "oxp-link-linux", "oxp-transcode-linux", "oxp-bin"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-only"
+version = "0.1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

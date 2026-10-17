@@ -1,0 +1,10 @@
+{
+  "type": "audio-format",
+  "stream": 0,
+  "format": {
+    "role": "MEDIA",
+    "codec": "OPUS",
+    "sampleRate": 48000,
+    "channels": 2
+  }
+}

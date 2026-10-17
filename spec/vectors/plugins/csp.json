@@ -1,0 +1,27 @@
+[
+  {
+    "name": "HTTPS plugin CSP and headers",
+    "origin": "https://relay.example",
+    "plugin": "org.openxplay.fixture",
+    "headers": {
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Cache-Control": "no-cache",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=(), bluetooth=(), serial=(), hid=(), payment=()",
+      "Content-Security-Policy": "default-src 'none'; script-src https://relay.example/plugins/p/org.openxplay.fixture/ https://relay.example/plugins/host/guard.js 'wasm-unsafe-eval'; style-src https://relay.example/plugins/p/org.openxplay.fixture/ 'unsafe-inline'; img-src https://relay.example/plugins/p/org.openxplay.fixture/ data: blob:; media-src https://relay.example/plugins/p/org.openxplay.fixture/ data: blob:; font-src https://relay.example/plugins/p/org.openxplay.fixture/ data:; worker-src https://relay.example/plugins/p/org.openxplay.fixture/ blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"
+    }
+  },
+  {
+    "name": "HTTPS host CSP and headers",
+    "origin": "https://relay.example",
+    "headers": {
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Cache-Control": "no-cache",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=(), bluetooth=(), serial=(), hid=(), payment=()",
+      "Content-Security-Policy": "default-src 'none'; script-src https://relay.example/plugins/host/ https://relay.example/plugins/host/guard.js 'wasm-unsafe-eval'; style-src https://relay.example/plugins/host/ 'unsafe-inline'; img-src https://relay.example/plugins/host/ data: blob: https://relay.example/plugins/artwork/ https://relay.example/plugins/p/; media-src https://relay.example/plugins/host/ data: blob:; font-src https://relay.example/plugins/host/ data:; worker-src https://relay.example/plugins/host/ blob:; connect-src wss://relay.example/plugins/channel https://relay.example/plugins/artwork/; frame-src https://relay.example/plugins/p/; form-action 'none'; base-uri 'none'"
+    }
+  }
+]

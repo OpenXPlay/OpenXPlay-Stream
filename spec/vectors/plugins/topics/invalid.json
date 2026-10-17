@@ -1,0 +1,535 @@
+[
+  {},
+  {
+    "topic": "futureTopic",
+    "value": null
+  },
+  {
+    "topic": "session"
+  },
+  {
+    "topic": "session",
+    "value": {}
+  },
+  {
+    "topic": "session",
+    "value": {
+      "carplay": "active"
+    }
+  },
+  {
+    "topic": "call",
+    "value": {
+      "state": "connected"
+    }
+  },
+  {
+    "topic": "activity",
+    "value": {
+      "siri": true,
+      "phoneCall": false
+    }
+  },
+  {
+    "topic": "activity",
+    "value": {
+      "siri": "true",
+      "phoneCall": false,
+      "navigation": false
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {}
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": "Road 雨",
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": -1,
+      "elapsedMs": 12000,
+      "playing": true,
+      "rate": 1.0
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": "Road 雨",
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": 240000,
+      "elapsedMs": 1.5,
+      "playing": true,
+      "rate": 1.0
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": "Road 雨",
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": 9007199254740992,
+      "elapsedMs": 12000,
+      "playing": true,
+      "rate": 1.0
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": "Road 雨",
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": 240000,
+      "elapsedMs": 12000,
+      "playing": 1,
+      "rate": 1.0
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": false,
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": 240000,
+      "elapsedMs": 12000,
+      "playing": true,
+      "rate": 1.0
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": "Road 雨",
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": 240000,
+      "elapsedMs": 12000,
+      "playing": true,
+      "rate": "1"
+    }
+  },
+  {
+    "topic": "nowPlaying",
+    "value": {
+      "title": "Road 雨",
+      "artist": "OpenXPlay",
+      "album": null,
+      "durationMs": 240000,
+      "elapsedMs": 12000,
+      "playing": true,
+      "rate": 1.0,
+      "artwork": {
+        "url": false,
+        "type": "image/png"
+      }
+    }
+  },
+  {
+    "topic": "audioSource",
+    "value": {}
+  },
+  {
+    "topic": "audioSource",
+    "value": {
+      "appName": 7
+    }
+  },
+  {
+    "topic": "route",
+    "value": {}
+  },
+  {
+    "topic": "route",
+    "value": {
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      }
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St"
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": null,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": 1,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": 7,
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": 7
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": -1,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": "1",
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": -1,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": "1",
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": [],
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": "turn-right",
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": "2",
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": -1,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 256,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 1.5,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": true,
+        "road": "Main St",
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": 1,
+        "distanceM": 250.25
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": -1
+      },
+      "appName": "Maps"
+    }
+  },
+  {
+    "topic": "route",
+    "value": {
+      "active": true,
+      "destination": "Home",
+      "etaMs": 90000.5,
+      "distanceRemainingM": 1000.0,
+      "maneuver": {
+        "type": 2,
+        "road": "Main St",
+        "distanceM": "1"
+      },
+      "appName": "Maps"
+    }
+  }
+]

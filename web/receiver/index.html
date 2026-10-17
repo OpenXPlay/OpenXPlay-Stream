@@ -1,0 +1,60 @@
+<!-- SPDX-FileCopyrightText: 2026 OpenXPlay.org
+SPDX-License-Identifier: AGPL-3.0-only
+Created by riko chen on 2026-10-14 -->
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#080808"><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%23080808%22%2F%3E%3Cpath%20d%3D%22M16%2014h10l6%2010%206-10h10L37%2032l11%2018H38L32%2040l-6%2010H16l11-18Z%22%20fill%3D%22%2354E8A0%22%2F%3E%3C%2Fsvg%3E"><title>OpenXPlay</title></head>
+<body>
+<main><canvas id="video"></canvas>
+<!-- Icons: Lucide (ISC); see THIRD-PARTY-LICENSES.md -->
+<div id="controls">
+<button id="gear" aria-label="Settings" aria-haspopup="dialog" aria-controls="settings"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+  <circle cx="12" cy="12" r="3" /></svg></button>
+<button id="sound-hint" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" />
+  <path d="M16 9a5 5 0 0 1 0 6" />
+  <path d="M19.364 18.364a9 9 0 0 0 0-12.728" /></svg><span data-text="soundHint"></span></button>
+</div>
+<section id="card" aria-labelledby="headline">
+<svg class="logo" role="img" aria-label="OpenXPlay" viewBox="0 0 260 60"><text x="8" y="43" fill="white" font-family="system-ui, sans-serif" font-size="38" font-weight="650">open<tspan id="brand-x" fill="#54E8A0">X</tspan><tspan>Play</tspan></text></svg>
+<div id="status" role="status" aria-live="polite" aria-atomic="true"><span id="paired" role="status" hidden>✓</span><h1><span id="status-dot" aria-hidden="true"></span><span id="headline">Connecting</span></h1><p id="subline">Connecting to your relay…</p></div>
+<form id="pairing" hidden><label for="code" data-text="code"></label><div class="code-input"><div id="digits" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div><input id="code" type="text" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="off" required aria-describedby="subline"></div><button class="primary" data-text="connect"></button></form>
+<button id="retry" class="primary" data-text="retry" hidden></button>
+<button id="card-sound" class="primary" data-text="soundHint" hidden></button>
+<a class="attribution" href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer"><span data-text="powered">Powered by OpenXPlay.</span></a>
+</section>
+<aside id="debug" hidden><h2>Receiver statistics</h2><p id="protocol-state"></p><div id="statistics"></div><a href="/probe/" target="_blank" rel="noopener noreferrer">Open browser probe ↗</a></aside>
+</main>
+<div id="sheet-backdrop" aria-hidden="true" hidden></div>
+<dialog id="settings" aria-modal="true" aria-labelledby="settings-title"><header><span class="drag-handle" aria-hidden="true"></span><h2 id="settings-title" data-text="settings"></h2><button id="close-settings" class="icon-button" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18" />
+  <path d="m6 6 12 12" /></svg></button></header>
+<label class="row"><span>Plugins</span><input id="plugins-enabled" type="checkbox" role="switch"></label>
+<label class="row"><span data-text="sound"></span><input id="sound" type="checkbox" role="switch"></label>
+<section class="mic-row row" aria-labelledby="mic-label"><div><span id="mic-label" data-text="microphone"></span><strong id="mic-state" role="status"></strong><p id="mic-hint" class="secondary"></p></div><button id="mic-retry" data-text="retry" hidden></button></section>
+<div class="row"><span id="fit-label" data-text="fit"></span><div role="group" aria-labelledby="fit-label"><button id="fit" data-text="contain" aria-pressed="true"></button><button id="fill" data-text="fill" aria-pressed="false"></button></div></div>
+<button id="fullscreen" class="row fullscreen-row" aria-pressed="false"><svg aria-hidden="true" viewBox="0 0 24 24" data-fullscreen="off"><path d="M8 3H5a2 2 0 0 0-2 2v3" />
+  <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+  <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+  <path d="M16 21h3a2 2 0 0 0 2-2v-3" /></svg><svg aria-hidden="true" viewBox="0 0 24 24" data-fullscreen="on" hidden><path d="M8 3v3a2 2 0 0 1-2 2H3" />
+  <path d="M21 8h-3a2 2 0 0 1-2-2V3" />
+  <path d="M3 16h3a2 2 0 0 1 2 2v3" />
+  <path d="M16 21v-3a2 2 0 0 1 2-2h3" /></svg><span data-text="fullscreen"></span><span id="fullscreen-state" class="secondary"></span></button>
+<button id="reset-positions" class="row fullscreen-row" data-text="resetPositions"></button>
+<label class="row"><span data-text="frameRate"></span><select id="frame-rate">
+<option value="AUTO" data-text="automatic"></option>
+<option value="FPS_30">30 fps</option>
+<option value="FPS_35">35 fps</option>
+<option value="FPS_40">40 fps</option>
+<option value="FPS_45">45 fps</option>
+<option value="FPS_50">50 fps</option>
+<option value="FPS_55">55 fps</option>
+<option value="FPS_60">60 fps</option>
+</select></label>
+<p id="frame-rate-status" role="status" hidden data-text="applying"></p>
+<div class="row"><label for="playback" data-text="playback"></label><select id="playback" aria-describedby="playback-hint">
+<option value="SMART" data-text="smart"></option>
+<option value="QUALITY" data-text="quality"></option>
+<option value="SPEED" data-text="speed"></option>
+</select><p id="playback-hint" class="secondary" data-text="smartHint"></p></div>
+<label class="row"><span data-text="developer"></span><input id="developer" type="checkbox" role="switch"></label>
+<section id="about"><h2 data-text="about"></h2><p><span data-text="version"></span> <span id="version"></span></p><p><a href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer" data-text="powered">Powered by OpenXPlay.</a></p><a id="source" href="https://github.com/OpenXPlay/OpenXPlay-Stream" target="_blank" rel="noopener noreferrer" data-text="source"></a></section>
+</dialog>
+<script type="module" src="./main.ts"></script></body></html>

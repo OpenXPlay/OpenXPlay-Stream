@@ -1,0 +1,10 @@
+.DS_Store
+.gradle/
+.kotlin/
+build/
+/kotlin/local.properties
+node_modules/
+dist/
+*.iml
+.idea/
+rust/target/

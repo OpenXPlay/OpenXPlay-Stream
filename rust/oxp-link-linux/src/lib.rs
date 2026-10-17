@@ -1,0 +1,802 @@
+// SPDX-FileCopyrightText: 2026 OpenXPlay.org
+// SPDX-License-Identifier: AGPL-3.0-only
+// Created by riko chen on 2026-10-14
+
+#[cfg(any(target_os = "linux", test))]
+mod att;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod bluez;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod command;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod network;
+#[cfg(unix)]
+mod signals;
+#[cfg(target_os = "linux")]
+mod socket;
+#[cfg(unix)]
+pub use signals::ShutdownSignals;
+
+use oxp_clink::{ble::Advertisement, ClinkAddresses, ClinkConnection, ClinkLink, Result};
+use std::{sync::Arc, time::Duration};
+#[cfg(target_os = "linux")]
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::Instant,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AddressType {
+    Public = 1,
+    Random = 2,
+}
+
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub bluetooth_adapter: String,
+    pub wifi_interface: String,
+    pub address_type: AddressType,
+    pub device_id: String,
+    pub device_name: String,
+    pub device_model: String,
+    pub band: i32,
+    pub scan_timeout: Duration,
+    pub connect_timeout: Duration,
+    pub handoff_timeout: Duration,
+    pub join_timeout: Duration,
+    pub command_timeout: Duration,
+    pub connect_attempts: u32,
+    pub retry_delay: Duration,
+    pub link_check_interval: Duration,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bluetooth_adapter: "hci0".into(),
+            wifi_interface: "wlan0".into(),
+            address_type: AddressType::Random,
+            device_id: "openxplay-pi".into(),
+            device_name: "OpenXPlay".into(),
+            device_model: "Linux adapter".into(),
+            band: 1,
+            scan_timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(3),
+            handoff_timeout: Duration::from_secs(15),
+            join_timeout: Duration::from_secs(15),
+            command_timeout: Duration::from_secs(3),
+            connect_attempts: 3,
+            retry_delay: Duration::from_millis(250),
+            link_check_interval: Duration::from_secs(1),
+        }
+    }
+}
+impl Config {
+    pub fn validate(&self) -> Result<()> {
+        let index = self
+            .bluetooth_adapter
+            .strip_prefix("hci")
+            .ok_or("invalid_bluetooth_configuration")?;
+        if index.is_empty()
+            || !index.bytes().all(|b| b.is_ascii_digit())
+            || self.wifi_interface.is_empty()
+            || self.wifi_interface.len() > 15
+            || !self
+                .wifi_interface
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            || self.connect_attempts == 0
+            || self.connect_attempts > 10
+            || [
+                self.scan_timeout,
+                self.connect_timeout,
+                self.handoff_timeout,
+                self.join_timeout,
+                self.command_timeout,
+                self.link_check_interval,
+            ]
+            .iter()
+            .any(Duration::is_zero)
+        {
+            return Err("invalid_link_configuration".into());
+        }
+        oxp_clink::ble::phone_request(&self.phone("00:00:00:00:00:00".into()))?;
+        Ok(())
+    }
+    fn phone(&self, mac: String) -> oxp_clink::ble::PhoneRequest {
+        oxp_clink::ble::PhoneRequest {
+            id: self.device_id.clone(),
+            name: self.device_name.clone(),
+            model: self.device_model.clone(),
+            band: self.band,
+            mac,
+            kind: 1001,
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub struct Device {
+    pub address: String,
+    pub advertisement: Advertisement,
+}
+
+#[derive(Clone, Debug)]
+pub enum LinkEvent {
+    Diagnostic {
+        reason: String,
+    },
+    Scanning,
+    Connecting {
+        address: String,
+        name: String,
+    },
+    Joined {
+        address: String,
+        name: String,
+        ssid: String,
+        interface: String,
+        addresses: ClinkAddresses,
+    },
+    Lost {
+        reason: String,
+    },
+}
+pub type LinkListener = Arc<dyn Fn(LinkEvent) + Send + Sync>;
+
+#[cfg(any(target_os = "linux", test))]
+fn select_device(devices: Vec<Device>, address: Option<&str>) -> Result<Device> {
+    if let Some(address) = address {
+        devices
+            .into_iter()
+            .find(|d| d.address.eq_ignore_ascii_case(address))
+            .ok_or_else(|| "selected_vehicle_not_discovered".into())
+    } else {
+        match devices.len() {
+            0 => Err("vehicle_not_discovered".into()),
+            1 => devices
+                .into_iter()
+                .next()
+                .ok_or_else(|| "vehicle_not_discovered".into()),
+            _ => Err("multiple_vehicles_select_address".into()),
+        }
+    }
+}
+
+pub(crate) fn mac_bytes(mac: &str) -> Result<[u8; 6]> {
+    let parts: Vec<_> = mac.split(':').collect();
+    if parts.len() != 6 || parts.iter().any(|s| s.len() != 2) {
+        return Err("invalid_bluetooth_address".into());
+    }
+    let mut out = [0; 6];
+    for (b, s) in out.iter_mut().zip(parts) {
+        *b = u8::from_str_radix(s, 16).map_err(|_| "invalid_bluetooth_address")?;
+    }
+    Ok(out)
+}
+
+#[derive(Debug)]
+struct UnsupportedBand(i32);
+impl std::fmt::Display for UnsupportedBand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "head_unit_band_unsupported:{}", self.0)
+    }
+}
+impl std::error::Error for UnsupportedBand {}
+
+#[cfg(any(target_os = "linux", test))]
+fn join_after_handoff<S, T>(
+    config: &Config,
+    socket: S,
+    reply: &oxp_clink::ble::HeadUnitReply,
+    join: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    drop(socket);
+    let supported = (2400..=2500).contains(&reply.freq)
+        || (config.band == 1 && (5000..6000).contains(&reply.freq));
+    if !supported {
+        return Err(Box::new(UnsupportedBand(reply.freq)));
+    }
+    join()
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Default)]
+struct HandoffPolicy {
+    legacy: bool,
+    use_1002: bool,
+}
+#[cfg(any(target_os = "linux", test))]
+fn device_key(device: &Device) -> String {
+    if device.advertisement.car_id.is_empty() {
+        format!("address:{}", device.address.to_ascii_lowercase())
+    } else {
+        format!("car:{}", device.advertisement.car_id)
+    }
+}
+#[cfg(any(target_os = "linux", test))]
+fn exchange<S: att::Socket>(
+    config: &Config,
+    mac: &str,
+    policy: &mut HandoffPolicy,
+    end: std::time::Instant,
+    mut connect: impl FnMut() -> Result<S>,
+    diagnostic: &mut dyn FnMut(&str),
+) -> Result<(S, oxp_clink::ble::HeadUnitReply)> {
+    let mut phone = config.phone(mac.into());
+    phone.kind = if policy.use_1002 { 1002 } else { 1001 };
+    let payload = oxp_clink::ble::phone_request(&phone)?;
+    diagnostic(if policy.use_1002 {
+        "request_type:1002"
+    } else {
+        "request_type:1001"
+    });
+    loop {
+        let mut socket = connect()?;
+        socket.set_deadline(end);
+        match att::handoff(&mut socket, &payload, policy.legacy, end, diagnostic) {
+            Ok(reply) => return Ok((socket, reply)),
+            Err(e) => {
+                // A timed out ATT request remains outstanding. Drop the bearer before retrying.
+                drop(socket);
+                if !policy.legacy && e.to_string() == "bluetooth_cccd_timeout" {
+                    diagnostic("subscription_cccd_timeout_reconnect");
+                    policy.legacy = true;
+                    continue;
+                }
+                if e.to_string() == "head_unit_rejected_request" {
+                    policy.use_1002 = true;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct Active {
+    network: Arc<network::Network>,
+    stop: Arc<AtomicBool>,
+}
+pub struct LinuxClinkLink {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    config: Config,
+    address: Option<String>,
+    listener: Option<LinkListener>,
+    #[cfg(target_os = "linux")]
+    active: Mutex<Option<Active>>,
+}
+impl LinuxClinkLink {
+    pub fn new(config: Config) -> Result<Self> {
+        config.validate()?;
+        Ok(Self {
+            config,
+            address: None,
+            listener: None,
+            #[cfg(target_os = "linux")]
+            active: Mutex::new(None),
+        })
+    }
+    pub fn with_address(mut self, address: String) -> Result<Self> {
+        mac_bytes(&address)?;
+        self.address = Some(address);
+        Ok(self)
+    }
+    pub fn with_listener(mut self, listener: LinkListener) -> Self {
+        self.listener = Some(listener);
+        self
+    }
+    fn notify(&self, event: LinkEvent) {
+        if let Some(listener) = &self.listener {
+            listener(event);
+        }
+    }
+    fn report_connect_result<T>(&self, result: Result<T>) -> Result<T> {
+        if let Err(error) = &result {
+            // Only this typed, credential-free error may be exposed to listeners.
+            let reason = error
+                .downcast_ref::<UnsupportedBand>()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| {
+                    if error.to_string() == "head_unit_rejected_request" {
+                        "head_unit_rejected_request".into()
+                    } else {
+                        "link_connect_failed".into()
+                    }
+                });
+            self.notify(LinkEvent::Lost { reason });
+        }
+        result
+    }
+    pub fn scan(&self) -> Result<Vec<Device>> {
+        self.notify(LinkEvent::Scanning);
+        #[cfg(target_os = "linux")]
+        {
+            bluez::scan(&self.config)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("linux_link_unavailable".into())
+        }
+    }
+    /// The address must be seen in a new scan, even when explicitly selected.
+    pub fn connect_address(
+        &self,
+        address: Option<&str>,
+        on_link_lost: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    ) -> Result<ClinkAddresses> {
+        self.report_connect_result(self.try_connect_address(address, on_link_lost))
+    }
+    fn try_connect_address(
+        &self,
+        address: Option<&str>,
+        on_link_lost: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    ) -> Result<ClinkAddresses> {
+        #[cfg(target_os = "linux")]
+        {
+            let mut active = self.active.lock().map_err(|_| "link_lock_poisoned")?;
+            if active.is_some() {
+                return Err("link_already_connected".into());
+            }
+            if let Some(address) = address {
+                mac_bytes(address)?;
+            }
+            network::leave(&self.config)?;
+            let devices = self.scan()?;
+            let device = select_device(devices, address)?;
+            self.notify(LinkEvent::Connecting {
+                address: device.address.clone(),
+                name: device.advertisement.name.clone(),
+            });
+            let local = bluez::adapter_address(&self.config)?;
+            let mac = std::fs::read_to_string(format!(
+                "/sys/class/net/{}/address",
+                self.config.wifi_interface
+            ))?;
+            mac_bytes(mac.trim())?;
+            static POLICIES: std::sync::OnceLock<
+                Mutex<std::collections::HashMap<String, HandoffPolicy>>,
+            > = std::sync::OnceLock::new();
+            let policies = POLICIES.get_or_init(Mutex::default);
+            let key = device_key(&device);
+            let mut policy = policies
+                .lock()
+                .map_err(|_| "link_lock_poisoned")?
+                .get(&key)
+                .copied()
+                .unwrap_or_default();
+            let end = Instant::now() + self.config.handoff_timeout.min(Duration::from_secs(15));
+            let result = exchange(
+                &self.config,
+                mac.trim(),
+                &mut policy,
+                end,
+                || {
+                    let mut failure = None;
+                    for attempt in 0..self.config.connect_attempts {
+                        signals::check()?;
+                        if Instant::now() >= end {
+                            break;
+                        }
+                        match socket::NativeSocket::connect(
+                            &local,
+                            &device.address,
+                            self.config.address_type,
+                            end.min(Instant::now() + self.config.connect_timeout),
+                        ) {
+                            Ok(s) => return Ok(s),
+                            Err(e) => failure = Some(e),
+                        }
+                        if attempt + 1 < self.config.connect_attempts {
+                            std::thread::sleep(
+                                self.config
+                                    .retry_delay
+                                    .min(end.saturating_duration_since(Instant::now())),
+                            );
+                        }
+                    }
+                    Err(failure.unwrap_or_else(|| "bluetooth_connect_failed".into()))
+                },
+                &mut |reason| {
+                    self.notify(LinkEvent::Diagnostic {
+                        reason: reason.into(),
+                    })
+                },
+            );
+            policies
+                .lock()
+                .map_err(|_| "link_lock_poisoned")?
+                .insert(key, policy);
+            let (socket, reply) = result?;
+            // Join immediately: the head unit's network may expire quickly.
+            let (network, addresses) = join_after_handoff(&self.config, socket, &reply, || {
+                network::join(&self.config, &reply, device.advertisement.car_id)
+            })?;
+            let network = Arc::new(network);
+            let stop = Arc::new(AtomicBool::new(false));
+            let monitor_network = network.clone();
+            let monitor_stop = stop.clone();
+            let expected = addresses.clone();
+            let interval = self.config.link_check_interval;
+            let listener = self.listener.clone();
+            let worker = std::thread::Builder::new()
+                .name("oxp-clink-link".into())
+                .spawn(move || {
+                    loop {
+                        // Short sleeps let explicit disconnect silence the monitor promptly.
+                        let next = Instant::now() + interval;
+                        while Instant::now() < next {
+                            if monitor_stop.load(Ordering::Acquire) {
+                                return;
+                            }
+                            std::thread::sleep(
+                                Duration::from_millis(100)
+                                    .min(next.saturating_duration_since(Instant::now())),
+                            );
+                        }
+                        if !monitor_network.alive(&expected) {
+                            if !monitor_stop.swap(true, Ordering::AcqRel) {
+                                if let Some(listener) = &listener {
+                                    listener(LinkEvent::Lost {
+                                        reason: "network_link_lost".into(),
+                                    });
+                                }
+                                on_link_lost(Some("network_link_lost".into()));
+                            }
+                            return;
+                        }
+                    }
+                });
+            if worker.is_err() {
+                let _ = network.leave();
+                return Err("link_monitor_failed".into());
+            }
+            self.notify(LinkEvent::Joined {
+                address: device.address,
+                name: device.advertisement.name,
+                ssid: reply.ssid,
+                interface: self.config.wifi_interface.clone(),
+                addresses: addresses.clone(),
+            });
+            *active = Some(Active { network, stop });
+            Ok(addresses)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (address, on_link_lost);
+            Err("linux_link_unavailable".into())
+        }
+    }
+    /// Remove this crate's temporary profiles on the configured Wi-Fi interface.
+    pub fn leave(&self) -> Result<()> {
+        self.disconnect()?;
+        #[cfg(target_os = "linux")]
+        {
+            network::leave(&self.config)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("linux_link_unavailable".into())
+        }
+    }
+}
+impl ClinkLink for LinuxClinkLink {
+    fn connect(
+        &self,
+        on_link_lost: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    ) -> Result<ClinkConnection> {
+        self.connect_address(self.address.as_deref(), on_link_lost)
+            .map(Into::into)
+    }
+    fn disconnect(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let mut active = self.active.lock().map_err(|_| "link_lock_poisoned")?;
+            if let Some(a) = active.as_ref() {
+                a.stop.store(true, Ordering::Release);
+                a.network.leave()?;
+            }
+            *active = None;
+        }
+        Ok(())
+    }
+}
+impl Drop for LinuxClinkLink {
+    fn drop(&mut self) {
+        let _ = self.disconnect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn device(address: &str) -> Device {
+        Device {
+            address: address.into(),
+            advertisement: Advertisement {
+                major: 1,
+                minor: 0,
+                serial: 0,
+                car_id: "car".into(),
+                model_id: "model".into(),
+                vendor_data: String::new(),
+                name: "unit".into(),
+            },
+        }
+    }
+    struct TrackedBle {
+        fake: att::tests::Fake,
+        history: std::rc::Rc<std::cell::RefCell<Vec<Vec<Vec<u8>>>>>,
+        deadlines: std::rc::Rc<std::cell::RefCell<Vec<std::time::Instant>>>,
+    }
+    impl att::Socket for TrackedBle {
+        fn send(&mut self, pdu: &[u8]) -> Result<()> {
+            self.fake.send(pdu)
+        }
+        fn receive(&mut self) -> Result<Vec<u8>> {
+            self.fake.receive()
+        }
+        fn set_deadline(&mut self, deadline: std::time::Instant) {
+            self.deadlines.borrow_mut().push(deadline);
+        }
+    }
+    impl Drop for TrackedBle {
+        fn drop(&mut self) {
+            self.history.borrow_mut().push(self.fake.sent.clone());
+        }
+    }
+    #[test]
+    fn cccd_timeout_drops_bearer_before_reconnect_and_remembers_legacy() {
+        use att::tests::{cccd_discovery, discovery, Fake, JSON};
+        use std::{cell::RefCell, rc::Rc, time::Instant};
+        let history = Rc::new(RefCell::new(Vec::new()));
+        let deadlines = Rc::new(RefCell::new(Vec::new()));
+        let mut first = discovery(512);
+        first.extend(cccd_discovery());
+        first.push_back(vec![]); // Simulate the CCCD response deadline.
+        let mut legacy = discovery(512);
+        legacy.extend([vec![0x13], [vec![0x1d, 5, 0], JSON.to_vec()].concat()]);
+        let mut scripts = [first, legacy.clone(), legacy].into_iter();
+        let mut count = 0;
+        let mut connect = || {
+            assert_eq!(history.borrow().len(), count);
+            count += 1;
+            Ok(TrackedBle {
+                fake: Fake {
+                    replies: scripts.next().unwrap(),
+                    sent: Vec::new(),
+                    echo: false,
+                },
+                history: history.clone(),
+                deadlines: deadlines.clone(),
+            })
+        };
+        let mut policy = HandoffPolicy::default();
+        let end = Instant::now() + Duration::from_secs(15);
+        let mut events = Vec::new();
+        let (socket, _) = exchange(
+            &Config::default(),
+            "aa:bb:cc:dd:ee:ff",
+            &mut policy,
+            end,
+            &mut connect,
+            &mut |s| events.push(s.to_owned()),
+        )
+        .unwrap();
+        assert!(policy.legacy);
+        assert_eq!(history.borrow()[0].last().unwrap(), &[0x12, 6, 0, 2, 0]);
+        assert!(deadlines
+            .borrow()
+            .iter()
+            .any(|d| *d < end
+                && d.saturating_duration_since(Instant::now()) <= Duration::from_secs(2)));
+        drop(socket);
+        let (socket, _) = exchange(
+            &Config::default(),
+            "aa:bb:cc:dd:ee:ff",
+            &mut policy,
+            end,
+            &mut connect,
+            &mut |_| {},
+        )
+        .unwrap();
+        drop(socket);
+        for sent in &history.borrow()[1..] {
+            assert!(!sent
+                .iter()
+                .any(|p| p[0] == 4 || (p[0] == 0x12 && p[1] == 6)));
+        }
+        assert!(events
+            .iter()
+            .any(|e| e == "subscription_cccd_timeout_reconnect"));
+    }
+    #[test]
+    fn rejection_switches_next_request_to_1002_and_softap_joins() {
+        use att::tests::{discovery, discovery_with_service_changed, Fake, JSON};
+        use std::{cell::RefCell, rc::Rc, time::Instant};
+        let mut first = discovery_with_service_changed();
+        first.push_back(vec![0x1d, 22, 0, 1, 0, 255, 255]);
+        let softap = String::from_utf8(JSON.to_vec())
+            .unwrap()
+            .replace("1001", "1002")
+            .replace("5180", "2412")
+            .replace("WiFi", "Car hotspot");
+        let mut second = discovery(512);
+        second.extend([vec![0x13], [vec![0x1d, 5, 0], softap.into_bytes()].concat()]);
+        let history = Rc::new(RefCell::new(Vec::new()));
+        let mut scripts = [first, second].into_iter();
+        let mut connect = || {
+            Ok(TrackedBle {
+                fake: Fake {
+                    replies: scripts.next().unwrap(),
+                    sent: Vec::new(),
+                    echo: false,
+                },
+                history: history.clone(),
+                deadlines: Rc::new(RefCell::new(Vec::new())),
+            })
+        };
+        let mut policy = HandoffPolicy {
+            legacy: true,
+            ..HandoffPolicy::default()
+        };
+        let config = Config {
+            band: 0,
+            ..Config::default()
+        };
+        let end = Instant::now() + Duration::from_secs(15);
+        let error = match exchange(
+            &config,
+            "aa:bb:cc:dd:ee:ff",
+            &mut policy,
+            end,
+            &mut connect,
+            &mut |_| {},
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("expected rejection"),
+        };
+        assert_eq!(error.to_string(), "head_unit_rejected_request");
+        assert!(policy.use_1002);
+        let (socket, reply) = exchange(
+            &config,
+            "aa:bb:cc:dd:ee:ff",
+            &mut policy,
+            end,
+            &mut connect,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(reply.kind, 1002);
+        assert_eq!(reply.ssid, "Car hotspot");
+        join_after_handoff(&config, socket, &reply, || {
+            assert_eq!(history.borrow().len(), 2);
+            Ok(())
+        })
+        .unwrap();
+        for (sent, kind) in history.borrow().iter().zip([1001, 1002]) {
+            let write = sent.iter().find(|p| p[0] == 0x12 && p[1] == 3).unwrap();
+            assert!(std::str::from_utf8(&write[3..])
+                .unwrap()
+                .ends_with(&format!("\"type\":{kind}}}")));
+        }
+        let mut unsupported = reply;
+        unsupported.freq = 5180;
+        assert_eq!(
+            join_after_handoff(&config, (), &unsupported, || -> Result<()> {
+                panic!("unsupported SoftAP joined")
+            })
+            .unwrap_err()
+            .to_string(),
+            "head_unit_band_unsupported:5180"
+        );
+    }
+    #[test]
+    fn policy_key_prefers_car_identity_over_address() {
+        let mut a = device("AA:BB:CC:DD:EE:01");
+        let b = device("AA:BB:CC:DD:EE:02");
+        assert_eq!(device_key(&a), device_key(&b));
+        a.advertisement.car_id.clear();
+        assert_eq!(device_key(&a), "address:aa:bb:cc:dd:ee:01");
+    }
+    #[test]
+    fn band_guard_disconnects_ble_before_join_and_never_joins_unsupported_groups() {
+        use std::{cell::Cell, sync::Mutex};
+        struct Ble<'a>(&'a Cell<bool>);
+        impl Drop for Ble<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        for band in [0, 1] {
+            for freq in [
+                0, 2399, 2400, 2412, 2500, 2501, 4999, 5000, 5180, 5999, 6000, 6500,
+            ] {
+                let config = Config {
+                    band,
+                    ..Config::default()
+                };
+                let reply = oxp_clink::ble::head_unit_reply(format!(
+                    r#"{{"name":"unit","ssid":"DIRECT-unit","psk":"secret-password","mac":"aa:bb:cc:dd:ee:ff","freq":{freq},"port":57209,"type":1001}}"#
+                ).as_bytes()).unwrap();
+                let disconnected = Cell::new(false);
+                let joined = Cell::new(false);
+                let events = Arc::new(Mutex::new(Vec::new()));
+                let sink = events.clone();
+                let link = LinuxClinkLink::new(config.clone())
+                    .unwrap()
+                    .with_listener(Arc::new(move |event| sink.lock().unwrap().push(event)));
+                let result = link.report_connect_result(join_after_handoff(
+                    &config,
+                    Ble(&disconnected),
+                    &reply,
+                    || {
+                        assert!(disconnected.get());
+                        joined.set(true);
+                        Ok(())
+                    },
+                ));
+                let supported =
+                    (2400..=2500).contains(&freq) || (band == 1 && (5000..6000).contains(&freq));
+                assert!(disconnected.get());
+                assert_eq!(joined.get(), supported);
+                assert_eq!(result.is_ok(), supported);
+                let events = events.lock().unwrap();
+                if supported {
+                    assert!(events.is_empty());
+                } else {
+                    let expected = format!("head_unit_band_unsupported:{freq}");
+                    assert_eq!(result.unwrap_err().to_string(), expected);
+                    assert_eq!(events.len(), 1);
+                    assert!(
+                        matches!(&events[0], LinkEvent::Lost { reason } if reason == &expected)
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn unrelated_connect_errors_do_not_expose_credentials() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let link = LinuxClinkLink::new(Config::default())
+            .unwrap()
+            .with_listener(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        let _ = link.report_connect_result::<()>(Err("secret-password".into()));
+        assert!(
+            matches!(&events.lock().unwrap()[0], LinkEvent::Lost { reason } if reason == "link_connect_failed")
+        );
+    }
+    #[test]
+    fn selected_address_never_falls_back_to_another_head_unit() {
+        let a = "AA:BB:CC:DD:EE:01";
+        let b = "AA:BB:CC:DD:EE:02";
+        assert_eq!(
+            select_device(vec![device(a), device(b)], Some(&b.to_lowercase()))
+                .unwrap()
+                .address,
+            b
+        );
+        assert!(select_device(vec![device(a)], Some(b)).is_err());
+        assert!(select_device(vec![device(a), device(b)], None).is_err());
+        assert!(select_device(vec![], None).is_err());
+        assert_eq!(select_device(vec![device(a)], None).unwrap().address, a);
+    }
+    #[test]
+    fn address_builder_validates_before_hardware_access() {
+        assert!(LinuxClinkLink::new(Config::default())
+            .unwrap()
+            .with_address("bad".into())
+            .is_err());
+        let link = LinuxClinkLink::new(Config::default())
+            .unwrap()
+            .with_address("AA:BB:CC:DD:EE:FF".into())
+            .unwrap();
+        assert_eq!(link.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    }
+}

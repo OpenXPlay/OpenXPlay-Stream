@@ -1,0 +1,1 @@
+{"type":"input-capabilities","codecs":["H264","H265"],"screens":[0,1],"touch":true,"keys":[0,1,10],"microphone":false,"keyFrameRequests":true,"reconfigure":"RESTART_SESSION"}
