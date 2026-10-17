@@ -256,8 +256,10 @@ impl PcmMixer {
         require(!s.ended, "PCM stream has ended")?;
         let out = s.resampler.process(bytes)?;
         s.samples.extend(
-            out.chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]])),
+            out.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&b| i16::from_le_bytes(b)),
         );
         Ok(())
     }
@@ -266,8 +268,10 @@ impl PcmMixer {
         if !s.ended {
             let out = s.resampler.finish()?;
             s.samples.extend(
-                out.chunks_exact(2)
-                    .map(|b| i16::from_le_bytes([b[0], b[1]])),
+                out.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&b| i16::from_le_bytes(b)),
             );
             s.ended = true;
         }

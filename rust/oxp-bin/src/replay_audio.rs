@@ -418,8 +418,8 @@ impl ReplayAudio {
             .entry((output.into(), client.into()))
             .or_default();
         t.packets += 1;
-        for b in data.chunks_exact(2) {
-            let v = i16::from_le_bytes([b[0], b[1]]) as f64 / 32768.0;
+        for &b in data.as_chunks::<2>().0 {
+            let v = i16::from_le_bytes(b) as f64 / 32768.0;
             t.squares += v * v;
             t.samples += 1;
         }

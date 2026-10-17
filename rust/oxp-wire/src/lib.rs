@@ -360,7 +360,7 @@ pub fn decode_touch(b: &[u8]) -> Result<Vec<Contact>> {
     )?;
     let mut seen = 0u16;
     let mut out = Vec::new();
-    for c in b[1..].chunks_exact(6) {
+    for c in b[1..].as_chunks::<6>().0 {
         require(
             c[0] <= 9 && seen & (1 << c[0]) == 0 && c[1] <= 1,
             "Invalid contact",

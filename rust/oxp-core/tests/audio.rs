@@ -43,10 +43,12 @@ fn stereo_identity_conversion_and_alias_rejection() {
         let mut b = r.process(&tone(hz)).unwrap();
         b.extend(r.finish().unwrap());
         let s = b
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .skip(100)
             .take(1400)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f64)
+            .map(|&b| i16::from_le_bytes(b) as f64)
             .collect::<Vec<_>>();
         (s.iter().map(|v| v * v).sum::<f64>() / s.len() as f64).sqrt()
     };
@@ -64,7 +66,7 @@ fn mixer_saturates_pads_and_retains_filter_tail() {
     m.end_stream(2).unwrap();
     let b = m.read_frame().unwrap();
     assert_eq!(b.len(), 640);
-    assert!(b.chunks_exact(2).any(|b| b == [255, 127]));
+    assert!(b.as_chunks::<2>().0.contains(&[255, 127]));
     assert!(m.read_frame().is_none());
     m.add_stream(3, 16000, 1).unwrap();
     assert_eq!(m.read_frame().unwrap(), vec![0; 640]);

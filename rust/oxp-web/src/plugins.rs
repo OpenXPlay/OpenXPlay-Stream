@@ -317,7 +317,7 @@ impl Plugins {
     }
     pub fn reserve_receiver(&self, max: usize) -> Option<ReceiverPermit<'_>> {
         self.receivers
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < max).then_some(n + 1)
             })
             .ok()?;
