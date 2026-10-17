@@ -1,3 +1,5 @@
+<p align="center"><b>English</b> · <a href="README-zh.md">简体中文</a></p>
+
 # OpenXPlay-Stream
 
 The output side of an [OpenXPlay](https://github.com/OpenXPlay/OpenXPlay) relay. Stream takes a projection session (video, audio, touch and keys) from the relay and delivers it to software a head unit already has, so nothing is installed on the head unit:
