@@ -387,6 +387,7 @@ fn primary_display_and_hardware_hevc_policy_are_per_screen() {
         h.add_output(o.clone()).unwrap();
     }
     let caps = |width, hardware, latency| OutputCapabilities {
+        prefers_h264: false,
         latency,
         decoders: vec![DecoderSupport {
             codec_string: "hvc1.1.6.L93".into(),
@@ -547,6 +548,7 @@ fn frame_rate_policy_and_restart_forwarding_follow_the_primary_display() {
     hub.add_output(a.clone()).unwrap();
     hub.add_output(b.clone()).unwrap();
     let caps = |preference| OutputCapabilities {
+        prefers_h264: false,
         latency: LatencyClass::Interactive,
         decoders: Vec::new(),
         displays: [(
@@ -626,6 +628,7 @@ fn upstream_capabilities_preserve_hardware_hevc_across_codec_strings_and_avc_joi
     let b = Output::new("clink");
     hub.add_output(a.clone()).unwrap();
     let caps = |codec: &str| OutputCapabilities {
+        prefers_h264: false,
         latency: LatencyClass::Interactive,
         decoders: vec![DecoderSupport {
             codec_string: codec.into(),
@@ -823,4 +826,35 @@ fn stalled_context_does_not_block_publisher_or_other_output() {
     await_context(|| fast.contexts.lock().unwrap().contains(&update));
     hub.close();
     drop(release_tx);
+}
+
+#[test]
+fn main_screen_preference_survives_hub_aggregation_and_updates_negotiation() {
+    let host = Arc::new(Host::default());
+    let hub = Hub::new(host.clone());
+    let output = Output::new("web");
+    hub.add_output(output.clone()).unwrap();
+    let mut caps = OutputCapabilities {
+        decoders: vec![DecoderSupport {
+            codec_string: "hvc1.1.6.L120.B0".into(),
+            hardware: true,
+        }],
+        displays: [(0, DisplayInfo::default())].into(),
+        ..OutputCapabilities::default()
+    };
+    let downstream = output.host.lock().unwrap().clone().unwrap();
+    downstream.capabilities(caps.clone());
+    assert_eq!(hub.session_config().screens[&0].codec, VideoCodec::H265);
+    caps.prefers_h264 = true;
+    downstream.capabilities(caps.clone());
+    assert!(host.caps.lock().unwrap().last().unwrap().prefers_h264);
+    assert_eq!(hub.session_config().screens[&0].codec, VideoCodec::H264);
+    caps.displays = [(1, DisplayInfo::default())].into();
+    downstream.capabilities(caps.clone());
+    assert!(!host.caps.lock().unwrap().last().unwrap().prefers_h264);
+    caps.displays = [(0, DisplayInfo::default())].into();
+    caps.prefers_h264 = false;
+    downstream.capabilities(caps);
+    assert_eq!(hub.session_config().screens[&0].codec, VideoCodec::H265);
+    hub.close();
 }

@@ -21,17 +21,28 @@ impl Default for VideoCodecDecision {
 
 /// Each entry represents one active main-screen output's hardware HEVC support.
 pub fn resolve(outputs: &[bool], requires_avc: bool) -> VideoCodecDecision {
+    resolve_with_preferences(outputs, requires_avc, false)
+}
+
+/// The preference is aggregated from active main-screen outputs only.
+pub fn resolve_with_preferences(
+    outputs: &[bool],
+    requires_avc: bool,
+    prefers_h264: bool,
+) -> VideoCodecDecision {
     let reason = if requires_avc {
         "output-requires-avc"
     } else if outputs.is_empty() {
         "no-main-screen-output"
+    } else if prefers_h264 {
+        "main-screen-output-prefers-h264"
     } else if outputs.iter().any(|hardware| !hardware) {
         "hardware-hevc-unavailable"
     } else {
         "all-main-screen-outputs-hardware-hevc"
     };
     VideoCodecDecision {
-        codec: if !requires_avc && !outputs.is_empty() && outputs.iter().all(|v| *v) {
+        codec: if reason == "all-main-screen-outputs-hardware-hevc" {
             VideoCodec::H265
         } else {
             VideoCodec::H264
@@ -43,6 +54,24 @@ pub fn resolve(outputs: &[bool], requires_avc: bool) -> VideoCodecDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preference_precedence() {
+        for (outputs, avc, preference, reason) in [
+            (
+                vec![true, true],
+                false,
+                true,
+                "main-screen-output-prefers-h264",
+            ),
+            (vec![false], false, true, "main-screen-output-prefers-h264"),
+            (vec![true], true, true, "output-requires-avc"),
+            (vec![], false, true, "no-main-screen-output"),
+        ] {
+            let decision = resolve_with_preferences(&outputs, avc, preference);
+            assert_eq!(decision.codec, VideoCodec::H264);
+            assert_eq!(decision.reason, reason);
+        }
+    }
     #[test]
     fn requires_every_active_receiver_and_respects_avc_outputs() {
         for (outputs, avc, expected) in [

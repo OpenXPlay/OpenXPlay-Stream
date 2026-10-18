@@ -277,3 +277,22 @@ fn preferences_and_restart_are_strict() {
     }
     assert!(validate_json(&serde_json::json!({"type":"restart","screen":0})).is_err());
 }
+
+#[test]
+fn codec_preference_is_optional_and_boolean() {
+    let mut caps: Value =
+        serde_json::from_str(include_str!("../../../spec/vectors/wire/capabilities.json")).unwrap();
+    validate_json(&caps).unwrap();
+    for value in [serde_json::json!(false), serde_json::json!(true)] {
+        caps["prefersH264"] = value;
+        validate_json(&caps).unwrap();
+    }
+    for value in [
+        serde_json::json!(null),
+        serde_json::json!(1),
+        serde_json::json!("true"),
+    ] {
+        caps["prefersH264"] = value;
+        assert!(validate_json(&caps).is_err());
+    }
+}

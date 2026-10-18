@@ -550,8 +550,11 @@ pub fn validate_json(v: &Value) -> Result<()> {
                     "audio",
                     "microphone",
                 ],
-                &[],
+                &["prefersH264"],
             )?;
+            if let Some(preference) = v.get("prefersH264") {
+                boolean(preference)?;
+            }
             enumeration(&v["latency"], &["INTERACTIVE", "BUFFERED"])?;
             for d in v["decoders"].as_array().ok_or("Expected decoders")? {
                 fields(d, &["codecString", "hardware"], &[])?;

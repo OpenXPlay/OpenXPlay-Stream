@@ -3,8 +3,9 @@
 // Created by riko chen on 2026-10-14
 
 import { frameRatePreference } from './frame-rate';
+import { videoCodecPreference } from '../shared/video-codec';
 import { playbackMode } from '../shared/playback';
-import type { FrameRatePreference, PlaybackMode } from '../protocol/json';
+import type { FrameRatePreference, PlaybackMode, VideoCodecPreference } from '../protocol/json';
 
 export type Language = 'en' | 'zh-CN';
 export function selectLanguage(languages: readonly string[]): Language {
@@ -17,6 +18,9 @@ export function selectLanguage(languages: readonly string[]): Language {
 export const strings = {
   en: {
     frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying… CarPlay reconnects in a few seconds',
+    videoCodec: 'Video codec', codecAuto: 'Automatic (recommended)', codecH264: 'H.264 only',
+    codecHint: 'H.264 is the most compatible. Choose it if this screen shows no picture with H.265.',
+    codecInUseH264: 'Now using H.264.', codecInUseH265: 'Now using H.265.',
     playback: 'Playback', smart: 'Smart', quality: 'Quality', speed: 'Speed',
     smartHint: 'Balances smoothness and delay for your network.', qualityHint: 'Smoothest motion, with a little more delay.',
     speedHint: 'Lowest delay; frames may be skipped.',
@@ -47,6 +51,9 @@ export const strings = {
   },
   'zh-CN': {
     frameRate: '帧率', automatic: '自动', applying: '正在应用… CarPlay 将在几秒后重新连接',
+    videoCodec: '视频编码', codecAuto: '自动（推荐）', codecH264: '只用 H.264',
+    codecHint: 'H.264 兼容性最好。如果这台车机用 H.265 时没有画面，请选择它。',
+    codecInUseH264: '当前使用 H.264。', codecInUseH265: '当前使用 H.265。',
     playback: '播放模式', smart: '智能', quality: '质量优先', speed: '速度优先',
     smartHint: '根据网络自动平衡流畅度和延迟。', qualityHint: '画面最流畅，延迟略高。', speedHint: '延迟最低，可能跳过部分画面。',
     resetPositions: '重置按钮位置', settings: '设置', close: '关闭', sound: '声音', microphone: '麦克风', fit: '画面适配',
@@ -84,7 +91,7 @@ export function statusCard(state: StatusState): { headline: TextKey; subline: Te
     state === 'playing' ? 'playingHint' : `${state}Hint`;
   return { headline, subline, hidden: state === 'playing' };
 }
-export interface Preferences { frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean; gear: GearPosition }
+export interface Preferences { videoCodec: VideoCodecPreference; frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean; gear: GearPosition }
 export interface Store { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void }
 export class ReceiverPreferences {
   constructor(private readonly storage: () => Store) {}
@@ -93,7 +100,7 @@ export class ReceiverPreferences {
     try { if (value === null) this.storage().removeItem(`oxp.${key}`); else this.storage().setItem(`oxp.${key}`, value); } catch { }
   }
   load(fragment: URLSearchParams): Preferences {
-    return { frameRate: frameRatePreference(this.read('frameRate')), playback: playbackMode(this.read('playback')), sound: this.read('sound') !== 'false', microphone: this.read('microphone') !== 'false',
+    return { videoCodec: videoCodecPreference(this.read('videoCodec')), frameRate: frameRatePreference(this.read('frameRate')), playback: playbackMode(this.read('playback')), sound: this.read('sound') !== 'false', microphone: this.read('microphone') !== 'false',
       fit: this.read('fit') === 'fill' ? 'fill' : 'fit', developer: fragment.has('debug') || this.read('developer') === 'true', gear: parseGearPosition(this.read('gear')) };
   }
   save(preferences: Preferences): void {

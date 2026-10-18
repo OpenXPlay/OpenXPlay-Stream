@@ -92,7 +92,7 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                     "audio",
                     "microphone",
                 ],
-                &["playback"],
+                &["playback", "videoCodec"],
             )?;
             check(
                 int(&v["version"], 0)
@@ -102,6 +102,9 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
             )?;
             if let Some(mode) = v.get("playback") {
                 check(matches!(mode.as_str(), Some("SMART" | "QUALITY" | "SPEED")))?;
+            }
+            if let Some(codec) = v.get("videoCodec") {
+                check(matches!(codec.as_str(), Some("AUTO" | "H264")))?;
             }
             for d in v["decoders"].as_array().ok_or("Decoders")? {
                 fields(d, &["codecString", "hardware"], &[])?;

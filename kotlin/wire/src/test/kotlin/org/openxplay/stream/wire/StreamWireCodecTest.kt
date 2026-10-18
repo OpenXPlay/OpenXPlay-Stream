@@ -14,7 +14,7 @@ import kotlin.test.*
 
 class StreamWireCodecTest {
     @Test fun everyFramedVectorRoundTrips() {
-        listOf("hello", "capabilities", "capabilities-preferences", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "video", "touch", "audio-format", "mic", "audio", "microphone").forEach { name ->
+        listOf("hello", "capabilities", "capabilities-preferences", "capabilities-h264", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "video", "touch", "audio-format", "mic", "audio", "microphone").forEach { name ->
             val bytes = resource("wire/$name.hex").hexBytes()
             val input = ByteArrayInputStream(bytes)
             val message = assertNotNull(StreamWireCodec.read(input))
@@ -25,7 +25,7 @@ class StreamWireCodecTest {
         }
     }
     @Test fun everyJsonVectorRoundTrips() {
-        listOf("hello", "capabilities", "capabilities-preferences", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "input-capabilities", "audio-format", "mic").forEach { name ->
+        listOf("hello", "capabilities", "capabilities-preferences", "capabilities-h264", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "input-capabilities", "audio-format", "mic").forEach { name ->
             val text = resource("wire/$name.json").trim()
             val message = StreamWireCodec.decode(text.toByteArray())
             assertEquals(Json.parseToJsonElement(text),

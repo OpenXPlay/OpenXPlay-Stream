@@ -295,7 +295,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             } }
             val caps = OutputCapabilities(LatencyClass.INTERACTIVE, decoders, displays,
                 connected.maxOfOrNull { it.int("maxTouchContacts") } ?: 0, emptySet(), connected.flatMap { h -> h["audio"]!!.jsonArray.map { AudioCodec.valueOf(it.jsonPrimitive.content) } }.toSet(),
-                connected.any { it["microphone"]!!.jsonPrimitive.boolean })
+                connected.any { it["microphone"]!!.jsonPrimitive.boolean },
+                prefersH264 = connected.any { h -> h["videoCodec"]?.jsonPrimitive?.content == "H264" && h["displays"]!!.jsonArray.any { it.jsonObject.int("screen") == 0 } })
             if (caps != lastCapabilities) { lastCapabilities = caps; host { it.capabilities(caps) } }
         }
 

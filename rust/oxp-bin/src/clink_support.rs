@@ -176,7 +176,9 @@ impl OutputSink for Sink {
             if let Some(fps) = d.sustained_fps { value["sustainedFps"] = json!(fps); }
             (s.to_string(), value)
         }).collect();
-        self.send(json_message(json!({"type":"capabilities","latency":match c.latency{LatencyClass::Interactive=>"INTERACTIVE",LatencyClass::Buffered=>"BUFFERED"},"decoders":c.decoders.iter().map(|d|json!({"codecString":d.codec_string,"hardware":d.hardware})).collect::<Vec<_>>(),"displays":displays,"touch":c.touch,"keys":c.keys.iter().map(|k|k.wire_code()).collect::<Vec<_>>(),"audio":c.audio.iter().map(|a|match a{AudioCodec::AacLc=>"AAC_LC",AudioCodec::Opus=>"OPUS",AudioCodec::PcmS16le=>"PCM_S16LE"}).collect::<Vec<_>>(),"microphone":c.microphone})));
+        let mut value = json!({"type":"capabilities","latency":match c.latency{LatencyClass::Interactive=>"INTERACTIVE",LatencyClass::Buffered=>"BUFFERED"},"decoders":c.decoders.iter().map(|d|json!({"codecString":d.codec_string,"hardware":d.hardware})).collect::<Vec<_>>(),"displays":displays,"touch":c.touch,"keys":c.keys.iter().map(|k|k.wire_code()).collect::<Vec<_>>(),"audio":c.audio.iter().map(|a|match a{AudioCodec::AacLc=>"AAC_LC",AudioCodec::Opus=>"OPUS",AudioCodec::PcmS16le=>"PCM_S16LE"}).collect::<Vec<_>>(),"microphone":c.microphone});
+        if c.prefers_h264 { value["prefersH264"] = json!(true); }
+        self.send(json_message(value));
     }
     fn request_restart(&self, origin: Origin) {
         let mut s = self.state.lock().unwrap();
@@ -325,6 +327,7 @@ mod tests {
         for rate in (30..=60).step_by(5) {
             let preference = FrameRatePreference::from_wire(&format!("FPS_{rate}")).unwrap();
             sink.capabilities(OutputCapabilities {
+                prefers_h264: rate == 35,
                 latency: LatencyClass::Interactive,
                 decoders: Vec::new(),
                 displays: [(
@@ -349,6 +352,7 @@ mod tests {
                 panic!("expected capabilities")
             };
             oxp_wire::validate_json(&caps).unwrap();
+            assert_eq!(caps.get("prefersH264"), if rate == 35 { Some(&json!(true)) } else { None });
             assert_eq!(caps["displays"]["0"]["frameRate"], format!("FPS_{rate}"));
             assert_eq!(caps["displays"]["0"]["sustainedFps"], 55.0);
             let mut next = rx.recv().unwrap();

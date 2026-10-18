@@ -56,6 +56,7 @@ impl Inner {
     }
     fn report(&self, decoders: &[&str]) {
         self.host().capabilities(OutputCapabilities {
+            prefers_h264: false,
             latency: LatencyClass::Interactive,
             decoders: decoders
                 .iter()

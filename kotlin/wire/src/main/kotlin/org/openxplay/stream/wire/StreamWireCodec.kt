@@ -156,6 +156,7 @@ public object StreamWireCodec {
                 } })
                 put("touch", c.touch); put("keys", keys(c.keys))
                 put("audio", names(c.audio.map { it.name })); put("microphone", c.microphone)
+                if (c.prefersH264) put("prefersH264", true)
             }
             is WireMessage.InputCapabilitiesMessage -> {
                 val c = message.value
@@ -250,7 +251,7 @@ public object StreamWireCodec {
             })
         }
         "capabilities" -> {
-            o.fields("latency", "decoders", "displays", "touch", "keys", "audio", "microphone")
+            o.fields("latency", "decoders", "displays", "touch", "keys", "audio", "microphone", optional = setOf("prefersH264"))
             val displays = o.getValue("displays").jsonObject.map { (key, value) ->
                 val screen = key.toInt(); check(screen in 0..255 && key == screen.toString(), "Invalid screen")
                 val d = value.jsonObject
@@ -268,7 +269,7 @@ public object StreamWireCodec {
                 DecoderSupport(it.string("codecString", true), it.bool("hardware"))
             } }
             WireMessage.Capabilities(OutputCapabilities(LatencyClass.valueOf(o.string("latency")), decoders, displays,
-                o.int("touch", 0, 10), o.keys(), o.enumSet<AudioCodec>("audio"), o.bool("microphone")))
+                o.int("touch", 0, 10), o.keys(), o.enumSet<AudioCodec>("audio"), o.bool("microphone"), if ("prefersH264" in o) o.bool("prefersH264") else false))
         }
         "input-capabilities" -> {
             o.fields("codecs", "screens", "touch", "keys", "microphone", "keyFrameRequests", "reconfigure")

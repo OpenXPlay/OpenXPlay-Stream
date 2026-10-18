@@ -18,6 +18,7 @@ import { CaptureLifecycle } from './capture-lifecycle';
 import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
+import { videoCodecPreference, withVideoCodec } from '../shared/video-codec';
 import { playbackMode, withPlayback } from '../shared/playback';
 import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#video')!;
@@ -127,10 +128,17 @@ function showMic(state: TextKey): void {
   element('mic-hint').textContent = text[status.hint];
   element('mic-retry').hidden = !status.retry || !requestedMic?.request;
 }
+/** The relay decides the codec (an Android relay always uses H.264), so the settings show what is in use. */
+function showCodecInUse(codec: 'H264' | 'H265' | undefined): void {
+  const line = element('video-codec-current');
+  line.hidden = !codec;
+  line.textContent = codec ? text[codec === 'H265' ? 'codecInUseH265' : 'codecInUseH264'] : '';
+}
 function updateSettings(): void {
   for (const key of ['sound', 'developer'] as const) element<HTMLInputElement>(key).checked = preferences[key];
   debug.hidden = !preferences.developer;
   element<HTMLSelectElement>('frame-rate').value = preferences.frameRate;
+  element<HTMLSelectElement>('video-codec').value = preferences.videoCodec;
   element<HTMLSelectElement>('playback').value = preferences.playback;
   element('playback-hint').textContent = text[playbackHint(preferences.playback)];
   element('fit').setAttribute('aria-pressed', String(preferences.fit === 'fit'));
@@ -190,6 +198,13 @@ element<HTMLSelectElement>('playback').onchange = event => {
   preferences.playback = mode; storage.save(preferences); updateSettings();
   if (!initialized) return;
   hello = withPlayback(hello, mode); post({ type: 'hello', hello });
+};
+element<HTMLSelectElement>('video-codec').onchange = event => {
+  const codec = videoCodecPreference((event.target as HTMLSelectElement).value);
+  if (codec === preferences.videoCodec) return;
+  preferences.videoCodec = codec; storage.save(preferences); updateSettings();
+  if (!initialized) return;
+  hello = withVideoCodec(hello, codec); post({ type: 'hello', hello });
 };
 element('mic-retry').onclick = () => { if (requestedMic?.request) void microphone(requestedMic.request, requestedMic.token); };
 for (const id of ['sound-hint', 'card-sound']) element(id).onclick = () => { void audioContext?.resume().then(syncSound).catch(() => {}); };
@@ -407,7 +422,7 @@ async function start(): Promise<void> {
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
       displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
-    hello = withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback);
+    hello = withVideoCodec(withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback), preferences.videoCodec);
     resize();
     worker?.terminate(); void audioContext?.close(); audioContext = null; gain = null;
     let workerFailed = false;
@@ -448,6 +463,7 @@ async function start(): Promise<void> {
           break;
         case 'format':
           releaseAll(); videoWidth = message.format?.width ?? 0; videoHeight = message.format?.height ?? 0;
+          showCodecInUse(message.format?.codec);
           break;
         case 'stats': statistics(message); break;
       }

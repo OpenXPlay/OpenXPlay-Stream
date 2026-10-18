@@ -204,6 +204,7 @@ public data class OutputCapabilities(
     public val keys: Set<KeyCode>,
     public val audio: Set<AudioCodec>,
     public val microphone: Boolean,
+    public val prefersH264: Boolean = false,
 )
 
 public data class ScreenConfig(

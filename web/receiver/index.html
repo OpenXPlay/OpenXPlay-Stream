@@ -49,6 +49,9 @@ Created by riko chen on 2026-10-14 -->
 <option value="FPS_60">60 fps</option>
 </select></label>
 <p id="frame-rate-status" role="status" hidden data-text="applying"></p>
+<div class="row"><label for="video-codec" data-text="videoCodec"></label><select id="video-codec" aria-describedby="video-codec-hint">
+<option value="AUTO" data-text="codecAuto"></option><option value="H264" data-text="codecH264"></option>
+</select><p id="video-codec-hint" class="secondary" data-text="codecHint"></p><p id="video-codec-current" class="secondary" hidden></p></div>
 <div class="row"><label for="playback" data-text="playback"></label><select id="playback" aria-describedby="playback-hint">
 <option value="SMART" data-text="smart"></option>
 <option value="QUALITY" data-text="quality"></option>

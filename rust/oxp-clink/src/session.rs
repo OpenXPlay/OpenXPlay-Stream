@@ -754,10 +754,15 @@ impl ClinkSession {
                 self.update_link(&mut health, now, false)?;
             }
             if owner.sockets.contains_key(&ports.control) && now >= next_heartbeat {
+                // A wall-clock stamp the relay never reads back; a clock before 1970 sends zero
+                // rather than ending the session.
                 let body = Fields(BTreeMap::from([(
                     1,
                     FieldValue::Varint(
-                        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
                     ),
                 )]))
                 .encode()?;
@@ -926,6 +931,7 @@ impl Owner<'_> {
     fn report(&self, wfd: &WfdSource) {
         self.session.shared.snapshot.lock().unwrap().decoders = wfd.decoders.clone();
         self.session.callbacks.capabilities(OutputCapabilities {
+            prefers_h264: false,
             latency: LatencyClass::Interactive,
             decoders: wfd.decoders.clone(),
             displays: BTreeMap::from([(0, self.display.clone())]),

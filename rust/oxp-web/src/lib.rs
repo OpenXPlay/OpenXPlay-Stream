@@ -1290,6 +1290,7 @@ fn report_caps(state: &Arc<Mutex<State>>) {
             .filter_map(|c| c.hello.as_ref())
             .collect();
         let mut caps = OutputCapabilities {
+            prefers_h264: false,
             latency: LatencyClass::Interactive,
             decoders: Vec::new(),
             displays: BTreeMap::new(),
@@ -1359,6 +1360,12 @@ fn report_caps(state: &Arc<Mutex<State>>) {
             }
             caps.touch = caps.touch.max(integer(&h["maxTouchContacts"]) as u32);
             caps.microphone |= h["microphone"] == true;
+            caps.prefers_h264 |= h["videoCodec"] == "H264"
+                && h["displays"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["screen"] == 0);
             for a in h["audio"].as_array().unwrap() {
                 caps.audio.insert(match a.as_str().unwrap() {
                     "AAC_LC" => AudioCodec::AacLc,
@@ -1380,6 +1387,8 @@ fn integer(v: &Value) -> u64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod video_codec_tests;
 
 #[cfg(test)]
 mod send_order_tests {

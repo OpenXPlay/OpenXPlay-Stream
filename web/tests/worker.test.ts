@@ -562,3 +562,17 @@ it('Quality gives a decoder that withholds output one more frame in flight per s
   expect(decoded()).toEqual([0, 33_333, 66_666, 99_999, 133_332, 166_665]);
   clock.mockRestore();
 });
+
+it('forwards codec preference updates and reconnects with truthful decoders', async () => {
+  const hello = vector('hello-video-codec-h264');
+  delete hello.videoCodec;
+  const socket = init(undefined, hello); socket.open(); await welcome(socket);
+  command({ type: 'hello', hello: { ...hello, videoCodec: 'H264' } });
+  expect(socket.json().at(-1)).toEqual({ ...hello, videoCodec: 'H264' });
+  command({ type: 'hello', hello });
+  expect(socket.json().at(-1)).toEqual(hello);
+  command({ type: 'hello', hello: { ...hello, videoCodec: 'H264' } });
+  socket.close(); await vi.advanceTimersByTimeAsync(1000);
+  const next = Socket.instances.at(-1)!; next.open();
+  expect(next.json()[0]).toEqual({ ...hello, videoCodec: 'H264' });
+});

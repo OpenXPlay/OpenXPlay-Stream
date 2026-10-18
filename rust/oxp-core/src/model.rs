@@ -273,6 +273,7 @@ pub enum AudioCodec {
 }
 #[derive(Clone, Debug)]
 pub struct OutputCapabilities {
+    pub prefers_h264: bool,
     pub latency: LatencyClass,
     pub decoders: Vec<DecoderSupport>,
     pub displays: BTreeMap<u32, DisplayInfo>,
@@ -280,6 +281,20 @@ pub struct OutputCapabilities {
     pub keys: BTreeSet<KeyCode>,
     pub audio: BTreeSet<AudioCodec>,
     pub microphone: bool,
+}
+impl Default for OutputCapabilities {
+    fn default() -> Self {
+        Self {
+            prefers_h264: false,
+            latency: LatencyClass::Interactive,
+            decoders: Vec::new(),
+            displays: BTreeMap::new(),
+            touch: 0,
+            keys: BTreeSet::new(),
+            audio: BTreeSet::new(),
+            microphone: false,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct OutputStats {

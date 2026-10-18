@@ -116,7 +116,7 @@ public object WebJsonCodec {
     private val schemas = mapOf(
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
         message("restart"),
-        message("hello", "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
+        message("hello", "videoCodec" to optional(literal("AUTO", "H264")), "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
             "decoders" to array(obj("codecString" to nonempty, "hardware" to bool)), "displays" to array(display),
             "maxTouchContacts" to range(10), "audio" to array(audioCodec), "microphone" to bool),
         message("welcome", "plugins" to optional(obj("host" to literal("/plugins/host/index.html"))), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "clientId" to nonempty,

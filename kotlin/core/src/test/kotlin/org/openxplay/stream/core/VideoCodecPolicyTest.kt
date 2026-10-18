@@ -24,6 +24,17 @@ class VideoCodecPolicyTest {
         assertEquals(VideoCodec.H264, VideoCodecPolicy.resolve(listOf(hevc), requiresAvc = true).codec)
         assertEquals(VideoCodec.H264, VideoCodecPolicy.resolve(listOf(hevc.copy(displays = emptyMap()))).codec)
     }
+    @Test fun mainScreenPreferenceOverridesHardwareButNotAvcRequirement() {
+        val preferred = output().copy(prefersH264 = true)
+        val decision = VideoCodecPolicy.resolve(listOf(output(), preferred))
+        assertEquals(VideoCodec.H264, decision.codec)
+        assertEquals("main-screen-output-prefers-h264", decision.reason)
+        assertEquals("output-requires-avc", VideoCodecPolicy.resolve(listOf(preferred), true).reason)
+        val secondary = preferred.copy(displays = mapOf(ScreenId(1) to DisplayInfo(1280, 720, 160, 60.0)))
+        assertEquals(VideoCodec.H265, VideoCodecPolicy.resolve(listOf(output(), secondary)).codec)
+        assertEquals("no-main-screen-output", VideoCodecPolicy.resolve(listOf(secondary)).reason)
+        assertEquals("main-screen-output-prefers-h264", VideoCodecPolicy.resolve(listOf(preferred.copy(decoders = emptyList()))).reason)
+    }
     @Test fun limitsFlappingAndRearmsAfterStability() {
         val limiter = VideoCodecRestartLimiter()
         limiter.changed(0)

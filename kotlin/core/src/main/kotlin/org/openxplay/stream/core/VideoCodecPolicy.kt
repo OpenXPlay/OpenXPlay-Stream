@@ -14,6 +14,7 @@ public object VideoCodecPolicy {
         val reason = when {
             requiresAvc -> "output-requires-avc"
             viewers.isEmpty() -> "no-main-screen-output"
+            viewers.any { it.prefersH264 } -> "main-screen-output-prefers-h264"
             viewers.any { output -> output.decoders.none { it.hardware && isHevc(it.codecString) } } -> "hardware-hevc-unavailable"
             else -> "all-main-screen-outputs-hardware-hevc"
         }

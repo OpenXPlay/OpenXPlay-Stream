@@ -7,6 +7,7 @@ export type I64 = string;
 export type AudioCodec = 'AAC_LC' | 'OPUS' | 'PCM_S16LE';
 export interface SessionState { id: I64; phase: 'CONNECTING' | 'ACTIVE' | 'RECONNECTING' | 'ENDED'; reason?: string }
 export type FrameRatePreference = 'AUTO' | 'FPS_30' | 'FPS_35' | 'FPS_40' | 'FPS_45' | 'FPS_50' | 'FPS_55' | 'FPS_60';
+export type VideoCodecPreference = 'AUTO' | 'H264';
 export type PlaybackMode = 'SMART' | 'QUALITY' | 'SPEED';
 export interface DisplayInfo {
   screen: number; width: number; height: number; dpr: number; refreshHz: number;
@@ -15,7 +16,7 @@ export interface DisplayInfo {
 }
 export interface Hello {
   type: 'hello'; version: 0; token: string; decoders: { codecString: string; hardware: boolean }[];
-  playback?: PlaybackMode; displays: DisplayInfo[]; maxTouchContacts: number; audio: AudioCodec[]; microphone: boolean;
+  playback?: PlaybackMode; videoCodec?: VideoCodecPreference; displays: DisplayInfo[]; maxTouchContacts: number; audio: AudioCodec[]; microphone: boolean;
 }
 export interface VideoFormat { codec: 'H264' | 'H265'; codecString: string; config: string; width: number; height: number; fpsHint?: number }
 export interface AudioFormat { role: 'MEDIA' | 'ALERT' | 'VOICE' | 'TELEPHONY' | 'OTHER'; codec: AudioCodec; sampleRate: number; channels: number; config?: string }
@@ -93,7 +94,7 @@ const diagnosticFields = [
 ];
 const schemas: Record<string, Validator> = {
   restart: object({ type: literal('restart') }),
-  hello: object({ playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
+  hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
   welcome: object({ plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
   session: object({ type: literal('session'), session }),

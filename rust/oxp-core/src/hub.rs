@@ -321,6 +321,7 @@ impl Hub {
             .filter_map(|d| s.caps.get(d.output.id()))
             .collect();
         let mut c = OutputCapabilities {
+            prefers_h264: false,
             latency: LatencyClass::Interactive,
             decoders: Vec::new(),
             displays: BTreeMap::new(),
@@ -355,6 +356,7 @@ impl Hub {
             c.keys.extend(&v.keys);
             c.audio.extend(&v.audio);
             c.microphone |= v.microphone;
+            c.prefers_h264 |= v.displays.contains_key(&0) && v.prefers_h264;
         }
         // The primary interactive display wins even when a buffered output was attached first.
         if let Some(primary) = caps
@@ -563,7 +565,12 @@ fn derive(s: &State) -> SessionConfig {
                     })
                     .collect();
                 let hevc = s.input.codecs.contains(&VideoCodec::H265)
-                    && crate::video_codec_policy::resolve(&hardware, false).codec
+                    && crate::video_codec_policy::resolve_with_preferences(
+                        &hardware,
+                        false,
+                        screen == 0 && viewers.iter().any(|c| c.prefers_h264),
+                    )
+                    .codec
                         == VideoCodec::H265;
                 (
                     screen,
