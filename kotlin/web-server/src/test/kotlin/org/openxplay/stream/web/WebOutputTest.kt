@@ -6,6 +6,7 @@ package org.openxplay.stream.web
 
 import java.io.Closeable
 import java.io.EOFException
+import java.net.InetAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.file.Files
@@ -601,7 +602,8 @@ class WebOutputTest {
         } finally { web.close() }
     }
 
-    @Test fun tlsHandshakeUsingGeneratedPkcs12() {
+    /** Server and client contexts for a generated localhost certificate. */
+    private fun tlsContexts(): Pair<SSLContext, SSLContext> {
         val keytool = Path.of(System.getProperty("java.home"), "bin", "keytool")
         assumeTrue(Files.isExecutable(keytool), "JDK keytool unavailable")
         val storePath = root.resolve("server.p12")
@@ -619,12 +621,51 @@ class WebOutputTest {
         val serverContext = SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }
         val trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(store) }
         val clientContext = SSLContext.getInstance("TLS").apply { init(null, trust.trustManagers, null) }
+        return serverContext to clientContext
+    }
+
+    @Test fun tlsHandshakeUsingGeneratedPkcs12() {
+        val (serverContext, clientContext) = tlsContexts()
         val web = output(serverContext); web.open(NoopHost)
         try {
             val socket = clientContext.socketFactory.createSocket("127.0.0.1", web.awaitListening()) as SSLSocket
             socket.sslParameters = socket.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
             TestClient(socket).use { client -> client.hello(); assertEquals("welcome", client.json()["type"]!!.jsonPrimitive.content) }
         } finally { web.close() }
+    }
+
+    @Test fun plainHttpOnTheTlsPortIsRedirectedToHttps() {
+        val (serverContext, _) = tlsContexts()
+        val web = output(serverContext); web.open(NoopHost)
+        fun exchange(port: Int, request: String): String = Socket("127.0.0.1", port).use { socket ->
+            socket.soTimeout = 10_000
+            socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII)); socket.shutdownOutput()
+            socket.getInputStream().readBytes().decodeToString()
+        }
+        try {
+            val port = web.awaitListening()
+            val response = exchange(port, "GET /receiver/?code=1 HTTP/1.1\r\nHost: 127.0.0.1:$port\r\n\r\n")
+            assertTrue(response.startsWith("HTTP/1.1 302 "), response)
+            assertTrue("Location: https://127.0.0.1:$port/receiver/?code=1\r\n" in response, response)
+            assertTrue("Cache-Control: no-store\r\n" in response, response)
+            // Without a valid Host there is nowhere safe to send the browser.
+            assertTrue(exchange(port, "GET / HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 400"))
+            assertTrue(exchange(port, "GET / HTTP/1.1\r\nHost: a/b\r\n\r\n").startsWith("HTTP/1.1 400"))
+        } finally { web.close() }
+    }
+
+    @Test fun consumedInputSupportIsDetectedWithoutAConnection() {
+        assertTrue(TlsPort.supportsConsumedInput(tlsContexts().first.socketFactory))
+        val legacy = object : SSLSocketFactory() {
+            override fun getDefaultCipherSuites(): Array<String> = emptyArray()
+            override fun getSupportedCipherSuites(): Array<String> = emptyArray()
+            override fun createSocket(s: Socket, host: String, port: Int, autoClose: Boolean): Socket = throw UnsupportedOperationException()
+            override fun createSocket(host: String, port: Int): Socket = throw UnsupportedOperationException()
+            override fun createSocket(host: String, port: Int, local: InetAddress, localPort: Int): Socket = throw UnsupportedOperationException()
+            override fun createSocket(host: InetAddress, port: Int): Socket = throw UnsupportedOperationException()
+            override fun createSocket(host: InetAddress, port: Int, local: InetAddress, localPort: Int): Socket = throw UnsupportedOperationException()
+        }
+        assertFalse(TlsPort.supportsConsumedInput(legacy))
     }
 }
 

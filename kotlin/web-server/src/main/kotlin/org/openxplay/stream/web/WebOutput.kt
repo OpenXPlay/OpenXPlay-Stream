@@ -253,6 +253,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         val hostQueue = HostQueue("oxp-$id-host", HOST_QUEUE_CAPACITY)
         val clients = linkedMapOf<String, Client>()
         val sockets = mutableSetOf<Socket>()
+        /** TLS layered per connection (see [TlsPort]); set once before the first accept. */
+        @Volatile var sniff = false
         val pluginSockets = mutableSetOf<Socket>()
         val mediaConnections = java.util.concurrent.atomic.AtomicInteger()
         private var lastCapabilities: OutputCapabilities? = null
@@ -320,7 +322,10 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
 
         fun accept() {
             try {
-                val listener = config.sslContext?.serverSocketFactory?.createServerSocket() ?: ServerSocket()
+                // With TLS, layer it per connection when possible, so plain HTTP on this port can be redirected.
+                val tls = config.sslContext
+                sniff = tls != null && TlsPort.supportsConsumedInput(tls.socketFactory)
+                val listener = if (tls != null && !sniff) tls.serverSocketFactory.createServerSocket() else ServerSocket()
                 server = listener
                 listener.reuseAddress = true
                 listener.bind(InetSocketAddress(config.bindAddress, config.port))
@@ -340,7 +345,25 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             finally { try { server?.close() } catch (_: Exception) { } }
         }
 
-        private fun connection(socket: Socket) {
+        /** The TLS socket, or null once plain HTTP was answered with a redirect to https. */
+        private fun secured(raw: Socket): Socket? {
+            try {
+                raw.soTimeout = TimeUnit.SECONDS.toMillis(5).toInt()
+                val first = raw.getInputStream().read()
+                if (first == TlsPort.HANDSHAKE) {
+                    raw.soTimeout = 0
+                    val tls = TlsPort.wrap(checkNotNull(config.sslContext).socketFactory, raw, byteArrayOf(first.toByte()))
+                    if (synchronized(lock) { sockets.remove(raw) && sockets.add(tls) }) return tls
+                    safelyClose(tls); return null
+                }
+                if (first >= 0) { TlsPort.redirect(raw, first); drainBeforeClose(raw) }
+            } catch (_: Exception) { }
+            safelyClose(raw); synchronized(lock) { sockets.remove(raw) }
+            return null
+        }
+
+        private fun connection(accepted: Socket) {
+            val socket = if (!sniff) accepted else secured(accepted) ?: return
             var upgraded = false
             var mediaReserved = false
             var client: Client? = null
