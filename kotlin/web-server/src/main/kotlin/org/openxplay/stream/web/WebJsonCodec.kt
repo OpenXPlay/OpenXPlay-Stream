@@ -27,8 +27,8 @@ public object WebJsonCodec {
         val type = (obj["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (type == null || schemas[type]?.invoke(obj) != true) throw WireFormatException("Invalid JSON message")
         val allowed = when (direction) {
-            Direction.CLIENT_TO_RELAY -> setOf("display-settings", "hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info")
-            Direction.RELAY_TO_CLIENT -> setOf("display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
+            Direction.CLIENT_TO_RELAY -> setOf("fullscreen-exit", "display-settings", "hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info")
+            Direction.RELAY_TO_CLIENT -> setOf("view-area", "display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
             null -> schemas.keys
         }
         if (type !in allowed) throw WireFormatException("Wrong message direction")
@@ -115,6 +115,12 @@ public object WebJsonCodec {
     private fun message(type: String, vararg fields: Pair<String, (JsonElement?) -> Boolean>): Pair<String, (JsonElement?) -> Boolean> =
         type to obj("type" to literal(type), *fields)
     private val schemas = mapOf(
+        "view-area" to { value: JsonElement? ->
+            obj("type" to literal("view-area"), "x" to integer, "y" to integer, "width" to positiveInt, "height" to positiveInt,
+                "canvasWidth" to positiveInt, "canvasHeight" to positiveInt)(value) && (value as JsonObject).let {
+                it.getValue("x").jsonPrimitive.double + it.getValue("width").jsonPrimitive.double <= it.getValue("canvasWidth").jsonPrimitive.double &&
+                it.getValue("y").jsonPrimitive.double + it.getValue("height").jsonPrimitive.double <= it.getValue("canvasHeight").jsonPrimitive.double } },
+        message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display),
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
         message("display-settings", "resolution" to literal("auto", "1080p", "720p", "screen"), "iconSize" to literal("small", "standard", "large")),
         message("restart"),

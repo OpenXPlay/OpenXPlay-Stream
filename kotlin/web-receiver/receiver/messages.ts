@@ -10,7 +10,7 @@ export interface AudioBufferDebug {
 export interface AudioDebug {
   stream: number; packets: number; maxArrivalGapMs: number; decoderOutputs: number; maxDecoderOutputGapMs: number;
 }
-export type PageCommand = import('../protocol/json').DisplaySettings |
+export type PageCommand = import('../protocol/json').FullscreenExit | import('../protocol/json').DisplaySettings |
   { type: 'receiver-info'; info: import('../protocol/json').ReceiverInfo } |
   { type: 'page-metrics'; metrics: Partial<Stats> } |
   { type: 'init'; canvas: OffscreenCanvas; url: string; hello: Hello; queueDepth: 0 | 1 } |
@@ -26,7 +26,7 @@ export type PageCommand = import('../protocol/json').DisplaySettings |
   { type: 'restart' } |
   { type: 'fit'; fit: 'fit' | 'fill' } |
   { type: 'stop' };
-export type WorkerNotice = { type: 'display-disconnected' } | import('../protocol/json').DisplaySettings |
+export type WorkerNotice = { type: 'view-area'; area: import('../protocol/json').ViewArea | undefined } | { type: 'display-disconnected' } | import('../protocol/json').DisplaySettings |
   { type: 'retry'; delayMs: number; attempt: number } |
   { type: 'playing' } |
   { type: 'hold'; active: boolean } |

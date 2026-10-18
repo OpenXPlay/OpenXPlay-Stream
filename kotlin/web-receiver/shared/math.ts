@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-14
 
+import type { ViewArea } from '../protocol/json';
+
 export interface Rect { x: number; y: number; width: number; height: number }
-export function videoRect(width: number, height: number, videoWidth: number, videoHeight: number, fit: 'fit' | 'fill' = 'fit'): Rect {
+export function videoRect(width: number, height: number, videoWidth: number, videoHeight: number, fit: 'fit' | 'fill' = 'fit', area?: ViewArea): Rect {
+  if (area) { videoWidth = area.width; videoHeight = area.height; }
   if ([width, height, videoWidth, videoHeight].some(n => !Number.isFinite(n) || n <= 0)) return { x: 0, y: 0, width: 0, height: 0 };
   // The filled axis uses the container size exactly so edge taps never fall outside by rounding.
   if ((width / videoWidth <= height / videoHeight) === (fit === 'fit')) {
@@ -13,11 +16,12 @@ export function videoRect(width: number, height: number, videoWidth: number, vid
   const w = videoWidth * (height / videoHeight);
   return { x: (width - w) / 2, y: 0, width: w, height };
 }
-export function mapTouch(x: number, y: number, rect: Rect, clamp = false): { x: number; y: number } | null {
+export function mapTouch(x: number, y: number, rect: Rect, clamp = false, area?: ViewArea): { x: number; y: number } | null {
   if (rect.width <= 0 || rect.height <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) return null;
   const nx = (x - rect.x) / rect.width, ny = (y - rect.y) / rect.height;
   if (!clamp && (nx < 0 || nx > 1 || ny < 0 || ny > 1)) return null;
-  return { x: Math.max(0, Math.min(1, nx)), y: Math.max(0, Math.min(1, ny)) };
+  const u = Math.max(0, Math.min(1, nx)), v = Math.max(0, Math.min(1, ny));
+  return area ? { x: (area.x + u * area.width) / area.canvasWidth, y: (area.y + v * area.height) / area.canvasHeight } : { x: u, y: v };
 }
 // Offset is relay clock minus client clock. All timestamps are monotonic microseconds.
 export function clockSample(t0: bigint, t1: bigint, t2: bigint, t3: bigint): { offsetUs: bigint; rttUs: bigint } | null {

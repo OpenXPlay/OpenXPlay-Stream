@@ -19,7 +19,8 @@ let hello: Hello, url = '', socket: WebSocket | null = null, stopped = false, vi
 let restartSession: string | null = null;
 let restartChangesFrameRate = true;
 let playing = false, fit: 'fit' | 'fill' = 'fit';
-let displaySettingsSupported = false;
+let displaySettingsSupported = false, viewAreaSupported = false;
+let viewArea: import('../protocol/json').ViewArea | undefined;
 let ready = false, active = false, retry = 0, reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let decoder: VideoDecoder | null = null, format: VideoFormat | null = null, config: VideoDecoderConfig | null = null;
 let generation = 0, waiting = true, sessionId: string | null = null, sequence = 0;
@@ -244,9 +245,12 @@ function render(): void {
   if (!item) return;
   try {
     if (!context || !visible || !active || !format) { skipped++; return; }
-    const r = videoRect(canvas.width, canvas.height, format?.width ?? item.frame.displayWidth, format?.height ?? item.frame.displayHeight, fit);
+    const r = videoRect(canvas.width, canvas.height, format?.width ?? item.frame.displayWidth, format?.height ?? item.frame.displayHeight, fit, viewArea);
     context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(item.frame, r.x, r.y, r.width, r.height);
+    if (viewArea) {
+      const sx = item.frame.displayWidth / viewArea.canvasWidth, sy = item.frame.displayHeight / viewArea.canvasHeight;
+      context.drawImage(item.frame, viewArea.x * sx, viewArea.y * sy, viewArea.width * sx, viewArea.height * sy, r.x, r.y, r.width, r.height);
+    } else context.drawImage(item.frame, r.x, r.y, r.width, r.height);
     presented = { at: now, ptsUs: item.frame.timestamp };
     const resumed = hold.deadline !== null;
     updateHold('frame');
@@ -312,11 +316,13 @@ function session(next: import('../protocol/json').SessionState): void {
 function control(message: JsonMessage): void {
   switch (message.type) {
     case 'welcome':
+      viewAreaSupported = message.features?.includes('view-area') ?? false;
       displaySettingsSupported = message.features?.includes('display-settings') ?? false;
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
       notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
       session(message.session); break;
     case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
+    case 'view-area': if (ready && viewAreaSupported) { viewArea = message; notice({ type: 'view-area', area: viewArea }); } break;
     case 'session': session(message.session); break;
     case 'audio-format': if (ready) audioFormat(message.stream, message.format); break;
     case 'mic':
@@ -400,7 +406,7 @@ function media(data: ArrayBuffer): void {
 }
 function connect(): void {
   if (stopped) return;
-  ready = false; displaySettingsSupported = false; notice({ type: 'display-disconnected' });
+  ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' });
   notice({ type: 'status', text: 'Connecting…' });
   const current = new WebSocket(url); socket = current; current.binaryType = 'arraybuffer';
   current.onopen = () => {
@@ -417,7 +423,7 @@ function connect(): void {
   current.onerror = () => { updateHold('interrupt'); notice({ type: 'status', text: 'Connection failed' }); };
   current.onclose = () => {
     if (socket !== current) return;
-    ready = false; displaySettingsSupported = false; notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
+    ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
     notice({ type: 'status', text: 'Disconnected; reconnecting…' });
     if (!stopped) {
@@ -463,6 +469,7 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
       restartChangesFrameRate = effectiveFrameRate(hello.displays[0]) !== effectiveFrameRate(message.hello.displays[0]);
       hello = message.hello; setPlayback(playbackMode(hello.playback)); if (ready) send({ ...hello, token: '' }); break;
     case 'display-settings': if (ready && displaySettingsSupported) send(message); break;
+    case 'fullscreen-exit': if (ready) send(message); break;
     case 'restart': if (ready) { restartSession = restartChangesFrameRate ? sessionId ?? '0' : null; playing = false; send({ type: 'restart' }); } break;
     case 'fit': fit = message.fit; break;
     case 'receiver-info': receiverInfo = message.info; if (ready) send(receiverInfo); break;

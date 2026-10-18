@@ -45,6 +45,7 @@ public data class WebOutputConfig(
     public val displaySettings: DisplaySettingsPort? = null,
     /** The shell serving this output, shown on the head-unit page next to the page's own version. */
     public val relay: RelayInfo? = null,
+    public val viewArea: ViewAreaPort? = null,
 ) {
     init {
         require(port in 0..65535 && maxClients > 0 && queueDurationUs >= 0 && sendBufferBytes >= 0 && writeTimeoutMillis > 0)
@@ -117,6 +118,13 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             if (runtime === run) { run.settingsListener = listener; true } else false
         }
         if (!retained) listener?.close()
+        val areaListener = config.viewArea?.listen { area -> synchronized(lock) {
+            if (runtime === run) run.clients.values.filter { it.hello != null && !it.closing }.forEach { it.json(area.message()) }
+        } }
+        val areaRetained = synchronized(lock) {
+            if (runtime === run) { run.areaListener = areaListener; true } else false
+        }
+        if (!areaRetained) areaListener?.close()
         run.reportCapabilities()
         thread("accept") { run.accept() }
     }
@@ -212,6 +220,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             }
         }
         run.settingsListener?.close()
+        run.areaListener?.close()
         run.executor.execute {
             try { run.server?.close() } catch (_: Exception) { }
             synchronized(lock) { run.clients.values.forEach { it.wake.release() }; run.sockets.toList() }.forEach { safelyClose(it) }
@@ -268,6 +277,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         }
 
         var settingsListener: AutoCloseable? = null
+        var areaListener: AutoCloseable? = null
         var lastRestartNanos: Long? = null
 
         fun reportCapabilities() {
@@ -516,8 +526,9 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                         queueDurationUs = playbackQueueDurationUs(message["playback"]?.jsonPrimitive?.content, config.queueDurationUs)
                         queues.values.forEach { it.maxDurationUs = queueDurationUs }
                         if (first) {
-                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay))
+                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay, config.viewArea != null))
                             config.displaySettings?.let { json(it.current().message()) }
+                            config.viewArea?.current()?.let { json(it.message()) }
                         }
                         formats.forEach { (screen, format) ->
                             val before = format.codec != VideoCodec.H265 || previous?.get("decoders")?.jsonArray?.any {
@@ -580,6 +591,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     }, stampPong = true)
                 }
                 "pong" -> Unit // The browser initiates clock synchronization in v0.
+                "fullscreen-exit" -> run.report(clientId to "fullscreen-exit") { it.receiverDiagnostics(origin, "fullscreen-exit", message.toString()) }
                 "receiver-info" -> run.report(clientId to "receiver-info") { it.receiverDiagnostics(origin, "receiver-info", message.toString()) }
                 "stats" -> {
                     // The relay's own counter rides along with the receiver's report for this client.

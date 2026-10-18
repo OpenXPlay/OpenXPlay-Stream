@@ -6,7 +6,7 @@ import { collectReceiverInfo, codecPowerEfficient } from '../shared/receiver-inf
 import { codecCandidates, probeDecoders, estimateRefreshHz, audioCapabilities } from '../shared/capabilities';
 import { mapTouch, renderQueueDepth, videoRect } from '../shared/math';
 import { DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
-import type { DisplaySettings } from '../protocol/json';
+import type { ViewArea, DisplaySettings } from '../protocol/json';
 import type { Hello } from '../protocol/json';
 import type { TouchContact } from '../protocol/binary';
 import type { PageCommand, WorkerNotice } from './messages';
@@ -22,7 +22,7 @@ import { version } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
 import { videoCodecPreference, withVideoCodec } from '../shared/video-codec';
 import { playbackMode, withPlayback } from '../shared/playback';
-import { FullscreenIntent } from './fullscreen';
+import { FullscreenExitHistory, FullscreenIntent } from './fullscreen';
 import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#video')!;
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -40,10 +40,11 @@ for (const node of document.querySelectorAll<HTMLElement>('[data-text]')) node.t
 canvas.setAttribute('aria-label', text.projection);
 const gear = element<HTMLButtonElement>('gear'); gear.setAttribute('aria-label', text.settings);
 const settings = element<HTMLDialogElement>('settings');
+let viewArea: ViewArea | undefined;
 let uiState: StatusState = 'connecting';
 const pluginSlot = new PluginSlot(() => {
   const box = canvas.getBoundingClientRect(), g = gear.getBoundingClientRect();
-  const r = videoRect(box.width, box.height, videoWidth, videoHeight, preferences.fit);
+  const r = videoRect(box.width, box.height, videoWidth, videoHeight, preferences.fit, viewArea);
   return { locale: language, developer: preferences.developer, theme: 'dark', reducedMotion: reducedMotion(), viewport: { w: innerWidth, h: innerHeight },
     video: { x: box.x + r.x, y: box.y + r.y, w: r.width, h: r.height },
     gear: { gap: parseFloat(getComputedStyle(document.documentElement).fontSize) * .5, x: g.x, y: g.y, w: g.width, h: g.height, faded: gear.classList.contains('faded'), side: g.x + g.width / 2 < innerWidth / 2 ? 'left' : 'right' }, channel: '/plugins/channel' };
@@ -157,12 +158,22 @@ settings.addEventListener('close', () => { pluginSlot.visibility(true); wakeGear
 document.addEventListener('pointerdown', event => { if (event.target !== canvas) wakeGear(); }, { passive: true });
 const fullscreen = new FullscreenIntent(!!document.fullscreenEnabled, () => localStorage);
 const fullscreenHint = element('fullscreen-hint');
+const restoreSwitch = element<HTMLInputElement>('fullscreen-restore');
+restoreSwitch.checked = fullscreen.restore;
+restoreSwitch.onchange = () => { fullscreen.setRestore(restoreSwitch.checked); fullscreenState(); };
+const fullscreenHistory = new FullscreenExitHistory();
+let pendingFullscreenExit = false;
+function reportFullscreenExit(): void {
+  if (!pendingFullscreenExit || document.hidden || !hello) return;
+  pendingFullscreenExit = false;
+  post({ type: 'fullscreen-exit', hiddenMs: fullscreenHistory.take(performance.now()), display: measuredDisplay() });
+}
 function requestFullscreen(): void {
   void document.documentElement.requestFullscreen?.().catch(() => { element('fullscreen-state').textContent = text.fullscreenUnavailable; });
 }
 // Capture before canvas controls: the restore gesture must never become a CarPlay touch.
 document.addEventListener('pointerdown', event => {
-  if (event.target instanceof Node && element('fullscreen').contains(event.target)) return;
+  if (settings.open || (event.target instanceof Node && element('fullscreen').contains(event.target))) return;
   fullscreen.pointerDown(event, requestFullscreen);
 }, { capture: true });
 function fullscreenState(): void {
@@ -173,7 +184,9 @@ function fullscreenState(): void {
   element('fullscreen-state').textContent = !document.fullscreenEnabled ? text.fullscreenUnavailable : on ? text.enabled : text.off;
 }
 document.addEventListener('fullscreenchange', () => {
-  fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined);
+  if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) {
+    pendingFullscreenExit = true; requestAnimationFrame(reportFullscreenExit);
+  }
   fullscreenState(); resize();
 }); fullscreenState();
 element('fullscreen').onclick = () => {
@@ -391,7 +404,7 @@ function displayReportSeed(): void {
 }
 function position(event: PointerEvent, clamp: boolean) {
   const box = canvas.getBoundingClientRect();
-  return mapTouch(event.clientX - box.left, event.clientY - box.top, videoRect(box.width, box.height, videoWidth, videoHeight, preferences.fit), clamp);
+  return mapTouch(event.clientX - box.left, event.clientY - box.top, videoRect(box.width, box.height, videoWidth, videoHeight, preferences.fit, viewArea), clamp, viewArea);
 }
 canvas.addEventListener('pointerdown', event => {
   event.preventDefault();
@@ -417,7 +430,8 @@ canvas.addEventListener('pointerup', event => {
 });
 canvas.addEventListener('pointercancel', releaseAll);
 canvas.addEventListener('lostpointercapture', event => { if (contacts.has(event.pointerId)) releaseAll(); });
-document.addEventListener('visibilitychange', () => { releaseAll(); post({ type: 'visibility', visible: !document.hidden }); });
+document.addEventListener('visibilitychange', () => { fullscreenHistory.visibility(document.hidden, performance.now());
+  if (!document.hidden) requestAnimationFrame(reportFullscreenExit); releaseAll(); post({ type: 'visibility', visible: !document.hidden }); });
 window.addEventListener('pagehide', () => { stopCapture(); void audioContext?.close(); releaseAll(); post({ type: 'stop' }); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 new ResizeObserver(resize).observe(canvas);
@@ -474,9 +488,11 @@ async function start(): Promise<void> {
         case 'hold': updatePlayback(message); break;
         case 'ended': updatePlayback(message); break;
         case 'playing': element('frame-rate-status').hidden = true; updatePlayback(message); wakeGear(); break;
-        case 'display-disconnected': displayGate.welcome(); updateDisplaySettings(); break;
+        case 'view-area': releaseAll(); viewArea = message.area; break;
+        case 'display-disconnected': fullscreen.viewAreas = false; displayGate.welcome(); updateDisplaySettings(); break;
         case 'display-settings': currentDisplaySettings = message; updateDisplaySettings(); break;
         case 'welcome':
+          fullscreen.viewAreas = message.features?.includes('view-area') ?? false;
           displayGate.welcome(message.features); updateDisplaySettings();
           pluginSlot.configure(message);
           if (!receiverInfoStarted) { receiverInfoStarted = true; void collectReceiverInfo().then(info => post({ type: 'receiver-info', info })); }

@@ -4,7 +4,7 @@
 
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { FullscreenIntent } from '../receiver/fullscreen';
+import { FullscreenExitHistory, FullscreenIntent } from '../receiver/fullscreen';
 import { strings, type Store } from '../receiver/ui';
 import type { Hello } from '../protocol/json';
 const display = (JSON.parse(readFileSync(new URL('../spec/vectors/web/hello-viewport.json', import.meta.url), 'utf8')) as Hello).displays[0];
@@ -59,4 +59,27 @@ it('wires the bilingual unobtrusive overlay and capture before CarPlay pointer h
   expect(main).toContain('fullscreen.pointerDown(event, requestFullscreen)');
   expect(main).toContain('{ capture: true }');
   expect(main).toContain('fullscreen.display(measuredDisplay())');
+});
+
+it('restore defaults on, persists off, passes CarPlay touches and reports real sizes with view-area', () => {
+  const saved = store(), state = new FullscreenIntent(true, () => saved);
+  const full = { ...display, fullscreen: true, viewport: { width: 1920, height: 1080 } };
+  state.changed(true, full);
+  expect(state.changed(false)).toBe(true);
+  expect(state.display(display)).toEqual({ ...full });
+  state.viewAreas = true; expect(state.display(display)).toEqual(display);
+  state.setRestore(false); expect(state.pending).toBe(false);
+  const event = { preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() }, request = vi.fn();
+  expect(state.pointerDown(event, request)).toBe(false); expect(request).not.toHaveBeenCalled();
+  expect(new FullscreenIntent(true, () => saved).restore).toBe(false);
+  state.setRestore(true); expect(state.pending).toBe(true);
+  state.changed(true); state.toggle(vi.fn(), vi.fn()); expect(state.changed(false)).toBe(false);
+});
+it('associates only the recent hidden interval with the exit and consumes it once', () => {
+  const history = new FullscreenExitHistory();
+  expect(history.take(10)).toBeNull();
+  history.visibility(true, 100); history.visibility(false, 1600);
+  expect(history.take(1620)).toBe(1500); expect(history.take(1630)).toBeNull();
+  history.visibility(true, 2000); history.visibility(false, 3000);
+  expect(history.take(6000)).toBeNull();
 });

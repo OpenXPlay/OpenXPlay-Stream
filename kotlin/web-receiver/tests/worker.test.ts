@@ -577,3 +577,22 @@ it('forwards display settings only after feature negotiation and clears support 
   const next = Socket.instances.at(-1)!; next.open(); next.receive(vector('welcome'));
   command(settings); expect(next.json().some((m: any) => m.type === 'display-settings')).toBe(false);
 });
+
+it('negotiates view-area, crops decoded frames and clears the crop on disconnect', async () => {
+  const context = { fillRect: vi.fn(), drawImage: vi.fn(), fillStyle: '' };
+  const socket = init(context); socket.open();
+  const area = vector('view-area');
+  socket.receive(area); expect(scope.postMessage).not.toHaveBeenCalledWith({ type: 'view-area', area });
+  socket.receive({ ...vector('welcome'), features: ['view-area'] });
+  socket.receive(area);
+  expect(scope.postMessage).toHaveBeenCalledWith({ type: 'view-area', area });
+  socket.receive(vector('video-format')); await Promise.resolve(); await Promise.resolve();
+  video(socket, true);
+  const frame = { displayWidth: 1920, displayHeight: 1080, timestamp: 1, close: vi.fn() };
+  Decoder.instances.at(-1)!.callbacks.output(frame);
+  await vi.advanceTimersByTimeAsync(30);
+  expect(context.drawImage).toHaveBeenCalledWith(frame, 120, 40, 1440, 900, 16, 0, 768, 480);
+  command({ type: 'fullscreen-exit', hiddenMs: null, display: vector('hello-viewport').displays[0] });
+  expect((socket.json().at(-1) as any).type).toBe('fullscreen-exit');
+  socket.close(); expect(scope.postMessage).toHaveBeenCalledWith({ type: 'view-area', area: undefined });
+});
