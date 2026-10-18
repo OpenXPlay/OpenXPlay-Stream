@@ -71,6 +71,35 @@ internal fun eventually(condition: () -> Boolean) {
     while (!condition()) { if (System.nanoTime() >= deadline) fail("Condition timed out"); Thread.sleep(5) }
 }
 
+/**
+ * Sleeps 1 ms at a time and records how late it wakes: time in which a busy scheduler or a garbage collection pause
+ * held runnable threads back, so a timing assertion can tell that from time a thread spent blocked.
+ */
+private class SchedulerLag : Thread("scheduler-lag") {
+    /** Each late wake as (System.nanoTime when it woke, nanoseconds late). */
+    private val wakes = java.util.concurrent.ConcurrentLinkedQueue<LongArray>()
+    @Volatile private var running = true
+
+    init { isDaemon = true }
+
+    override fun run() {
+        var last = System.nanoTime()
+        while (running) {
+            Thread.sleep(1)
+            val now = System.nanoTime()
+            val late = now - last - TimeUnit.MILLISECONDS.toNanos(1)
+            if (late > 0) wakes.add(longArrayOf(now, late))
+            last = now
+        }
+    }
+
+    /** How long the probe was held back within [from, to] (System.nanoTime). */
+    fun lateNanos(from: Long, to: Long): Long =
+        wakes.sumOf { (woke, late) -> (minOf(woke, to) - maxOf(woke - late, from)).coerceAtLeast(0) }
+
+    fun finish() { running = false; join() }
+}
+
 class WebOutputTest {
     @TempDir lateinit var root: Path
     private fun output(ssl: SSLContext? = null, maxClients: Int = 8, sendBufferBytes: Int = 32 * 1024): WebOutput = WebOutput(WebOutputConfig(
@@ -368,16 +397,25 @@ class WebOutputTest {
                             if (message.opcode == 2) OxpWebCodec.decode(message.payload).header.let { received.add(it.ptsUs to it.flags) }
                         }
                     }.apply { isDaemon = true; start() }
-                    // The first key frame is far larger than the socket buffers, so the slow writer blocks inside it.
+                    // The first key frame is far larger than the socket buffers, so the slow writer blocks inside it. A
+                    // blocked producer would wait for that writer, which never finishes; a call that takes longer only
+                    // because the scheduler or the garbage collector held every thread back is not blocked.
+                    val lag = SchedulerLag().apply { start() }
                     var slowest = 0L
+                    var slowestLag = 0L
                     for (index in 0 until frames) {
                         val size = if (index == 0) 6 * 1024 * 1024 else 1200
+                        val frame = VideoFrame(ScreenId.MAIN, SessionId(1), ByteArray(size), index * 16_667L, index % 30 == 0, 0)
                         val started = System.nanoTime()
-                        web.onVideoFrame(VideoFrame(ScreenId.MAIN, SessionId(1), ByteArray(size), index * 16_667L, index % 30 == 0, 0))
-                        slowest = maxOf(slowest, System.nanoTime() - started)
+                        web.onVideoFrame(frame)
+                        val ended = System.nanoTime()
+                        val held = lag.lateNanos(started, ended)
+                        if (ended - started - held > slowest - slowestLag) { slowest = ended - started; slowestLag = held }
                         Thread.sleep(2)
                     }
-                    assertTrue(slowest < TimeUnit.MILLISECONDS.toNanos(50), "Producer blocked for ${slowest / 1000} µs")
+                    lag.finish()
+                    assertTrue(slowest - slowestLag < TimeUnit.MILLISECONDS.toNanos(50),
+                        "Producer blocked for ${slowest / 1000} µs, of which the scheduler held threads back ${slowestLag / 1000} µs")
                     reader.join(5000)
                     // The other client receives every frame in order, without a gap after the first.
                     assertEquals((0 until frames).map { it * 16_667L }, received.map { it.first })

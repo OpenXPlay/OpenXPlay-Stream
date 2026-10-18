@@ -1103,6 +1103,26 @@ struct SlowReader {
     bytes_per_second: f64,
     next_read: Instant,
     fast: bool,
+    /// When the last socket read returned.
+    returned: Instant,
+    /// Each time the link stood still because the reading thread ran late, as (monotonic
+    /// nanoseconds when it resumed, nanoseconds stalled). The link may go on at `next_read`, or
+    /// once a read that waited for data returns; a later read means the thread was descheduled
+    /// or still busy with earlier messages, which delays the relay's writes but is not its doing.
+    stalls: Vec<(i64, i64)>,
+}
+impl SlowReader {
+    fn new(socket: TcpStream, bytes_per_second: f64) -> Self {
+        let now = Instant::now();
+        Self {
+            socket,
+            bytes_per_second,
+            next_read: now,
+            fast: false,
+            returned: now,
+            stalls: Vec::new(),
+        }
+    }
 }
 impl Read for SlowReader {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -1112,8 +1132,15 @@ impl Read for SlowReader {
             }
         }
         let started = Instant::now();
+        let stalled = started.saturating_duration_since(self.next_read.max(self.returned));
+        if !self.fast && !stalled.is_zero() {
+            self.stalls
+                .push((oxp_core::monotonic_nanos(), stalled.as_nanos() as i64));
+        }
         let limit = b.len().min(2048);
-        let n = self.socket.read(&mut b[..limit])?;
+        let read = self.socket.read(&mut b[..limit]);
+        self.returned = Instant::now();
+        let n = read?;
         self.next_read =
             self.next_read.max(started) + Duration::from_secs_f64(n as f64 / self.bytes_per_second);
         Ok(n)
@@ -1133,7 +1160,8 @@ impl Write for SlowReader {
 /// then unsent in the kernel take to drain over the link. It stays within the Smart queue budget plus
 /// the frame's own transmission time and a small constant for the bounded kernel buffer. A 200 KB key
 /// frame is still written completely, every frame the relay started arrives intact, and the stream
-/// recovers at a later key frame.
+/// recovers at a later key frame. Time the test's threads measurably lose to a busy scheduler
+/// during a frame's write extends that frame's bound, so a shared runner does not fail it.
 ///
 /// Delivery times at the slow reader are not asserted: a slowly reading Darwin receiver withholds
 /// window updates while it holds unread data, which stalls any sender for hundreds of milliseconds.
@@ -1201,12 +1229,7 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let reader = SlowReader {
-        socket,
-        bytes_per_second: RATE,
-        next_read: Instant::now(),
-        fast: false,
-    };
+    let reader = SlowReader::new(socket, RATE);
     let stream = rustls::StreamOwned::new(
         rustls::ClientConnection::new(
             Arc::new(client_config),
@@ -1231,6 +1254,11 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
             id = v["clientId"].as_str().unwrap().to_owned();
         }
     }
+    ws.get_ref()
+        .sock
+        .socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
     // Sample the relay's kernel queue for this browser every millisecond.
     let server_socket = web.state.lock().unwrap().clients[&id]
         .socket
@@ -1252,23 +1280,29 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
         })
     };
     let producer_web = web.clone();
+    // The producer returns when it offered each frame.
     let producer = std::thread::spawn(move || {
         let start = Instant::now();
+        let mut offers = Vec::new();
         for index in 0..FRAMES {
             let due = start + Duration::from_micros((index * INTERVAL_US) as u64);
             if let Some(wait) = due.checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
             }
             let (key_frame, size) = shape(index);
+            let data = payload(index, size).into();
+            let received_at_nanos = oxp_core::monotonic_nanos();
+            offers.push(received_at_nanos);
             producer_web.on_video_frame(VideoFrame {
                 screen: 0,
                 session: 42,
-                data: payload(index, size).into(),
+                data,
                 pts_us: index * INTERVAL_US,
                 key_frame,
-                received_at_nanos: oxp_core::monotonic_nanos(),
+                received_at_nanos,
             });
         }
+        offers
     });
     let started = Instant::now();
     let mut stats_sent = false;
@@ -1292,14 +1326,19 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
         }
         let message = match ws.read() {
             Ok(m) => m,
+            // Nothing arrived within the read timeout. While draining, the stream has ended.
+            // Before that, the relay may have dropped the rest of a group of frames, or the
+            // producer finished while this read waited: look again, and drain once it is done.
             Err(tungstenite::Error::Io(e))
-                if ws.get_ref().sock.fast
-                    && matches!(
-                        e.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
             {
-                break
+                if ws.get_ref().sock.fast {
+                    break;
+                }
+                continue;
             }
             Err(e) => panic!("{e}"),
         };
@@ -1316,9 +1355,10 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
         assert!(p == payload(index, shape(index).1), "frame {index} damaged");
         delivered.push(index);
     }
-    producer.join().unwrap();
+    let offers = producer.join().unwrap();
     sampling.store(false, Ordering::Release);
     let samples = sampler.join().unwrap();
+    let stalls = std::mem::take(&mut ws.get_mut().sock.stalls);
     let written: Vec<(i64, i64, i64)> = web.state.lock().unwrap().clients[&id]
         .written
         .iter()
@@ -1345,6 +1385,7 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
     // queue beyond it (bounded by half the receiver's window).
     let kernel_bytes = config.unsent_limit_bytes as f64 + 32.0 * 1024.0;
     let mut kernel_seen = false;
+    let sample_times: Vec<i64> = samples.iter().map(|(at, _)| *at).collect();
     for &(index, received_at, written_at) in &written {
         let unsent = samples
             .iter()
@@ -1356,14 +1397,41 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
         kernel_seen |= samples.iter().any(|(_, q)| q.is_some());
         let relay_ns = (written_at - received_at) as f64 + unsent as f64 * 1e9 / RATE;
         let own_ns = (shape(index).1 as f64 + kernel_bytes) * 1e9 / RATE;
-        let bound_ns = (budget_ns + 2 * INTERVAL_US * 1000 + 50_000_000) as f64 + own_ns;
+        // The bound assumes a scheduler that runs every thread when it is due. On a shared
+        // runner it may not, and the time the test's threads lose during this frame's write
+        // delays it without being the relay's doing: the reader standing still holds up the
+        // link; a late offer holds up the queue's eviction of frames older than the budget; and
+        // the sampler, a 1 ms sleeper like the relay's writer (2 ms), shows how late due threads
+        // run. On a quiet machine all three are small.
+        let during = |at: i64| (received_at..=written_at).contains(&at);
+        let stalled_ns: i64 = stalls
+            .iter()
+            .filter(|(at, _)| during(*at))
+            .map(|(_, ns)| ns)
+            .sum();
+        let late = |times: &[i64], period: i64| -> i64 {
+            times
+                .windows(2)
+                .filter(|w| during(w[1]))
+                .map(|w| (w[1] - w[0] - period).max(0))
+                .sum()
+        };
+        let late_offers_ns = late(&offers, INTERVAL_US * 1000);
+        let lag_ns = late(&sample_times, 1_000_000);
+        let lost_ns = stalled_ns + late_offers_ns + lag_ns;
+        let bound_ns = (budget_ns + 2 * INTERVAL_US * 1000 + 50_000_000 + lost_ns) as f64 + own_ns;
         assert!(
             relay_ns <= bound_ns,
             "frame {index}: {:.0} ms in the relay ({:.0} ms to write, {unsent} bytes unsent), \
-             bound {:.0} ms",
+             bound {:.0} ms, of which {:.0} ms lost to the scheduler ({:.0} ms reader stalls, \
+             {:.0} ms late offers, {:.0} ms sampler lag)",
             relay_ns / 1e6,
             (written_at - received_at) as f64 / 1e6,
-            bound_ns / 1e6
+            bound_ns / 1e6,
+            lost_ns as f64 / 1e6,
+            stalled_ns as f64 / 1e6,
+            late_offers_ns as f64 / 1e6,
+            lag_ns as f64 / 1e6
         );
     }
     let report = reports.lock().unwrap().last().cloned().unwrap();
