@@ -1,6 +1,7 @@
 {
   "type": "fullscreen-exit",
   "hiddenMs": 1530,
+  "autoRestore": "denied",
   "display": {
     "screen": 0,
     "width": 1280,

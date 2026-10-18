@@ -30,6 +30,10 @@ it('fill covers the viewport and maps touches to the visible middle of the activ
 it('validates the exit diagnostic including a missing hidden interval', () => {
   const display = { screen: 0, width: 1920, height: 1080, dpr: 1, refreshHz: 60, fullscreen: false,
     viewport: { width: 1000, height: 900 }, safeArea: { top: 0, right: 0, bottom: 0, left: 0 } };
+  for (const autoRestore of [undefined, 'restored', 'denied', 'off'])
+    parseMessage({ type: 'fullscreen-exit', hiddenMs: null, display, autoRestore }, 'client-to-relay');
+  for (const autoRestore of [null, true, 0, 'failed'])
+    expect(() => parseMessage({ type: 'fullscreen-exit', hiddenMs: null, display, autoRestore })).toThrow();
   for (const hiddenMs of [null, 0, 1500.5]) parseMessage({ type: 'fullscreen-exit', hiddenMs, display }, 'client-to-relay');
   for (const hiddenMs of [-1, '100', undefined]) expect(() => parseMessage({ type: 'fullscreen-exit', hiddenMs, display })).toThrow();
   expect(() => parseMessage({ type: 'fullscreen-exit', hiddenMs: null, display }, 'relay-to-client')).toThrow();

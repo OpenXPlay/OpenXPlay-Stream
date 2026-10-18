@@ -4,7 +4,7 @@
 
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { FullscreenExitHistory, FullscreenIntent } from '../receiver/fullscreen';
+import { autoRestoreFullscreen, FullscreenExitHistory, FullscreenIntent } from '../receiver/fullscreen';
 import { strings, type Store } from '../receiver/ui';
 import type { Hello } from '../protocol/json';
 const display = (JSON.parse(readFileSync(new URL('../spec/vectors/web/hello-viewport.json', import.meta.url), 'utf8')) as Hello).displays[0];
@@ -82,4 +82,50 @@ it('associates only the recent hidden interval with the exit and consumes it onc
   expect(history.take(1620)).toBe(1500); expect(history.take(1630)).toBeNull();
   history.visibility(true, 2000); history.visibility(false, 3000);
   expect(history.take(6000)).toBeNull();
+});
+
+function automatic() {
+  return { enabled: vi.fn(() => true), restored: vi.fn(() => false), hidden: vi.fn(() => false),
+    visible: vi.fn(async () => {}), request: vi.fn(async () => {}), delay: vi.fn(async (_ms: number) => {}) };
+}
+it('restores on the first automatic try without a timer', async () => {
+  const options = automatic();
+  expect(await autoRestoreFullscreen(options)).toBe('restored');
+  expect(options.request).toHaveBeenCalledOnce(); expect(options.delay).not.toHaveBeenCalled();
+});
+it('retries once after 500 ms and restores on the second try', async () => {
+  const options = automatic(); options.request.mockRejectedValueOnce(Error('gesture'));
+  expect(await autoRestoreFullscreen(options)).toBe('restored');
+  expect(options.request).toHaveBeenCalledTimes(2); expect(options.delay).toHaveBeenCalledExactlyOnceWith(500);
+});
+it('reports denied after two rejections, including synchronous browser errors', async () => {
+  const options = automatic(); options.request.mockImplementation(() => { throw Error('gesture'); });
+  expect(await autoRestoreFullscreen(options)).toBe('denied');
+  expect(options.request).toHaveBeenCalledTimes(2); expect(options.delay).toHaveBeenCalledOnce();
+});
+it('does not request when restore is off or intent is gone', async () => {
+  for (const off of ['restore', 'intent'] as const) {
+    const state = new FullscreenIntent(true, store), options = automatic();
+    if (off === 'restore') state.setRestore(false); else state.toggle(vi.fn(), vi.fn());
+    options.enabled = () => state.restore && state.intent;
+    expect(await autoRestoreFullscreen(options)).toBe('off'); expect(options.request).not.toHaveBeenCalled();
+  }
+});
+it('waits for visibility before either attempt and rechecks intent after the timer', async () => {
+  const options = automatic(); let hidden = true, visible!: () => void;
+  options.hidden = () => hidden;
+  options.visible.mockImplementation(() => new Promise(resolve => { visible = resolve; }));
+  options.request.mockRejectedValue(Error('gesture'));
+  options.delay.mockImplementation(async () => { hidden = true; });
+  const result = autoRestoreFullscreen(options);
+  expect(options.request).not.toHaveBeenCalled(); hidden = false; visible();
+  await vi.waitFor(() => expect(options.visible).toHaveBeenCalledTimes(2));
+  expect(options.request).toHaveBeenCalledOnce();
+  options.enabled.mockReturnValue(false); hidden = false; visible();
+  expect(await result).toBe('off'); expect(options.request).toHaveBeenCalledOnce();
+});
+it('does not retry after a manual restoration during the timer', async () => {
+  const options = automatic(); options.request.mockRejectedValue(Error('gesture'));
+  options.delay.mockImplementation(async () => { options.restored.mockReturnValue(true); });
+  expect(await autoRestoreFullscreen(options)).toBe('restored'); expect(options.request).toHaveBeenCalledOnce();
 });

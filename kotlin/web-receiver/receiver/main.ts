@@ -22,7 +22,7 @@ import { version } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
 import { videoCodecPreference, withVideoCodec } from '../shared/video-codec';
 import { playbackMode, withPlayback } from '../shared/playback';
-import { FullscreenExitHistory, FullscreenIntent } from './fullscreen';
+import { autoRestoreFullscreen, FullscreenExitHistory, FullscreenIntent } from './fullscreen';
 import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#video')!;
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -163,10 +163,20 @@ restoreSwitch.checked = fullscreen.restore;
 restoreSwitch.onchange = () => { fullscreen.setRestore(restoreSwitch.checked); fullscreenState(); };
 const fullscreenHistory = new FullscreenExitHistory();
 let pendingFullscreenExit = false;
-function reportFullscreenExit(): void {
+async function reportFullscreenExit(): Promise<void> {
   if (!pendingFullscreenExit || document.hidden || !hello) return;
   pendingFullscreenExit = false;
-  post({ type: 'fullscreen-exit', hiddenMs: fullscreenHistory.take(performance.now()), display: measuredDisplay() });
+  const hiddenMs = fullscreenHistory.take(performance.now()), display = measuredDisplay();
+  const autoRestore = await autoRestoreFullscreen({
+    enabled: () => fullscreen.restore && fullscreen.intent, restored: () => !!document.fullscreenElement,
+    hidden: () => document.hidden,
+    visible: () => new Promise(resolve => {
+      const changed = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', changed); resolve(); } };
+      document.addEventListener('visibilitychange', changed); changed();
+    }),
+    request: () => document.documentElement.requestFullscreen(), delay: ms => new Promise(resolve => setTimeout(resolve, ms)),
+  });
+  post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
 function requestFullscreen(): void {
   void document.documentElement.requestFullscreen?.().catch(() => { element('fullscreen-state').textContent = text.fullscreenUnavailable; });

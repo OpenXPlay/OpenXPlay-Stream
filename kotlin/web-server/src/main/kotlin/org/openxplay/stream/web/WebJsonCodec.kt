@@ -120,7 +120,7 @@ public object WebJsonCodec {
                 "canvasWidth" to positiveInt, "canvasHeight" to positiveInt)(value) && (value as JsonObject).let {
                 it.getValue("x").jsonPrimitive.double + it.getValue("width").jsonPrimitive.double <= it.getValue("canvasWidth").jsonPrimitive.double &&
                 it.getValue("y").jsonPrimitive.double + it.getValue("height").jsonPrimitive.double <= it.getValue("canvasHeight").jsonPrimitive.double } },
-        message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display),
+        message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display, "autoRestore" to optional(literal("restored", "denied", "off"))),
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
         message("display-settings", "resolution" to literal("auto", "1080p", "720p", "screen"), "iconSize" to literal("small", "standard", "large")),
         message("restart"),

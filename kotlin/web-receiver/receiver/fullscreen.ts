@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-18
 
-import type { DisplayInfo } from '../protocol/json';
+import type { DisplayInfo, FullscreenExit } from '../protocol/json';
 import type { Store } from './ui';
 
 /** Browser exits preserve intent; only the settings toggle turns it off. */
@@ -63,4 +63,20 @@ export class FullscreenExitHistory {
       this.visibleAt !== null && now - this.visibleAt <= 2000 ? this.hiddenMs : null;
     this.hiddenMs = null; this.visibleAt = null; return duration;
   }
+}
+
+/** One silent attempt per exit, with one delayed retry; visibility and intent are checked again before each call. */
+export async function autoRestoreFullscreen(options: {
+  enabled: () => boolean; restored: () => boolean; hidden: () => boolean;
+  visible: () => Promise<void>; request: () => Promise<void>; delay: (ms: number) => Promise<void>;
+}): Promise<NonNullable<FullscreenExit['autoRestore']>> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    while (options.hidden()) await options.visible();
+    if (!options.enabled()) return 'off';
+    if (options.restored()) return 'restored';
+    try { await options.request(); return 'restored'; } catch { }
+    if (attempt === 0) await options.delay(500);
+  }
+  if (!options.enabled()) return 'off';
+  return options.restored() ? 'restored' : 'denied';
 }

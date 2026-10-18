@@ -64,6 +64,11 @@ class ViewAreaTest {
         assertFailsWith<IllegalArgumentException> { ViewArea(Int.MAX_VALUE, 0, 1, 1, Int.MAX_VALUE, 1) }
         val exit = WebJsonCodec.parse(vector("fullscreen-exit"), WebJsonCodec.Direction.CLIENT_TO_RELAY)
         WebJsonCodec.validate(JsonObject(exit + ("hiddenMs" to JsonNull)))
+        WebJsonCodec.validate(JsonObject(exit - "autoRestore"))
+        for (result in listOf("restored", "denied", "off"))
+            WebJsonCodec.validate(JsonObject(exit + ("autoRestore" to JsonPrimitive(result))))
+        for (invalid in listOf(JsonNull, JsonPrimitive(true), JsonPrimitive("failed")))
+            assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(exit + ("autoRestore" to invalid))) }
         assertFailsWith<WireFormatException> { WebJsonCodec.validate(exit, WebJsonCodec.Direction.RELAY_TO_CLIENT) }
         assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(exit + ("hiddenMs" to JsonPrimitive(-1)))) }
     }

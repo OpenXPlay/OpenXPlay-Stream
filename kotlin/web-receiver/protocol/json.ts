@@ -35,7 +35,7 @@ export interface Stats {
 }
 export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | '1080p' | '720p' | 'screen'; iconSize: 'small' | 'standard' | 'large' }
 export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
-export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo }
+export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
 export type JsonMessage = ViewArea | FullscreenExit | DisplaySettings | Hello | { type: 'restart' } |
   { type: 'welcome'; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
   { type: 'session'; session: SessionState } |
@@ -102,7 +102,7 @@ const schemas: Record<string, Validator> = {
     canvasWidth: v => int(v) && positive(v), canvasHeight: v => int(v) && positive(v) })(x) && (() => {
       const a = x as ViewArea; return a.x + a.width <= a.canvasWidth && a.y + a.height <= a.canvasHeight;
     })(),
-  'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display }),
+  'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
   'display-settings': object({ type: literal('display-settings'), resolution: literal('auto', '1080p', '720p', 'screen'), iconSize: literal('small', 'standard', 'large') }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
