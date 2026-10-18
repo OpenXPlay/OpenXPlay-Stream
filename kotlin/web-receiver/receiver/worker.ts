@@ -314,7 +314,7 @@ function control(message: JsonMessage): void {
     case 'welcome':
       displaySettingsSupported = message.features?.includes('display-settings') ?? false;
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
-      notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}) });
+      notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
       session(message.session); break;
     case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
     case 'session': session(message.session); break;

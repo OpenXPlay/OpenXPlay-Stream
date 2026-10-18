@@ -8,9 +8,10 @@ import { applyReducedMotion, microphoneStatus, statusCard, strings, type StatusS
 import { bindSheet, sheetKey } from '../receiver/sheet';
 import { version } from '../receiver/version';
 
-it('injects the package version into the same module used by About', () => {
+it('injects the package version, and the build commit when known, into the module used by About', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  expect(version).toBe(pkg.version); expect(version).not.toBe('0.0.0');
+  expect(version === pkg.version || new RegExp(`^${pkg.version.replaceAll('.', '\\.')} \\([0-9a-f]{7}\\)$`).test(version)).toBe(true);
+  expect(version).not.toBe('0.0.0');
 });
 it('maps microphone lifecycle to honest status, guidance and only useful actions', () => {
   for (const state of ['idle', 'disabled', 'requesting'] as const) expect(microphoneStatus(state).label).toBe('notInUse');

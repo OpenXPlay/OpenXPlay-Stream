@@ -121,7 +121,7 @@ public object WebJsonCodec {
         message("hello", "videoCodec" to optional(literal("AUTO", "H264")), "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
             "decoders" to array(obj("codecString" to nonempty, "hardware" to bool)), "displays" to array(display),
             "maxTouchContacts" to range(10), "audio" to array(audioCodec), "microphone" to bool),
-        message("welcome", "features" to optional(array(string)), "plugins" to optional(obj("host" to literal("/plugins/host/index.html"))), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "clientId" to nonempty,
+        message("welcome", "features" to optional(array(string)), "relay" to optional(obj("name" to nonempty, "version" to nonempty)), "plugins" to optional(obj("host" to literal("/plugins/host/index.html"))), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "clientId" to nonempty,
             "session" to sessionSchema, "sourceUrl" to url, "attribution" to nonempty, "projectUrl" to url),
         message("session", "session" to sessionSchema),
         message("video-format", "screen" to range(255), "format" to nullable(videoSchema)),

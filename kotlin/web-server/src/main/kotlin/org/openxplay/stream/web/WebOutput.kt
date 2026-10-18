@@ -60,6 +60,8 @@ public data class WebOutputConfig(
     public val sendBufferBytes: Int = 32 * 1024,
     public val writeTimeoutMillis: Long = 5000,
     public val displaySettings: DisplaySettingsPort? = null,
+    /** The shell serving this output, shown on the head-unit page next to the page's own version. */
+    public val relay: RelayInfo? = null,
 ) {
     init {
         require(port in 0..65535 && maxClients > 0 && queueDurationUs >= 0 && sendBufferBytes >= 0 && writeTimeoutMillis > 0)
@@ -69,6 +71,10 @@ public data class WebOutputConfig(
             put("sourceUrl", sourceUrl); put("attribution", "Powered by OpenXPlay."); put("projectUrl", PROJECT_URL)
         })
     }
+}
+
+public data class RelayInfo(public val name: String, public val version: String) {
+    init { require(name.isNotBlank() && version.isNotBlank() && name.length <= 64 && version.length <= 64) }
 }
 
 private data class SelectedVideo(val queue: FrameQueue, val frame: QueuedFrame)
@@ -532,7 +538,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                         queueDurationUs = playbackQueueDurationUs(message["playback"]?.jsonPrimitive?.content, config.queueDurationUs)
                         queues.values.forEach { it.maxDurationUs = queueDurationUs }
                         if (first) {
-                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null))
+                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay))
                             config.displaySettings?.let { json(it.current().message()) }
                         }
                         formats.forEach { (screen, format) ->

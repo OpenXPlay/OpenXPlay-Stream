@@ -491,6 +491,9 @@ async function start(): Promise<void> {
           pluginSlot.configure(message);
           if (!receiverInfoStarted) { receiverInfoStarted = true; void collectReceiverInfo().then(info => post({ type: 'receiver-info', info })); }
           pairing.welcome(message.token); source.href = message.sourceUrl;
+          element('relay-version-row').hidden = !message.relay;
+          element('relay-name').textContent = message.relay?.name ?? '';
+          element('relay-version').textContent = message.relay?.version ?? '';
           if (!codeInput.value) break;
           element('paired').hidden = false;
           element('paired').textContent = `✓ ${text.paired}`;
