@@ -18,7 +18,7 @@ import { PluginSlot } from './plugin-slot';
 import { microphoneStatus, applyReducedMotion } from './ui';
 import { CaptureLifecycle } from './capture-lifecycle';
 import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
-import { version } from './version';
+import { version, shouldReload } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
 import { videoCodecPreference, withVideoCodec } from '../shared/video-codec';
 import { playbackMode, withPlayback } from '../shared/playback';
@@ -502,6 +502,7 @@ async function start(): Promise<void> {
         case 'display-disconnected': fullscreen.viewAreas = false; displayGate.welcome(); updateDisplaySettings(); break;
         case 'display-settings': currentDisplaySettings = message; updateDisplaySettings(); break;
         case 'welcome':
+          if (shouldReload(message.receiverBuild, () => sessionStorage)) { location.reload(); break; }
           fullscreen.viewAreas = message.features?.includes('view-area') ?? false;
           displayGate.welcome(message.features); updateDisplaySettings();
           pluginSlot.configure(message);

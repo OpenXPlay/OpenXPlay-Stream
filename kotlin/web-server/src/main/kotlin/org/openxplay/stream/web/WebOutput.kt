@@ -10,6 +10,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -73,6 +74,10 @@ internal fun playbackQueueDurationUs(playback: String?, smartUs: Long): Long = w
     else -> smartUs
 }
 
+internal fun readReceiverBuild(root: Path): String? = runCatching {
+    Files.newBufferedReader(root.resolve("receiver-build.txt")).use { it.readText().trim().takeIf(String::isNotEmpty) }
+}.getOrNull()
+
 private const val PROJECT_URL = "https://github.com/OpenXPlay/OpenXPlay-Stream"
 
 /** Host callbacks that may wait before reports are dropped; essential callbacks are never dropped. */
@@ -80,6 +85,7 @@ private const val HOST_QUEUE_CAPACITY = 256
 
 /** Socket I/O runs on owned threads. Model callbacks only retain state and enqueue borrowed frames. */
 public class WebOutput(private val config: WebOutputConfig, override val id: String = "web") : ProjectionOutput {
+    private val receiverBuild = readReceiverBuild(config.staticAssetRoot)
     private val plugins = config.plugins?.let(::Plugins)
     override fun wantsContext(): Boolean = plugins != null
     override fun onContext(update: ContextUpdate) { plugins?.update(update) }
@@ -526,7 +532,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                         queueDurationUs = playbackQueueDurationUs(message["playback"]?.jsonPrimitive?.content, config.queueDurationUs)
                         queues.values.forEach { it.maxDurationUs = queueDurationUs }
                         if (first) {
-                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay, config.viewArea != null))
+                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay, config.viewArea != null, receiverBuild))
                             config.displaySettings?.let { json(it.current().message()) }
                             config.viewArea?.current()?.let { json(it.message()) }
                         }

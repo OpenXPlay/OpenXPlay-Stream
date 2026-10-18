@@ -319,7 +319,7 @@ function control(message: JsonMessage): void {
       viewAreaSupported = message.features?.includes('view-area') ?? false;
       displaySettingsSupported = message.features?.includes('display-settings') ?? false;
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
-      notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
+      notice({ type: 'welcome', receiverBuild: message.receiverBuild, features: message.features, sourceUrl: message.sourceUrl, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
       session(message.session); break;
     case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
     case 'view-area': if (ready && viewAreaSupported) { viewArea = message; notice({ type: 'view-area', area: viewArea }); } break;

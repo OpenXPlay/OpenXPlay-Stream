@@ -3,6 +3,7 @@
 // Created by riko chen on 2026-10-14
 
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { defineConfig } from 'vitest/config';
@@ -14,10 +15,14 @@ const commit = process.env.OXP_WEB_COMMIT || (() => {
   try { return execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: new URL('.', import.meta.url), encoding: 'utf8' }).trim(); }
   catch { return ''; }
 })();
+const build = randomUUID();
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify(version), __APP_COMMIT__: JSON.stringify(commit) },
+  define: { __APP_VERSION__: JSON.stringify(version), __APP_COMMIT__: JSON.stringify(commit), __APP_BUILD__: JSON.stringify(build) },
   base: '/',
   plugins: [{
+    name: 'receiver-build',
+    generateBundle() { this.emitFile({ type: 'asset', fileName: 'receiver-build.txt', source: build + '\n' }); },
+  }, {
     name: 'receiver-bundle-budget',
     generateBundle: { order: 'post', handler(_options, bundle) {
       // Count the page, shared code and media worker; exclude probe and audio worklet.

@@ -61,6 +61,17 @@ function video(socket: Socket, key: boolean, ptsUs = 1n) {
   socket.receive(encodeBinary({ kind: BinaryKind.Video, stream: 0, flags: key ? KEYFRAME : 0, sequence: 0,
     ptsUs, senderClockUs: 1n }, new Uint8Array([1])).buffer);
 }
+it('forwards the served receiver build to the page on each welcome', async () => {
+  const first = init(); first.open();
+  const message = vector('welcome-receiver-build');
+  first.receive(message);
+  expect(scope.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'welcome', receiverBuild: message.receiverBuild }));
+  first.close(); await vi.advanceTimersByTimeAsync(1000);
+  const second = Socket.instances.at(-1)!; second.open();
+  scope.postMessage.mockClear();
+  second.receive({ ...message, receiverBuild: 'updated-build' });
+  expect(scope.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'welcome', receiverBuild: 'updated-build' }));
+});
 it('sends hello then the current hidden state on each connection', async () => {
   command({ type: 'visibility', visible: false });
   const first = init(); first.open();

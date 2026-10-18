@@ -35,6 +35,6 @@ export type WorkerNotice = { type: 'view-area'; area: import('../protocol/json')
   { type: 'audio-active'; active: boolean } |
   { type: 'mic'; stream: number; request: import('../protocol/json').MicFormat | null; token: number } |
   { type: 'status'; text: string } |
-  { type: 'welcome'; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; sourceUrl: string } |
+  { type: 'welcome'; receiverBuild?: string; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; sourceUrl: string } |
   { type: 'format'; format: VideoFormat | null } |
   { type: 'stats'; stats: Stats; skipped: number; renderQueue: number; queueDepth: number; playback: PlaybackMode; audio: AudioDebug[]; audioBuffers: AudioBufferDebug[] };

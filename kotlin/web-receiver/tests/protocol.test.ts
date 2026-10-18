@@ -47,6 +47,15 @@ describe('Kotlin wire compatibility', () => {
   });
 });
 describe('JSON contract', () => {
+  it('validates the optional receiver build as a nonempty string', () => {
+    const welcome = JSON.parse(readFileSync(new URL('welcome-receiver-build.json', webVectors), 'utf8'));
+    expect(parseMessage(welcome, 'relay-to-client')).toEqual(welcome);
+    const { receiverBuild, ...legacy } = welcome;
+    expect(parseMessage(legacy, 'relay-to-client')).toEqual(legacy);
+    for (const receiverBuild of ['', null, 1, true, {}, []])
+      expect(() => parseMessage({ ...welcome, receiverBuild })).toThrow(WireFormatError);
+    expect(() => parseMessage(welcome, 'client-to-relay')).toThrow(WireFormatError);
+  });
   it('accepts every shared example in its declared direction', () => {
     const dir = webVectors;
     for (const name of readdirSync(dir).filter(name => name.endsWith('.json'))) {

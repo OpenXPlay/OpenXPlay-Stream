@@ -37,7 +37,7 @@ export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' 
 export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
 export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
 export type JsonMessage = ViewArea | FullscreenExit | DisplaySettings | Hello | { type: 'restart' } |
-  { type: 'welcome'; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
+  { type: 'welcome'; receiverBuild?: string; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
   { type: 'audio-format'; stream: number; format: AudioFormat | null } |
@@ -107,7 +107,7 @@ const schemas: Record<string, Validator> = {
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
-  welcome: object({ features: optional(array(str)), relay: optional(object({ name: nonempty, version: nonempty })), plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
+  welcome: object({ receiverBuild: optional(nonempty), features: optional(array(str)), relay: optional(object({ name: nonempty, version: nonempty })), plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
   session: object({ type: literal('session'), session }),
   'video-format': object({ type: literal('video-format'), screen: range(255), format: nullable(video) }),
   'audio-format': object({ type: literal('audio-format'), stream: range(255), format: nullable(audio) }),
