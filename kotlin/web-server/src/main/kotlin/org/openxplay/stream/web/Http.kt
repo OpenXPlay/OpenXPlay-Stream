@@ -16,7 +16,7 @@ import java.util.Locale
 internal class HttpFailure(val status: Int) : Exception()
 internal data class HttpRequest(val method: String, val target: String, val headers: Map<String, String>)
 
-internal fun readHttp(input: InputStream): HttpRequest {
+internal fun readHttp(input: InputStream, bodyless: Boolean = true): HttpRequest {
     var total = 0
     fun line(limit: Int): String {
         val result = StringBuilder()
@@ -45,7 +45,7 @@ internal fun readHttp(input: InputStream): HttpRequest {
         val name = line.substring(0, colon).lowercase(Locale.ROOT)
         if (headers.put(name, line.substring(colon + 1).trim()) != null || headers.size > 100) throw HttpFailure(400)
     }
-    if (headers["host"].isNullOrEmpty() || headers.containsKey("transfer-encoding") || headers["content-length"]?.let { it != "0" } == true) throw HttpFailure(400)
+    if (headers["host"].isNullOrEmpty() || (bodyless && (headers.containsKey("transfer-encoding") || headers["content-length"]?.let { it != "0" } == true))) throw HttpFailure(400)
     return HttpRequest(request[0], request[1], headers)
 }
 
@@ -99,9 +99,9 @@ internal fun drainBeforeClose(socket: java.net.Socket) {
     }
 }
 
-internal fun httpError(output: OutputStream, status: Int) {
+internal fun httpError(output: OutputStream, status: Int, allow: String = "GET") {
     val reason = when (status) { 400 -> "Bad Request"; 405 -> "Method Not Allowed"; 431 -> "Request Header Fields Too Large"; 503 -> "Service Unavailable"; else -> "Not Found" }
     output.write(("HTTP/1.1 $status $reason\r\nContent-Length: 0\r\nConnection: close\r\n" +
-        if (status == 405) "Allow: GET\r\n\r\n" else "\r\n").toByteArray(Charsets.US_ASCII))
+        if (status == 405) "Allow: $allow\r\n\r\n" else "\r\n").toByteArray(Charsets.US_ASCII))
     output.flush()
 }
