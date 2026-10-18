@@ -628,52 +628,6 @@ class WebOutputTest {
             TestClient(socket).use { client -> client.hello(); assertEquals("welcome", client.json()["type"]!!.jsonPrimitive.content) }
         } finally { web.close() }
     }
-
-    private fun exchange(port: Int, request: String): String = Socket("127.0.0.1", port).use { socket ->
-        socket.soTimeout = 5000
-        socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII)); socket.shutdownOutput()
-        socket.getInputStream().readBytes().decodeToString()
-    }
-
-    @Test fun landingPageUsesTheTlsPortAndValidatesRequests() {
-        val landingPort = java.net.ServerSocket(0).use { it.localPort }
-        val web = WebOutput(WebOutputConfig(port = 0, landingPort = landingPort, sslContext = tlsContexts().first,
-            staticAssetRoot = root, sourceUrl = "https://example.org/source"))
-        web.open(NoopHost)
-        try {
-            val tlsPort = web.awaitListening()
-            for (host in listOf("127.0.0.1", "relay.local", "[::1]")) {
-                val response = exchange(landingPort, "GET /any/path?q=1 HTTP/1.1\r\nHost: $host:8080\r\n\r\n")
-                assertTrue(response.startsWith("HTTP/1.1 200"), response)
-                assertTrue("href=\"https://$host:$tlsPort/\"" in response, response)
-                assertTrue("Cache-Control: no-store\r\n" in response)
-                assertTrue("Content-Type: text/html; charset=utf-8\r\n" in response)
-                assertTrue("Open CarPlay · 打开 CarPlay" in response)
-            }
-            val head = exchange(landingPort, "HEAD / HTTP/1.1\r\nHost: relay.local\r\n\r\n")
-            assertTrue(head.startsWith("HTTP/1.1 200")); assertTrue(head.endsWith("\r\n\r\n"))
-            assertTrue(exchange(landingPort, "GET / HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 400"))
-            for (host in listOf("a/b", "a:", "[broken]", "host:99999", "user@host"))
-                assertTrue(exchange(landingPort, "GET / HTTP/1.1\r\nHost: $host\r\n\r\n").startsWith("HTTP/1.1 400"))
-            assertTrue(exchange(landingPort, "POST / HTTP/1.1\r\nHost: relay.local\r\nContent-Length: 4\r\n\r\ntest").startsWith("HTTP/1.1 405"))
-        } finally { web.close() }
-    }
-
-    @Test fun landingListenerRequiresTls() {
-        java.net.ServerSocket(0).use { reserved ->
-            val web = WebOutput(WebOutputConfig(port = 0, landingPort = reserved.localPort,
-                staticAssetRoot = root, sourceUrl = "https://example.org/source"))
-            web.open(NoopHost)
-            try { assertTrue(web.awaitListening() > 0) } finally { web.close() }
-        }
-    }
-
-    @Test fun landingPortMustBeValidAndDistinct() {
-        for (port in listOf(0, -1, 65536, 8443)) assertFailsWith<IllegalArgumentException> {
-            WebOutputConfig(landingPort = port, staticAssetRoot = root, sourceUrl = "https://example.org/source")
-        }
-    }
-
 }
 
 internal object NoopHost : OutputHost {

@@ -45,11 +45,9 @@ public data class WebOutputConfig(
     public val displaySettings: DisplaySettingsPort? = null,
     /** The shell serving this output, shown on the head-unit page next to the page's own version. */
     public val relay: RelayInfo? = null,
-    public val landingPort: Int? = null,
 ) {
     init {
         require(port in 0..65535 && maxClients > 0 && queueDurationUs >= 0 && sendBufferBytes >= 0 && writeTimeoutMillis > 0)
-        require(landingPort == null || (landingPort in 1..65535 && landingPort != port))
         WebJsonCodec.validate(buildJsonObject {
             put("type", "welcome"); put("version", 0); put("clientId", "config")
             put("session", WebJsonCodec.session(SessionState(SessionId(0), SessionPhase.CONNECTING)))
@@ -216,7 +214,6 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         run.settingsListener?.close()
         run.executor.execute {
             try { run.server?.close() } catch (_: Exception) { }
-            try { run.landingServer?.close() } catch (_: Exception) { }
             synchronized(lock) { run.clients.values.forEach { it.wake.release() }; run.sockets.toList() }.forEach { safelyClose(it) }
             run.bound.completeExceptionally(IllegalStateException("Output closed"))
             run.hostQueue.shutdown()
@@ -238,8 +235,6 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         val hostQueue = HostQueue("oxp-$id-host", HOST_QUEUE_CAPACITY)
         val clients = linkedMapOf<String, Client>()
         val sockets = mutableSetOf<Socket>()
-        @Volatile var landingServer: ServerSocket? = null
-        val landingSockets = mutableSetOf<Socket>()
         val pluginSockets = mutableSetOf<Socket>()
         val mediaConnections = java.util.concurrent.atomic.AtomicInteger()
         private var lastCapabilities: OutputCapabilities? = null
@@ -312,50 +307,19 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                 listener.reuseAddress = true
                 listener.bind(InetSocketAddress(config.bindAddress, config.port))
                 if (!active) { listener.close(); return }
-                if (config.sslContext != null && config.landingPort != null) {
-                    val landing = ServerSocket()
-                    landingServer = landing
-                    landing.reuseAddress = true
-                    landing.bind(InetSocketAddress(config.bindAddress, config.landingPort))
-                    if (!active) { landing.close(); return }
-                    thread("landing") { acceptLanding(landing, listener.localPort) }
-                }
                 bound.complete(listener.localPort)
                 while (active) {
                     val socket = listener.accept()
                     socket.tcpNoDelay = true
                     if (config.sendBufferBytes > 0) try { socket.sendBufferSize = config.sendBufferBytes } catch (_: Exception) { }
                     val retained = synchronized(lock) {
-                        if (!active || sockets.size - pluginSockets.size - landingSockets.size >= config.maxClients + (if (plugins != null) 4 else 0)) false else sockets.add(socket)
+                        if (!active || sockets.size - pluginSockets.size >= config.maxClients + (if (plugins != null) 4 else 0)) false else sockets.add(socket)
                     }
                     if (!retained) { safelyClose(socket); continue }
                     thread("connection") { connection(socket) }
                 }
             } catch (e: Exception) { bound.completeExceptionally(e) }
-            finally { try { server?.close() } catch (_: Exception) { }; try { landingServer?.close() } catch (_: Exception) { } }
-        }
-
-        private fun acceptLanding(listener: ServerSocket, tlsPort: Int) {
-            try {
-                while (active) {
-                    val socket = listener.accept()
-                    val retained = synchronized(lock) {
-                        if (!active || landingSockets.size >= 4) false else { landingSockets.add(socket); sockets.add(socket); true }
-                    }
-                    if (!retained) { safelyClose(socket); continue }
-                    thread("landing-connection") {
-                        try {
-                            val input = DeadlineInput(socket, socket.getInputStream())
-                            input.deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-                            serveLanding(readHttp(input, bodyless = false), tlsPort, socket.getOutputStream())
-                        } catch (e: HttpFailure) {
-                            try { httpError(socket.getOutputStream(), e.status, "GET, HEAD"); drainBeforeClose(socket) } catch (_: Exception) { }
-                        } catch (_: Exception) { }
-                        finally { safelyClose(socket); synchronized(lock) { sockets.remove(socket); landingSockets.remove(socket) } }
-                    }
-                }
-            } catch (_: Exception) { }
-            finally { try { listener.close() } catch (_: Exception) { } }
+            finally { try { server?.close() } catch (_: Exception) { } }
         }
 
         private fun connection(socket: Socket) {
