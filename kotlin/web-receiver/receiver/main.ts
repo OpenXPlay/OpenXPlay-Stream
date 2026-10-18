@@ -22,6 +22,7 @@ import { version } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
 import { videoCodecPreference, withVideoCodec } from '../shared/video-codec';
 import { playbackMode, withPlayback } from '../shared/playback';
+import { FullscreenIntent } from './fullscreen';
 import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#video')!;
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -154,15 +155,30 @@ element('reset-positions').onclick = () => {
 gear.onclick = event => { if (suppressGearClick && event.detail !== 0) { suppressGearClick = false; return; } if (pluginSlot.collapse()) { wakeGear(); return; } releaseAll(); sheet.open(); pluginSlot.visibility(false); wakeGear(); };
 settings.addEventListener('close', () => { pluginSlot.visibility(true); wakeGear(); });
 document.addEventListener('pointerdown', event => { if (event.target !== canvas) wakeGear(); }, { passive: true });
+const fullscreen = new FullscreenIntent(!!document.fullscreenEnabled, () => localStorage);
+const fullscreenHint = element('fullscreen-hint');
+function requestFullscreen(): void {
+  void document.documentElement.requestFullscreen?.().catch(() => { element('fullscreen-state').textContent = text.fullscreenUnavailable; });
+}
+// Capture before canvas controls: the restore gesture must never become a CarPlay touch.
+document.addEventListener('pointerdown', event => {
+  if (event.target instanceof Node && element('fullscreen').contains(event.target)) return;
+  fullscreen.pointerDown(event, requestFullscreen);
+}, { capture: true });
 function fullscreenState(): void {
-  const on = !!document.fullscreenElement;
+  const on = fullscreen.intent;
   document.querySelectorAll<SVGElement>('[data-fullscreen]').forEach(icon => { icon.toggleAttribute('hidden', (icon.dataset.fullscreen === 'on') !== on); });
-  element('fullscreen').setAttribute('aria-pressed', String(on));
+  element('fullscreen').setAttribute('aria-pressed', String(fullscreen.intent));
+  fullscreenHint.hidden = !fullscreen.pending;
   element('fullscreen-state').textContent = !document.fullscreenEnabled ? text.fullscreenUnavailable : on ? text.enabled : text.off;
 }
-document.addEventListener('fullscreenchange', () => { fullscreenState(); resize(); }); fullscreenState();
+document.addEventListener('fullscreenchange', () => {
+  fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined);
+  fullscreenState(); resize();
+}); fullscreenState();
 element('fullscreen').onclick = () => {
-  void (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.())?.catch(() => { element('fullscreen-state').textContent = text.fullscreenUnavailable; });
+  fullscreen.toggle(requestFullscreen, () => { void document.exitFullscreen().catch(() => {}); });
+  fullscreenState();
 };
 for (const key of ['sound', 'developer'] as const) {
   element<HTMLInputElement>(key).onchange = event => {
@@ -290,7 +306,7 @@ void navigator.permissions?.query({ name: 'microphone' as PermissionName }).then
 }).catch(() => {});
 const contactLimit = Math.min(10, navigator.maxTouchPoints || 0);
 const contacts = new Map<number, TouchContact>();
-let videoWidth = 0, videoHeight = 0, worker: Worker | null = null, firstTap = true, hello: Hello;
+let videoWidth = 0, videoHeight = 0, worker: Worker | null = null, hello: Hello;
 let micAvailable = false;
 const captureLifecycle = new CaptureLifecycle();
 let supportResult: ((aac: boolean) => void) | null = null;
@@ -365,13 +381,13 @@ function measuredDisplay(): Hello['displays'][number] {
 // Polling also catches DPR, safe-area and screen changes that do not resize the CSS box.
 setInterval(() => {
   if (!initialized || !hello) return;
-  const display = measuredDisplay();
+  const display = fullscreen.display(measuredDisplay());
   if (displayDebounce.observe(display, performance.now())) {
     hello = { ...hello, displays: [display] }; post({ type: 'hello', hello }); resize();
   }
 }, 100);
 function displayReportSeed(): void {
-  hello = { ...hello, displays: [measuredDisplay()] }; displayDebounce.seed(hello.displays[0]);
+  hello = { ...hello, displays: [fullscreen.display(measuredDisplay())] }; displayDebounce.seed(hello.displays[0]);
 }
 function position(event: PointerEvent, clamp: boolean) {
   const box = canvas.getBoundingClientRect();
@@ -393,7 +409,6 @@ canvas.addEventListener('pointermove', event => {
   contacts.set(event.pointerId, { ...contact, ...point }); post({ type: 'touch', contacts: [...contacts.values()] });
 });
 canvas.addEventListener('pointerup', event => {
-  if (firstTap) { firstTap = false; void document.documentElement.requestFullscreen?.().catch(() => {}); }
   const contact = contacts.get(event.pointerId); if (!contact) return;
   const point = position(event, true) ?? contact;
   contacts.delete(event.pointerId);
