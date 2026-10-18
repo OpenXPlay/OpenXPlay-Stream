@@ -576,3 +576,19 @@ it('forwards codec preference updates and reconnects with truthful decoders', as
   const next = Socket.instances.at(-1)!; next.open();
   expect(next.json()[0]).toEqual({ ...hello, videoCodec: 'H264' });
 });
+
+it('forwards display settings only after feature negotiation and clears support on reconnect', async () => {
+  const settings = vector('display-settings-client');
+  const socket = init(); socket.open(); command(settings);
+  expect(socket.json().some((m: any) => m.type === 'display-settings')).toBe(false);
+  socket.receive(vector('welcome')); command(settings); socket.receive(settings);
+  expect(socket.json().some((m: any) => m.type === 'display-settings')).toBe(false);
+  expect(scope.postMessage.mock.calls.some(([m]) => m.type === 'display-settings')).toBe(false);
+  socket.receive(vector('welcome-display-settings'));
+  expect(scope.postMessage.mock.calls.some(([m]) => m.type === 'welcome' && m.features?.includes('display-settings'))).toBe(true);
+  command(settings); expect(socket.json().at(-1)).toEqual(settings);
+  socket.receive(settings); expect(scope.postMessage.mock.calls.at(-1)?.[0]).toEqual(settings);
+  socket.close(); await vi.advanceTimersByTimeAsync(1000);
+  const next = Socket.instances.at(-1)!; next.open(); next.receive(vector('welcome'));
+  command(settings); expect(next.json().some((m: any) => m.type === 'display-settings')).toBe(false);
+});

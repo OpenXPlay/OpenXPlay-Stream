@@ -38,6 +38,11 @@ Created by riko chen on 2026-10-14 -->
   <path d="M3 16h3a2 2 0 0 1 2 2v3" />
   <path d="M16 21v-3a2 2 0 0 1 2-2h3" /></svg><span data-text="fullscreen"></span><span id="fullscreen-state" class="secondary"></span></button>
 <button id="reset-positions" class="row fullscreen-row" data-text="resetPositions"></button>
+<p id="picture-size" class="secondary"></p>
+<div id="display-settings" hidden>
+<label class="row"><span data-text="resolution"></span><select id="resolution"><option value="auto" data-text="automatic"></option><option value="1080p">1080p</option><option value="720p">720p</option><option value="screen" data-text="wholeScreen"></option></select></label>
+<label class="row"><span data-text="iconSize"></span><select id="icon-size"><option value="small" data-text="small"></option><option value="standard" data-text="standard"></option><option value="large" data-text="large"></option></select></label>
+</div>
 <label class="row"><span data-text="frameRate"></span><select id="frame-rate">
 <option value="AUTO" data-text="automatic"></option>
 <option value="FPS_30">30 fps</option>

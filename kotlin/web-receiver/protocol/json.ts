@@ -11,6 +11,7 @@ export type VideoCodecPreference = 'AUTO' | 'H264';
 export type PlaybackMode = 'SMART' | 'QUALITY' | 'SPEED';
 export interface DisplayInfo {
   screen: number; width: number; height: number; dpr: number; refreshHz: number;
+  viewport?: { width: number; height: number }; fullscreen?: boolean;
   frameRate?: FrameRatePreference; sustainedFps?: number;
   safeArea: { top: number; right: number; bottom: number; left: number };
 }
@@ -32,8 +33,9 @@ export interface Stats {
   type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
   decodedLatencyMs: number | null; renderedLatencyMs: number | null; clockOffsetUs: I64 | null; rttUs: I64 | null;
 }
-export type JsonMessage = Hello | { type: 'restart' } |
-  { type: 'welcome'; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
+export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | '1080p' | '720p' | 'screen'; iconSize: 'small' | 'standard' | 'large' }
+export type JsonMessage = DisplaySettings | Hello | { type: 'restart' } |
+  { type: 'welcome'; features?: string[]; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
   { type: 'audio-format'; stream: number; format: AudioFormat | null } |
@@ -72,6 +74,7 @@ function object(fields: Record<string, Validator>): Validator {
 const audioCodec = literal('AAC_LC', 'OPUS', 'PCM_S16LE');
 const session = object({ id: i64, phase: literal('CONNECTING', 'ACTIVE', 'RECONNECTING', 'ENDED'), reason: optional(str) });
 const display = object({ screen: range(255), width: x => int(x) && positive(x), height: x => int(x) && positive(x), dpr: positive, refreshHz: positive,
+  viewport: optional(object({ width: x => int(x) && positive(x), height: x => int(x) && positive(x) })), fullscreen: optional(bool),
   frameRate: optional(literal('AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60')), sustainedFps: optional(positive),
   safeArea: object({ top: num, right: num, bottom: num, left: num }) });
 const video = object({ codec: literal('H264', 'H265'), codecString: nonempty, config: x => nonempty(x) && base64(x),
@@ -93,10 +96,11 @@ const diagnosticFields = [
   'longTaskCount', 'longTaskTotalMs', 'usedJSHeapSize', 'renderDepth',
 ];
 const schemas: Record<string, Validator> = {
+  'display-settings': object({ type: literal('display-settings'), resolution: literal('auto', '1080p', '720p', 'screen'), iconSize: literal('small', 'standard', 'large') }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
-  welcome: object({ plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
+  welcome: object({ features: optional(array(str)), plugins: optional(object({ host: literal('/plugins/host/index.html') })), type: literal('welcome'), version: literal(0), clientId: nonempty, session, sourceUrl: url, attribution: nonempty, projectUrl: url }),
   session: object({ type: literal('session'), session }),
   'video-format': object({ type: literal('video-format'), screen: range(255), format: nullable(video) }),
   'audio-format': object({ type: literal('audio-format'), stream: range(255), format: nullable(audio) }),
@@ -110,8 +114,8 @@ const schemas: Record<string, Validator> = {
     decodedLatencyMs: nullable(num), renderedLatencyMs: nullable(num), clockOffsetUs: nullable(i64), rttUs: nullable(i64) })),
   error: object({ type: literal('error'), code: nonempty, message: str }),
 };
-const clientTypes = ['hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
-const relayTypes = ['welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
+const clientTypes = ['display-settings', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
+const relayTypes = ['display-settings', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
 export function parseMessage(input: string | unknown, direction?: Direction): JsonMessage {
   let x: unknown = input;
   if (typeof input === 'string') {

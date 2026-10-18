@@ -19,6 +19,7 @@ let hello: Hello, url = '', socket: WebSocket | null = null, stopped = false, vi
 let restartSession: string | null = null;
 let restartChangesFrameRate = true;
 let playing = false, fit: 'fit' | 'fill' = 'fit';
+let displaySettingsSupported = false;
 let ready = false, active = false, retry = 0, reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let decoder: VideoDecoder | null = null, format: VideoFormat | null = null, config: VideoDecoderConfig | null = null;
 let generation = 0, waiting = true, sessionId: string | null = null, sequence = 0;
@@ -311,9 +312,11 @@ function session(next: import('../protocol/json').SessionState): void {
 function control(message: JsonMessage): void {
   switch (message.type) {
     case 'welcome':
+      displaySettingsSupported = message.features?.includes('display-settings') ?? false;
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
-      notice({ type: 'welcome', sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}) });
+      notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}) });
       session(message.session); break;
+    case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
     case 'session': session(message.session); break;
     case 'audio-format': if (ready) audioFormat(message.stream, message.format); break;
     case 'mic':
@@ -398,7 +401,7 @@ function media(data: ArrayBuffer): void {
 let sentHelloToken = '';
 function connect(): void {
   if (stopped) return;
-  ready = false;
+  ready = false; displaySettingsSupported = false; notice({ type: 'display-disconnected' });
   notice({ type: 'status', text: 'Connecting…' });
   const current = new WebSocket(url); socket = current; current.binaryType = 'arraybuffer';
   current.onopen = () => {
@@ -415,7 +418,7 @@ function connect(): void {
   current.onerror = () => { updateHold('interrupt'); notice({ type: 'status', text: 'Connection failed' }); };
   current.onclose = event => {
     if (socket !== current) return;
-    ready = false; active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
+    ready = false; displaySettingsSupported = false; notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
     if (event?.code === 1008) {
       stopped = true; clearTimeout(holdTimer); hold = { ...hold, deadline: null, clearAt: null };
@@ -464,6 +467,7 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
     case 'hello':
       restartChangesFrameRate = effectiveFrameRate(hello.displays[0]) !== effectiveFrameRate(message.hello.displays[0]);
       hello = message.hello; setPlayback(playbackMode(hello.playback)); if (ready) send(hello); break;
+    case 'display-settings': if (ready && displaySettingsSupported) send(message); break;
     case 'restart': if (ready) { restartSession = restartChangesFrameRate ? sessionId ?? '0' : null; playing = false; send({ type: 'restart' }); } break;
     case 'fit': fit = message.fit; break;
     case 'pair': hello = { ...hello, token: message.token }; stopped = false; clearTimeout(reconnectTimer); connect(); break;

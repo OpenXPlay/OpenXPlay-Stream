@@ -1,0 +1,63 @@
+// SPDX-FileCopyrightText: 2026 OpenXPlay.org
+// SPDX-License-Identifier: AGPL-3.0-only
+// Created by riko chen on 2026-10-18
+
+import { expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { DisplayDebounce, DisplaySettingsGate, pictureSize } from '../receiver/display';
+import { parseMessage, type Hello } from '../protocol/json';
+const vector = (name: string) => JSON.parse(readFileSync(new URL('../spec/vectors/web/' + name + '.json', import.meta.url), 'utf8'));
+const display = (vector('hello-viewport') as Hello).displays[0];
+it('reports only geometry stable for 500 ms, cancels reversion and ignores preference changes', () => {
+  const gate = new DisplayDebounce(); gate.seed(display);
+  const next = { ...display, viewport: { width: 1800, height: 900 } };
+  expect(gate.observe(next, 0)).toBe(false);
+  expect(gate.observe(next, 499)).toBe(false);
+  expect(gate.observe(next, 500)).toBe(true);
+  expect(gate.observe(next, 1000)).toBe(false);
+  expect(gate.observe(display, 1100)).toBe(false);
+  expect(gate.observe(next, 1500)).toBe(false);
+  expect(gate.observe(display, 1501)).toBe(false);
+  expect(gate.observe(display, 2000)).toBe(false);
+  expect(gate.observe(display, 2001)).toBe(true);
+  expect(gate.observe({ ...display, frameRate: 'FPS_30' }, 3000)).toBe(false);
+  expect(gate.observe({ ...display, frameRate: 'FPS_30' }, 4000)).toBe(false);
+});
+it('observes fullscreen, DPR, safe area and screen changes independently of the CSS viewport', () => {
+  for (const next of [{ ...display, fullscreen: true }, { ...display, dpr: 2 },
+    { ...display, width: display.width + 1 }, { ...display, height: display.height + 1 },
+    { ...display, safeArea: { ...display.safeArea, left: 10 } }]) {
+    const gate = new DisplayDebounce(); gate.seed(display);
+    expect(gate.observe(next, 0)).toBe(false); expect(gate.observe(next, 500)).toBe(true);
+  }
+});
+it('requires a welcome feature and clears it on legacy welcome or disconnect', () => {
+  const gate = new DisplaySettingsGate();
+  expect(gate.supported).toBe(false); expect(gate.message('auto', 'small')).toBeUndefined();
+  gate.welcome(['unrelated']); expect(gate.message('auto', 'small')).toBeUndefined();
+  gate.welcome(['display-settings']);
+  expect(gate.message('720p', 'small')).toEqual(vector('display-settings-client'));
+  gate.welcome(); expect(gate.supported).toBe(false);
+});
+it('accepts the exact vectors and rejects malformed viewport, feature and setting fields', () => {
+  parseMessage(vector('hello-viewport'), 'client-to-relay');
+  parseMessage(vector('welcome-display-settings'), 'relay-to-client');
+  for (const name of ['display-settings-client', 'display-settings-relay'])
+    for (const direction of ['client-to-relay', 'relay-to-client'] as const) expect(parseMessage(vector(name), direction)).toEqual(vector(name));
+  for (const viewport of [{ width: 0, height: 1 }, { width: 1.5, height: 2 }, { width: 1 }, null, { width: 1, height: 2, extra: 0 }])
+    expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, viewport }] })).toThrow();
+  for (const fullscreen of [null, 1, 'false'])
+    expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, fullscreen }] })).toThrow();
+  for (const features of [null, 'display-settings', [1]])
+    expect(() => parseMessage({ ...vector('welcome-display-settings'), features })).toThrow();
+  for (const patch of [{ resolution: 'AUTO' }, { iconSize: 'huge' }, { extra: 1 }])
+    expect(() => parseMessage({ ...vector('display-settings-client'), ...patch })).toThrow();
+});
+it('provides hidden settings rows, bilingual labels and canvas/window ratios', () => {
+  const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
+  expect(html).toContain('id="display-settings" hidden');
+  for (const id of ['resolution', 'icon-size', 'picture-size']) expect(html).toContain('id="' + id + '"');
+  expect(pictureSize(1920, 960)).toBe('1920×960 (2.00:1)');
+  expect(pictureSize(1533, 906)).toBe('1533×906 (1.69:1)');
+  expect(pictureSize(0, 0)).toBe('—');
+});

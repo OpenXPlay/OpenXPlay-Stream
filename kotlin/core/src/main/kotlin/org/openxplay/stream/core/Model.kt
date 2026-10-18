@@ -176,6 +176,8 @@ public data class SafeArea(
 
 public enum class FrameRatePreference { AUTO, FPS_30, FPS_35, FPS_40, FPS_45, FPS_50, FPS_55, FPS_60 }
 
+public data class Viewport(public val width: Int, public val height: Int)
+
 public data class DisplayInfo(
     public val widthPx: Int,
     public val heightPx: Int,
@@ -184,6 +186,8 @@ public data class DisplayInfo(
     public val safeArea: SafeArea = SafeArea(),
     public val frameRate: FrameRatePreference = FrameRatePreference.AUTO,
     public val sustainedFps: Double? = null,
+    public val viewport: Viewport? = null,
+    public val fullscreen: Boolean? = null,
 )
 
 public data class InputCapabilities(

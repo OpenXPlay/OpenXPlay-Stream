@@ -17,6 +17,7 @@ export function selectLanguage(languages: readonly string[]): Language {
 }
 export const strings = {
   en: {
+    resolution: 'Resolution', iconSize: 'Icon size', wholeScreen: 'Whole screen', small: 'Small', standard: 'Standard', large: 'Large', picture: 'Picture', windowSize: 'Window',
     frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying… CarPlay reconnects in a few seconds',
     videoCodec: 'Video codec', codecAuto: 'Automatic (recommended)', codecH264: 'H.264 only',
     codecHint: 'H.264 is the most compatible. Choose it if this screen shows no picture with H.265.',
@@ -50,6 +51,7 @@ export const strings = {
     attempt: 'Attempt {attempt} · {seconds} s until retry. Check your relay and network.',
   },
   'zh-CN': {
+    resolution: '分辨率', iconSize: '图标大小', wholeScreen: '整屏', small: '小', standard: '标准', large: '大', picture: '画面', windowSize: '窗口',
     frameRate: '帧率', automatic: '自动', applying: '正在应用… CarPlay 将在几秒后重新连接',
     videoCodec: '视频编码', codecAuto: '自动（推荐）', codecH264: '只用 H.264',
     codecHint: 'H.264 兼容性最好。如果这台车机用 H.265 时没有画面，请选择它。',

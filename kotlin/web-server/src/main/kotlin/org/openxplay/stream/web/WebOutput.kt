@@ -59,6 +59,7 @@ public data class WebOutputConfig(
     public val queueDurationUs: Long = 100_000,
     public val sendBufferBytes: Int = 32 * 1024,
     public val writeTimeoutMillis: Long = 5000,
+    public val displaySettings: DisplaySettingsPort? = null,
 ) {
     init {
         require(port in 0..65535 && maxClients > 0 && queueDurationUs >= 0 && sendBufferBytes >= 0 && writeTimeoutMillis > 0)
@@ -121,6 +122,13 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             listening = CompletableFuture()
             Runtime(host).also { runtime = it }
         }
+        val listener = config.displaySettings?.listen { settings -> synchronized(lock) {
+            if (runtime === run) run.clients.values.filter { it.hello != null && !it.closing }.forEach { it.json(settings.message()) }
+        } }
+        val retained = synchronized(lock) {
+            if (runtime === run) { run.settingsListener = listener; true } else false
+        }
+        if (!retained) listener?.close()
         run.reportCapabilities()
         thread("accept") { run.accept() }
     }
@@ -215,6 +223,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                 current
             }
         }
+        run.settingsListener?.close()
         run.executor.execute {
             try { run.server?.close() } catch (_: Exception) { }
             synchronized(lock) { run.clients.values.forEach { it.wake.release() }; run.sockets.toList() }.forEach { safelyClose(it) }
@@ -270,6 +279,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
             }
         }
 
+        var settingsListener: AutoCloseable? = null
         var lastRestartNanos: Long? = null
 
         fun reportCapabilities() {
@@ -291,7 +301,9 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     (d["dpr"]!!.jsonPrimitive.double * 160).coerceAtMost(Int.MAX_VALUE.toDouble()).roundToInt(),
                     d["refreshHz"]!!.jsonPrimitive.double, SafeArea(px("left"), px("top"), px("right"), px("bottom")),
                     d["frameRate"]?.let { FrameRatePreference.valueOf(it.jsonPrimitive.content) } ?: FrameRatePreference.AUTO,
-                    d["sustainedFps"]?.jsonPrimitive?.double))
+                    d["sustainedFps"]?.jsonPrimitive?.double,
+                    d["viewport"]?.jsonObject?.let { Viewport(it.int("width"), it.int("height")) },
+                    d["fullscreen"]?.jsonPrimitive?.boolean))
             } }
             val caps = OutputCapabilities(LatencyClass.INTERACTIVE, decoders, displays,
                 connected.maxOfOrNull { it.int("maxTouchContacts") } ?: 0, emptySet(), connected.flatMap { h -> h["audio"]!!.jsonArray.map { AudioCodec.valueOf(it.jsonPrimitive.content) } }.toSet(),
@@ -520,7 +532,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                         queueDurationUs = playbackQueueDurationUs(message["playback"]?.jsonPrimitive?.content, config.queueDurationUs)
                         queues.values.forEach { it.maxDurationUs = queueDurationUs }
                         if (first) {
-                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null))
+                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null))
+                            config.displaySettings?.let { json(it.current().message()) }
                         }
                         formats.forEach { (screen, format) ->
                             val before = format.codec != VideoCodec.H265 || previous?.get("decoders")?.jsonArray?.any {
@@ -553,6 +566,17 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     } else if (paused.remove(screen)) {
                         queues.remove(screen)?.clear()
                         videoFormat(screen, formats[screen])
+                    }
+                }
+                "display-settings" -> synchronized(lock) {
+                    if (closing || !run.active) return
+                    val port = config.displaySettings ?: return
+                    val primary = run.clients.values.firstOrNull { !it.closing && it.hello?.get("displays")?.jsonArray?.isNotEmpty() == true }
+                    val now = System.nanoTime()
+                    if (primary === this && (run.lastRestartNanos == null || now - run.lastRestartNanos!! >= TimeUnit.SECONDS.toNanos(10))) {
+                        run.lastRestartNanos = now
+                        val settings = DisplaySettings(message.getValue("resolution").jsonPrimitive.content, message.getValue("iconSize").jsonPrimitive.content)
+                        run.host { port.set(settings, origin) }
                     }
                 }
                 "restart" -> synchronized(lock) {

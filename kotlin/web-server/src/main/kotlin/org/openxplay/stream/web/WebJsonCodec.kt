@@ -27,8 +27,8 @@ public object WebJsonCodec {
         val type = (obj["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (type == null || schemas[type]?.invoke(obj) != true) throw WireFormatException("Invalid JSON message")
         val allowed = when (direction) {
-            Direction.CLIENT_TO_RELAY -> setOf("hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info")
-            Direction.RELAY_TO_CLIENT -> setOf("welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
+            Direction.CLIENT_TO_RELAY -> setOf("display-settings", "hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info")
+            Direction.RELAY_TO_CLIENT -> setOf("display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
             null -> schemas.keys
         }
         if (type !in allowed) throw WireFormatException("Wrong message direction")
@@ -105,6 +105,7 @@ public object WebJsonCodec {
     private val sessionSchema = obj("id" to i64, "phase" to literal("CONNECTING", "ACTIVE", "RECONNECTING", "ENDED"), "reason" to optional(string))
     private val display = obj("screen" to range(255), "width" to positiveInt, "height" to positiveInt,
         "dpr" to positive, "refreshHz" to positive,
+        "viewport" to optional(obj("width" to positiveInt, "height" to positiveInt)), "fullscreen" to optional(bool),
         "frameRate" to optional(literal("AUTO", "FPS_30", "FPS_35", "FPS_40", "FPS_45", "FPS_50", "FPS_55", "FPS_60")), "sustainedFps" to optional(positive), "safeArea" to obj("top" to number, "right" to number, "bottom" to number, "left" to number))
     private val videoSchema = obj("codec" to literal("H264", "H265"), "codecString" to nonempty,
         "config" to { nonempty(it) && base64(it) }, "width" to positiveInt, "height" to positiveInt, "fpsHint" to optional(positive))
@@ -115,11 +116,12 @@ public object WebJsonCodec {
         type to obj("type" to literal(type), *fields)
     private val schemas = mapOf(
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
+        message("display-settings", "resolution" to literal("auto", "1080p", "720p", "screen"), "iconSize" to literal("small", "standard", "large")),
         message("restart"),
         message("hello", "videoCodec" to optional(literal("AUTO", "H264")), "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
             "decoders" to array(obj("codecString" to nonempty, "hardware" to bool)), "displays" to array(display),
             "maxTouchContacts" to range(10), "audio" to array(audioCodec), "microphone" to bool),
-        message("welcome", "plugins" to optional(obj("host" to literal("/plugins/host/index.html"))), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "clientId" to nonempty,
+        message("welcome", "features" to optional(array(string)), "plugins" to optional(obj("host" to literal("/plugins/host/index.html"))), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "clientId" to nonempty,
             "session" to sessionSchema, "sourceUrl" to url, "attribution" to nonempty, "projectUrl" to url),
         message("session", "session" to sessionSchema),
         message("video-format", "screen" to range(255), "format" to nullable(videoSchema)),

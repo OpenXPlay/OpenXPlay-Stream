@@ -5,6 +5,8 @@
 import { collectReceiverInfo, codecPowerEfficient } from '../shared/receiver-info';
 import { codecCandidates, probeDecoders, estimateRefreshHz, audioCapabilities } from '../shared/capabilities';
 import { mapTouch, renderQueueDepth, videoRect } from '../shared/math';
+import { DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
+import type { DisplaySettings } from '../protocol/json';
 import type { Hello } from '../protocol/json';
 import type { TouchContact } from '../protocol/binary';
 import type { PageCommand, WorkerNotice } from './messages';
@@ -50,6 +52,17 @@ const pluginSwitch = element<HTMLInputElement>('plugins-enabled');
 pluginSwitch.checked = pluginSlot.preference;
 pluginSwitch.onchange = () => pluginSlot.enable(pluginSwitch.checked);
 
+const displayGate = new DisplaySettingsGate(), displayDebounce = new DisplayDebounce();
+let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', iconSize: 'standard' };
+function updateDisplaySettings(): void {
+  element('display-settings').hidden = !displayGate.supported;
+  element<HTMLSelectElement>('resolution').value = currentDisplaySettings.resolution;
+  element<HTMLSelectElement>('icon-size').value = currentDisplaySettings.iconSize;
+}
+function updatePictureSize(): void {
+  const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  element('picture-size').textContent = `${text.picture} ${pictureSize(videoWidth, videoHeight)} · ${text.windowSize} ${pictureSize(Math.round(box.width * dpr), Math.round(box.height * dpr))}`;
+}
 let protocolState = 'Not connected';
 let playback: PlaybackUi = { state: 'connecting', protocol: protocolState, holding: false };
 function updatePlayback(event: PlaybackEvent): void {
@@ -158,7 +171,7 @@ function fullscreenState(): void {
   element('fullscreen').setAttribute('aria-pressed', String(on));
   element('fullscreen-state').textContent = !document.fullscreenEnabled ? text.fullscreenUnavailable : on ? text.enabled : text.off;
 }
-document.addEventListener('fullscreenchange', fullscreenState); fullscreenState();
+document.addEventListener('fullscreenchange', () => { fullscreenState(); resize(); }); fullscreenState();
 element('fullscreen').onclick = () => {
   void (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.())?.catch(() => { element('fullscreen-state').textContent = text.fullscreenUnavailable; });
 };
@@ -178,6 +191,12 @@ for (const fit of ['fit', 'fill'] as const) element(fit).onclick = () => {
   releaseAll(); preferences.fit = fit; storage.save(preferences); updateSettings(); post({ type: 'fit', fit });
 };
 const restartGate = new RestartGate();
+for (const id of ['resolution', 'icon-size']) element<HTMLSelectElement>(id).onchange = () => {
+  if (!initialized || !displayGate.supported || !restartGate.allow(performance.now())) { updateDisplaySettings(); return; }
+  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], element<HTMLSelectElement>('icon-size').value as DisplaySettings['iconSize']);
+  if (message) post(message);
+  updateDisplaySettings();
+};
 element<HTMLSelectElement>('frame-rate').onchange = event => {
   const choice = event.target as HTMLSelectElement;
   const preference = frameRatePreference(choice.value);
@@ -353,10 +372,23 @@ function resize(): void {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   const width = Math.max(1, Math.round(box.width * dpr)), height = Math.max(1, Math.round(box.height * dpr));
   if (worker) post({ type: 'resize', width, height }); else { canvas.width = width; canvas.height = height; }
-  if (hello) {
-    hello = { ...hello, displays: [{ ...hello.displays[0], width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, safeArea: safeArea(dpr) }] };
-    post({ type: 'hello', hello });
+  updatePictureSize();
+}
+function measuredDisplay(): Hello['displays'][number] {
+  const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  return { ...hello.displays[0], width: Math.max(1, Math.round(screen.width * dpr)), height: Math.max(1, Math.round(screen.height * dpr)), dpr, safeArea: safeArea(dpr),
+    viewport: { width: Math.max(1, Math.round(box.width * dpr)), height: Math.max(1, Math.round(box.height * dpr)) }, fullscreen: !!document.fullscreenElement };
+}
+// Polling also catches DPR, safe-area and screen changes that do not resize the CSS box.
+setInterval(() => {
+  if (!initialized || !hello) return;
+  const display = measuredDisplay();
+  if (displayDebounce.observe(display, performance.now())) {
+    hello = { ...hello, displays: [display] }; post({ type: 'hello', hello }); resize();
   }
+}, 100);
+function displayReportSeed(): void {
+  hello = { ...hello, displays: [measuredDisplay()] }; displayDebounce.seed(hello.displays[0]);
 }
 function position(event: PointerEvent, clamp: boolean) {
   const box = canvas.getBoundingClientRect();
@@ -423,7 +455,7 @@ async function start(): Promise<void> {
       displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
     hello = withVideoCodec(withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback), preferences.videoCodec);
-    resize();
+    displayReportSeed(); resize();
     worker?.terminate(); void audioContext?.close(); audioContext = null; gain = null;
     let workerFailed = false;
     worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -452,7 +484,10 @@ async function start(): Promise<void> {
           if (rejectedState === 'incorrect' && !reducedMotion()) element('digits').animate?.([{ transform: 'translateX(0)' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }], { duration: 250 });
           codeInput.focus(); break;
         }
+        case 'display-disconnected': displayGate.welcome(); updateDisplaySettings(); break;
+        case 'display-settings': currentDisplaySettings = message; updateDisplaySettings(); break;
         case 'welcome':
+          displayGate.welcome(message.features); updateDisplaySettings();
           pluginSlot.configure(message);
           if (!receiverInfoStarted) { receiverInfoStarted = true; void collectReceiverInfo().then(info => post({ type: 'receiver-info', info })); }
           pairing.welcome(message.token); source.href = message.sourceUrl;
@@ -463,7 +498,7 @@ async function start(): Promise<void> {
           break;
         case 'format':
           releaseAll(); videoWidth = message.format?.width ?? 0; videoHeight = message.format?.height ?? 0;
-          showCodecInUse(message.format?.codec);
+          showCodecInUse(message.format?.codec); updatePictureSize();
           break;
         case 'stats': statistics(message); break;
       }
