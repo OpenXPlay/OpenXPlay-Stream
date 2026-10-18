@@ -5,8 +5,12 @@
 import { bestEffort } from './best-effort';
 
 export interface CodecProbe { codecString: string; width: number; height: number; supported: boolean; error?: string }
+// The higher levels cover what the iPhone sends at 1080p 60 fps (4.2 and above); a relay treats a lower
+// reported level as unable to decode the stream and transcodes it.
 export const codecCandidates = [
-  'avc1.42E01F', 'avc1.42E028', 'avc1.4D401F', 'avc1.4D4028', 'avc1.64001F', 'avc1.640028', 'hvc1.1.6.L93.B0', 'hvc1.1.6.L120.B0',
+  'avc1.42E01F', 'avc1.42E028', 'avc1.4D401F', 'avc1.4D4028', 'avc1.64001F', 'avc1.640028',
+  'avc1.64002A', 'avc1.640032', 'avc1.640033', 'avc1.640034',
+  'hvc1.1.6.L93.B0', 'hvc1.1.6.L120.B0', 'hvc1.1.6.L150.B0', 'hvc1.1.6.L153.B0',
 ];
 export async function probeDecoders(): Promise<CodecProbe[]> {
   return Promise.all(codecCandidates.flatMap(codecString => [[1280, 720], [1920, 1080]].map(async ([width, height]) => {
