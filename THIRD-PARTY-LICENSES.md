@@ -13,7 +13,7 @@ distributed build.
 | build (web) | `vite`, including helpers it may emit into the browser bundle | 7.1.12 | MIT |
 | test | `org.jetbrains.kotlin:kotlin-test-junit5` | 2.2.10 | Apache-2.0 |
 | test | `org.junit.jupiter`, `org.junit.platform` | 5.13.4 / 1.13.4 | EPL-2.0 |
-| runtime (web/receiver) | Lucide icons | 1.57.0 | ISC; Feather-derived icons: MIT |
+| runtime (kotlin/web-receiver, rust/web-receiver) | Lucide icons | 1.57.0 | ISC; Feather-derived icons: MIT |
 | test (web) | `vitest` | 3.2.4 | MIT |
 
 None of the runtime dependencies above ships an Apache-2.0 NOTICE file.
@@ -25,7 +25,7 @@ included in them.
 Lucide icons v1.57.0 — ISC License, Copyright (c) Lucide Icons and Contributors;
 icons derived from Feather (here: x, maximize, minimize) — MIT License,
 Copyright (c) 2013-present Cole Bemis; https://github.com/lucide-icons/lucide;
-embedded as inline SVG markup in web/receiver.
+embedded as inline SVG markup in kotlin/web-receiver/receiver and rust/web-receiver/receiver.
 
 ISC License
 

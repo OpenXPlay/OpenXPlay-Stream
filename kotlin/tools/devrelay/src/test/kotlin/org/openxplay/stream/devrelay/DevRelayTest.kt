@@ -51,7 +51,7 @@ class DevRelayTest {
                         .get(remaining(), TimeUnit.NANOSECONDS)
                     socket = connected
                     // Use the complete canonical hello, including its fixed token.
-                    val hello = Files.readString(root.resolve("../spec/vectors/web/hello.json"))
+                    val hello = Files.readString(root.resolve("web-receiver/spec/vectors/web/hello.json"))
                     assertTrue(hello.contains("\"token\": \"$token\""))
                     connected.sendText(hello, true).get(remaining(), TimeUnit.NANOSECONDS)
                     var welcome: String? = null

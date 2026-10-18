@@ -14,7 +14,7 @@ data class RelayOptions(
     val fps: Double = 30.0,
     val webPort: Int? = null,
     val webBind: String = "127.0.0.1",
-    val webRoot: Path = repositoryRoot().resolve("../web/dist").normalize(),
+    val webRoot: Path = repositoryRoot().resolve("web-receiver/dist").normalize(),
     val token: String = randomToken(),
     val sourceUrl: String = "https://github.com/OpenXPlay/OpenXPlay-Stream",
     val tlsKeystore: Path? = null,
@@ -45,7 +45,7 @@ data class RelayOptions(
   --fps <n>                  Frame rate (default 30)
   --web-port <port>          Enable web output (0 selects an ephemeral port)
   --web-bind <address>       Bind address (default 127.0.0.1)
-  --web-root <dir>           Assets (default ../web/dist; relative to repository root in Gradle)
+  --web-root <dir>           Assets (default web-receiver/dist; relative to repository root in Gradle)
   --token <token>            Pairing token (default random 128-bit hex)
   --source-url <url>         Source URL (default https://github.com/OpenXPlay/OpenXPlay-Stream)
   --tls-keystore <p12>       PKCS12 keystore for HTTPS/WSS
@@ -80,7 +80,7 @@ data class RelayOptions(
                 fps = values["fps"]?.toDouble() ?: 30.0,
                 webPort = values["web-port"]?.toInt(),
                 webBind = values["web-bind"] ?: "127.0.0.1",
-                webRoot = path(values["web-root"] ?: "../web/dist"),
+                webRoot = path(values["web-root"] ?: "web-receiver/dist"),
                 token = values["token"] ?: randomToken(),
                 sourceUrl = values["source-url"] ?: "https://github.com/OpenXPlay/OpenXPlay-Stream",
                 tlsKeystore = values["tls-keystore"]?.let(::path), tlsPassword = values["tls-password"],

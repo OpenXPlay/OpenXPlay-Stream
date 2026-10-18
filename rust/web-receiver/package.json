@@ -1,0 +1,18 @@
+{
+  "name": "@openxplay/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && tsc -p tsconfig.worker.json --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.worker.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.1.12",
+    "vitest": "3.2.4"
+  },
+  "license": "AGPL-3.0-only"
+}

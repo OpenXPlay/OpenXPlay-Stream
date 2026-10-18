@@ -30,9 +30,9 @@
 | Kotlin | JDK 17 | `cd kotlin && ./gradlew test` |
 | Rust | Rust 稳定版 | `cd rust && cargo test --workspace` |
 | 面向 aarch64 Linux 的 Rust | `rustup target add aarch64-unknown-linux-musl`、`llvm-tools`、clang | `rust/scripts/build-aarch64.sh` |
-| Web 接收端 | Node.js 20.19+ 或 22.12+ | `cd web && npm ci && npm test && npm run build`（输出在 `web/dist`） |
+| Web 接收端 | Node.js 20.19+ 或 22.12+ | 在 `kotlin/web-receiver` 和 `rust/web-receiver` 中分别运行 `npm ci && npm test && npm run build`（输出在各自的 `dist`） |
 
-中继会打包 `web/dist`，因此请先构建 Web 接收端，再构建中继。
+Android 中继打包 `kotlin/web-receiver/dist`，Linux 中继打包 `rust/web-receiver/dist`，请先构建对应的接收端，再构建中继。两份接收端是相互独立的代码。
 
 ## 参与贡献
 

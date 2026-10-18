@@ -1,0 +1,123 @@
+{
+  "type": "receiver-info",
+  "userAgent": "ExampleBrowser/1.0",
+  "hardwareConcurrency": 4,
+  "videoDecoder": true,
+  "videoDecode": [
+    {
+      "codec": "avc1.42E01F",
+      "width": 1280,
+      "height": 720,
+      "preferHardware": true,
+      "preferSoftware": true,
+      "fps30": {
+        "supported": true,
+        "smooth": true,
+        "powerEfficient": true
+      },
+      "fps60": {
+        "supported": true,
+        "smooth": false,
+        "powerEfficient": true
+      },
+      "mediaSource": true
+    }
+  ],
+  "userAgentData": {
+    "brands": [
+      {
+        "brand": "ExampleBrowser",
+        "version": "1"
+      }
+    ],
+    "mobile": true,
+    "platform": "Android",
+    "platformVersion": "13.0.0",
+    "model": "",
+    "architecture": "arm",
+    "bitness": "64",
+    "fullVersionList": [
+      {
+        "brand": "ExampleBrowser",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "language": "en-US",
+  "isSecureContext": true,
+  "crossOriginIsolated": false,
+  "deviceMemory": 4,
+  "maxTouchPoints": 5,
+  "pointerFine": false,
+  "pointerCoarse": true,
+  "pointerNone": false,
+  "hover": false,
+  "anyPointerFine": false,
+  "anyPointerCoarse": true,
+  "anyHover": false,
+  "battery": {
+    "level": 0.8,
+    "charging": true
+  },
+  "screen": {
+    "width": 1280,
+    "height": 720,
+    "availWidth": 1280,
+    "availHeight": 720,
+    "colorDepth": 24,
+    "orientation": "landscape-primary"
+  },
+  "devicePixelRatio": 1,
+  "innerWidth": 1280,
+  "innerHeight": 720,
+  "visualViewportScale": 1,
+  "refreshHz": 60,
+  "webgl": {
+    "available": true,
+    "vendor": "ExampleVendor",
+    "renderer": "ExampleRenderer",
+    "unmaskedVendor": "ExampleVendor",
+    "unmaskedRenderer": "ExampleGPU",
+    "maxTextureSize": 8192
+  },
+  "webgl2": {
+    "available": false
+  },
+  "webgpu": {
+    "vendor": "example",
+    "architecture": "example",
+    "device": "0001",
+    "description": "ExampleGPU"
+  },
+  "videoFrame": true,
+  "offscreenCanvas": true,
+  "requestVideoFrameCallback": true,
+  "audio": {
+    "sampleRate": 48000,
+    "baseLatency": 0.01,
+    "outputLatency": 0.02,
+    "audioWorklet": true
+  },
+  "audioDecoder": [
+    {
+      "codec": "mp4a.40.2",
+      "supported": true
+    },
+    {
+      "codec": "opus",
+      "supported": true
+    }
+  ],
+  "network": {
+    "type": "wifi",
+    "effectiveType": "4g",
+    "downlink": 10,
+    "rtt": 20,
+    "saveData": false
+  },
+  "memory": {
+    "jsHeapSizeLimit": 1073741824,
+    "totalJSHeapSize": 16777216,
+    "usedJSHeapSize": 8388608
+  }
+}

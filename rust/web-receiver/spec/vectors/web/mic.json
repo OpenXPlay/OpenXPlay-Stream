@@ -1,0 +1,10 @@
+{
+  "type": "mic",
+  "stream": 0,
+  "request": {
+    "codec": "OPUS",
+    "sampleRate": 48000,
+    "channels": 1,
+    "frameMs": 20
+  }
+}

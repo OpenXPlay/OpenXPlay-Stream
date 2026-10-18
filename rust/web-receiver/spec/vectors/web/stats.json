@@ -1,0 +1,14 @@
+{
+  "type": "stats",
+  "screen": 0,
+  "decodeMs": 3.2,
+  "decodeQueue": 1,
+  "dropped": 2,
+  "rendered": 120,
+  "decodedLatencyMs": 8.5,
+  "renderedLatencyMs": 16.7,
+  "clockOffsetUs": "500000",
+  "rttUs": "2000",
+  "audioBufferedMs": 60,
+  "audioUnderruns": 2
+}

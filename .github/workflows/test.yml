@@ -34,16 +34,20 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Separate code: the Android relay ships the first, the Linux relay the second.
+        receiver: [kotlin/web-receiver, rust/web-receiver]
     defaults:
       run:
-        working-directory: web
+        working-directory: ${{ matrix.receiver }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: ${{ matrix.receiver }}/package-lock.json
       - run: npm ci
       - run: npm test
       - run: npm run build

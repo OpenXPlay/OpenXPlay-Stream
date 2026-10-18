@@ -16,9 +16,9 @@ impl OutputHost for Host {
 #[test]
 fn hello_preference_is_strict() {
     for text in [
-        include_str!("../../../spec/vectors/web/hello-video-codec-h264.json"),
-        include_str!("../../../spec/vectors/web/hello-video-codec-auto.json"),
-        include_str!("../../../spec/vectors/web/hello.json"),
+        include_str!("../../web-receiver/spec/vectors/web/hello-video-codec-h264.json"),
+        include_str!("../../web-receiver/spec/vectors/web/hello-video-codec-auto.json"),
+        include_str!("../../web-receiver/spec/vectors/web/hello.json"),
     ] {
         let mut hello: Value = serde_json::from_str(text).unwrap();
         json::validate(&hello, None).unwrap();
@@ -47,7 +47,7 @@ fn repeated_hello_updates_preference_without_changing_hardware() {
             .insert(id.into(), Client::new(config.queue_duration_us));
     }
     let mut hello: Value = serde_json::from_str(include_str!(
-        "../../../spec/vectors/web/hello-video-codec-h264.json"
+        "../../web-receiver/spec/vectors/web/hello-video-codec-h264.json"
     ))
     .unwrap();
     hello.as_object_mut().unwrap().remove("videoCodec");

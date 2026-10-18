@@ -111,7 +111,7 @@ fn tls_socket_pair_protocol_pause_and_controls() {
     }
     text(&mut client, {
         let mut h: Value =
-            serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+            serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
         h["audio"] = json!(["AAC_LC", "PCM_S16LE"]);
         h["microphone"] = json!(true);
         h
@@ -305,7 +305,7 @@ fn audio_queue_bounds_generations_codec_filter_and_late_join() {
         .clients
         .insert("late".into(), Client::new(config.queue_duration_us));
     let mut hello: Value =
-        serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
     hello["audio"] = json!(["AAC_LC"]);
     hello["microphone"] = json!(true);
     handle(hello.clone(), "late", &config, &web.state, 0).unwrap();
@@ -455,7 +455,7 @@ fn failed_hellos_close_with_policy_and_block_the_remote_ip() {
         });
         let mut ws = WebSocket::from_raw_socket(client, Role::Client, None);
         let mut hello: Value =
-            serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+            serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
         hello["token"] = json!(if attempt < 5 { "wrong" } else { "00123456" });
         ws.send(Message::Text(hello.to_string().into())).unwrap();
         if attempt < 6 {
@@ -523,7 +523,7 @@ fn disabled_pairing_accepts_empty_and_arbitrary_tokens_even_for_a_blocked_ip() {
         });
         let mut ws = WebSocket::from_raw_socket(client, Role::Client, None);
         let mut hello: Value =
-            serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+            serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
         hello["token"] = json!(if attempt == 0 { "" } else { "arbitrary-code" });
         ws.send(Message::Text(hello.to_string().into())).unwrap();
         let Message::Text(v) = ws.read().unwrap() else {
@@ -579,7 +579,7 @@ fn receiver_diagnostics_are_optional_bounded_and_forwarded_once() {
         .insert("test".into(), Client::new(config.queue_duration_us));
     let parse = |text| json::parse(text, Some(json::Direction::Client)).unwrap();
     handle(
-        parse(include_str!("../../../spec/vectors/web/hello.json")),
+        parse(include_str!("../../web-receiver/spec/vectors/web/hello.json")),
         "test",
         &config,
         &web.state,
@@ -588,7 +588,7 @@ fn receiver_diagnostics_are_optional_bounded_and_forwarded_once() {
     .unwrap();
     // A receiver can report stats and request frames without ever sending receiver-info.
     handle(
-        parse(include_str!("../../../spec/vectors/web/stats.json")),
+        parse(include_str!("../../web-receiver/spec/vectors/web/stats.json")),
         "test",
         &config,
         &web.state,
@@ -606,11 +606,11 @@ fn receiver_diagnostics_are_optional_bounded_and_forwarded_once() {
     assert!(web.state.lock().unwrap().clients["test"]
         .receiver_info
         .is_none());
-    let info = parse(include_str!("../../../spec/vectors/web/receiver-info.json"));
+    let info = parse(include_str!("../../web-receiver/spec/vectors/web/receiver-info.json"));
     handle(info.clone(), "test", &config, &web.state, 0).unwrap();
     handle(info.clone(), "test", &config, &web.state, 0).unwrap();
     let mut stats = parse(include_str!(
-        "../../../spec/vectors/web/stats-diagnostics.json"
+        "../../web-receiver/spec/vectors/web/stats-diagnostics.json"
     ));
     stats["futureMetric"] = json!({"supported":true});
     json::validate(&stats, Some(json::Direction::Client)).unwrap();
@@ -676,7 +676,7 @@ fn preferences_reach_the_host_and_only_primary_can_restart_with_a_cooldown() {
             .insert(id.into(), Client::new(config.queue_duration_us));
     }
     let mut hello: Value =
-        serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
     for rate in (30..=60).step_by(5) {
         hello["displays"][0]["frameRate"] = json!(format!("FPS_{rate}"));
         handle(hello.clone(), "a", &config, &web.state, 0).unwrap();
@@ -749,7 +749,7 @@ fn hevc_only_reaches_capable_clients_and_mixed_clients_force_avc() {
             .clients
             .insert(id.into(), Client::new(config.queue_duration_us));
         let mut hello: Value =
-            serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+            serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
         hello["decoders"] = json!([{"codecString":codec,"hardware":hardware}]);
         handle(hello, id, &config, &web.state, 0).unwrap();
         let caps = host.0.lock().unwrap();
@@ -786,7 +786,7 @@ fn hevc_only_reaches_capable_clients_and_mixed_clients_force_avc() {
     }
     drop(s);
     let mut hello: Value =
-        serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
     hello["decoders"] = json!([{"codecString":"hvc1.1.6.L120.90","hardware":false}]);
     handle(hello.clone(), "c", &config, &web.state, 0).unwrap();
     assert!(!web.state.lock().unwrap().clients["c"]
@@ -819,7 +819,7 @@ fn avc_format() -> Arc<VideoFormat> {
 }
 fn hello_with(playback: Option<&str>) -> Value {
     let mut hello: Value =
-        serde_json::from_str(include_str!("../../../spec/vectors/web/hello.json")).unwrap();
+        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap();
     if let Some(mode) = playback {
         hello["playback"] = json!(mode);
     }
@@ -1083,7 +1083,7 @@ fn slow_client_drops_its_own_frames_without_blocking_the_producer_or_other_clien
     let requests = host.0.lock().unwrap().clone();
     assert_eq!(requests, vec!["slow".to_owned(); frames / 30]);
     let stats: Value =
-        serde_json::from_str(include_str!("../../../spec/vectors/web/stats.json")).unwrap();
+        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/stats.json")).unwrap();
     handle(stats, "slow", &config, &web.state, 0).unwrap();
     let dropped = web.state.lock().unwrap().clients["slow"].dropped_frames;
     assert_eq!(
@@ -1312,7 +1312,7 @@ fn slow_reader_latency_stays_within_the_queue_budget_and_a_large_key_frame_arriv
             // The relay's counters while the link is congested.
             stats_sent = true;
             let stats: Value =
-                serde_json::from_str(include_str!("../../../spec/vectors/web/stats.json")).unwrap();
+                serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/stats.json")).unwrap();
             ws.send(Message::Text(stats.to_string().into())).unwrap();
         }
         if producer.is_finished() && !ws.get_ref().sock.fast {

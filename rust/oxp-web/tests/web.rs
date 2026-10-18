@@ -57,7 +57,7 @@ fn vector(name: &str) -> Value {
     serde_json::from_slice(
         &fs::read(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("../../spec/vectors/web/{name}.json")),
+                .join(format!("../web-receiver/spec/vectors/web/{name}.json")),
         )
         .unwrap(),
     )
@@ -65,7 +65,7 @@ fn vector(name: &str) -> Value {
 }
 #[test]
 fn vectors_and_strict_schemas() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../spec/vectors/web");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web-receiver/spec/vectors/web");
     for p in fs::read_dir(root).unwrap() {
         let p = p.unwrap().path();
         if p.extension().and_then(|s| s.to_str()) != Some("json") {

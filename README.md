@@ -30,9 +30,9 @@ The model and the outputs are implemented three times, one per runtime. Shared p
 | Kotlin | JDK 17 | `cd kotlin && ./gradlew test` |
 | Rust | Rust stable | `cd rust && cargo test --workspace` |
 | Rust for aarch64 Linux | `rustup target add aarch64-unknown-linux-musl`, `llvm-tools`, clang | `rust/scripts/build-aarch64.sh` |
-| Web receiver | Node.js 20.19+ or 22.12+ | `cd web && npm ci && npm test && npm run build` (output in `web/dist`) |
+| Web receivers | Node.js 20.19+ or 22.12+ | `npm ci && npm test && npm run build` in `kotlin/web-receiver` and in `rust/web-receiver` (output in each `dist`) |
 
-The relays package `web/dist`, so build the web receiver before building a relay.
+The Android relay packages `kotlin/web-receiver/dist` and the Linux relay `rust/web-receiver/dist`; build that receiver before building the relay. The two receivers are separate code.
 
 ## Contributing
 

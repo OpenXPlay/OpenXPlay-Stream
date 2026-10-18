@@ -15,5 +15,5 @@ dependencies {
     testRuntimeOnly(libs.junit.jupiter.engine)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
-sourceSets.test { resources.srcDir(rootProject.file("../spec")) }
+sourceSets.test { resources.srcDir(rootProject.file("../spec")); resources.srcDir(rootProject.file("web-receiver/spec")) }
 tasks.test { useJUnitPlatform() }
