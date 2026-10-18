@@ -7,10 +7,10 @@ package org.openxplay.stream.web
 import org.openxplay.stream.core.Origin
 import kotlinx.serialization.json.*
 
-public data class DisplaySettings(public val resolution: String = "auto", public val iconSize: String = "standard") {
-    init { require(resolution in setOf("auto", "native", "1080p", "720p", "screen") && iconSize in setOf("small", "standard", "large")) }
+public data class DisplaySettings(public val resolution: String = "auto", public val screenWidth: Int = 200) {
+    init { require(resolution in setOf("auto", "native", "1080p", "720p", "screen") && screenWidth in setOf(125, 200, 250, 300)) }
     public fun message(): JsonObject = buildJsonObject {
-        put("type", "display-settings"); put("resolution", resolution); put("iconSize", iconSize)
+        put("type", "display-settings"); put("resolution", resolution); put("screenWidth", screenWidth)
     }
 }
 /** Callbacks run after publishing the new current value; closing removes the listener. */

@@ -34,11 +34,11 @@ it('observes fullscreen, DPR, safe area and screen changes independently of the 
 });
 it('requires a welcome feature and clears it on legacy welcome or disconnect', () => {
   const gate = new DisplaySettingsGate();
-  expect(gate.supported).toBe(false); expect(gate.message('auto', 'small')).toBeUndefined();
-  gate.welcome(['unrelated']); expect(gate.message('auto', 'small')).toBeUndefined();
+  expect(gate.supported).toBe(false); expect(gate.message('auto', 125)).toBeUndefined();
+  gate.welcome(['unrelated']); expect(gate.message('auto', 125)).toBeUndefined();
   gate.welcome(['display-settings']);
-  expect(gate.message('720p', 'small')).toEqual(vector('display-settings-client'));
-  expect(gate.message('native', 'standard')).toEqual(vector('display-settings-native'));
+  expect(gate.message('720p', 125)).toEqual(vector('display-settings-client'));
+  expect(gate.message('native', 200)).toEqual(vector('display-settings-native'));
   gate.welcome(); expect(gate.supported).toBe(false);
 });
 it('accepts the exact vectors and rejects malformed viewport, feature and setting fields', () => {
@@ -52,7 +52,7 @@ it('accepts the exact vectors and rejects malformed viewport, feature and settin
     expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, fullscreen }] })).toThrow();
   for (const features of [null, 'display-settings', [1]])
     expect(() => parseMessage({ ...vector('welcome-display-settings'), features })).toThrow();
-  for (const patch of [{ resolution: 'AUTO' }, { iconSize: 'huge' }, { extra: 1 }])
+  for (const patch of [{ resolution: 'AUTO' }, { screenWidth: 150 }, { screenWidth: '200' }, { screenWidth: null }, { extra: 1 }])
     expect(() => parseMessage({ ...vector('display-settings-client'), ...patch })).toThrow();
 });
 it('provides hidden settings rows, bilingual labels and canvas/window ratios', () => {
@@ -65,7 +65,14 @@ it('provides hidden settings rows, bilingual labels and canvas/window ratios', (
   expect(strings.en.native).toBe('Native'); expect(strings['zh-CN'].native).toBe('原画');
   expect(strings.en.nativeHint).toContain('sharpest'); expect(strings.en.nativeHint).toContain('Wi-Fi bandwidth');
   expect(strings['zh-CN'].nativeHint).toContain('最清晰'); expect(strings['zh-CN'].nativeHint).toContain('Wi-Fi 带宽');
-  for (const id of ['resolution', 'icon-size', 'picture-size']) expect(html).toContain('id="' + id + '"');
+  for (const id of ['resolution', 'screen-width', 'picture-size']) expect(html).toContain('id="' + id + '"');
+  const widths = [...html.matchAll(/<option value="(125|200|250|300)"/g)].map(match => Number(match[1]));
+  expect(widths).toEqual([125, 200, 250, 300]);
+  expect(html).toContain('data-text="screenWidthHint"');
+  expect(strings.en.screenWidth).toBe('CarPlay screen width');
+  expect(strings['zh-CN'].screenWidth).toBe('CarPlay 屏幕宽度');
+  expect(strings.en.screenWidthHint).toContain('more icons on one page');
+  expect(strings['zh-CN'].screenWidthHint).toContain('一页显示的图标越多');
   expect(pictureSize(1920, 960)).toBe('1920×960 (2.00:1)');
   expect(pictureSize(1533, 906)).toBe('1533×906 (1.69:1)');
   expect(pictureSize(0, 0)).toBe('—');
@@ -87,4 +94,15 @@ it('accepts optional boolean fullscreen preference and rejects other types', () 
   for (const fullscreenPreferred of [null, 0, 'true', {}])
     expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, fullscreenPreferred }] })).toThrow();
   parseMessage(vector('hello-viewport'), 'client-to-relay');
+});
+
+it('accepts every numeric screen width in both directions and rejects missing or invalid presets', () => {
+  for (const direction of ['client-to-relay', 'relay-to-client'] as const) {
+    for (const screenWidth of [125, 200, 250, 300]) {
+      const message = { ...vector('display-settings-client'), screenWidth };
+      expect(parseMessage(message, direction)).toEqual(message);
+    }
+    for (const screenWidth of [undefined, 100, 400, 200.5, '125', null, true])
+      expect(() => parseMessage({ ...vector('display-settings-client'), screenWidth }, direction)).toThrow();
+  }
 });

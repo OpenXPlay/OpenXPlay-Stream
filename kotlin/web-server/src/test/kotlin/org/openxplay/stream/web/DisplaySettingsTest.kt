@@ -58,11 +58,11 @@ class DisplaySettingsTest {
                     primary.send(1, vector("display-settings-client").toByteArray())
                     val expected = WebJsonCodec.parse(vector("display-settings-client"))
                     assertEquals(expected, primary.json()); assertEquals(expected, secondary.json())
-                    assertEquals(listOf(DisplaySettings("720p", "small")), port.changes.toList())
-                    primary.send(1, """{"type":"display-settings","resolution":"screen","iconSize":"large"}""".toByteArray())
+                    assertEquals(listOf(DisplaySettings("720p", 125)), port.changes.toList())
+                    primary.send(1, """{"type":"display-settings","resolution":"screen","screenWidth":300}""".toByteArray())
                     primary.send(1, vector("ping").toByteArray()); assertEquals("pong", primary.json()["type"]!!.jsonPrimitive.content)
                     output.awaitHostIdle(); assertEquals(1, port.changes.size)
-                    port.set(DisplaySettings("native", "large"), Origin("phone", "settings"))
+                    port.set(DisplaySettings("native", 300), Origin("phone", "settings"))
                     assertEquals(port.current().message(), primary.json())
                     assertEquals(port.current().message(), secondary.json())
                     assertEquals(1, port.listeners.size)
@@ -98,11 +98,26 @@ class DisplaySettingsTest {
                 WebJsonCodec.validate(JsonObject(hello + ("displays" to JsonArray(listOf(JsonObject(display + (field to bad)))))))
             }
         }
-        for (field in listOf("resolution", "iconSize")) {
+        for (field in listOf("resolution", "screenWidth")) {
             val message = WebJsonCodec.parse(vector("display-settings-client"))
             assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(message + (field to JsonPrimitive("invalid")))) }
         }
         val welcome = WebJsonCodec.parse(vector("welcome-display-settings"))
         assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(welcome + ("features" to JsonPrimitive("display-settings")))) }
     }
+    @Test fun numericScreenWidthPresetsRoundTripAndRejectInvalidValues() {
+        assertEquals(200, DisplaySettings().screenWidth)
+        for (width in listOf(125, 200, 250, 300)) for (direction in WebJsonCodec.Direction.entries) {
+            val message = DisplaySettings("auto", width).message()
+            assertEquals(message, WebJsonCodec.parse(WebJsonCodec.encode(message, direction), direction))
+        }
+        for (width in listOf(100, 150, 400)) assertFailsWith<IllegalArgumentException> { DisplaySettings(screenWidth = width) }
+        val message = DisplaySettings().message()
+        for (direction in WebJsonCodec.Direction.entries) {
+            assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(message - "screenWidth"), direction) }
+            for (bad in listOf(JsonPrimitive("200"), JsonPrimitive(150), JsonPrimitive(200.5), JsonPrimitive(true), JsonNull))
+                assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(message + ("screenWidth" to bad)), direction) }
+        }
+    }
+
 }

@@ -576,7 +576,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     val now = System.nanoTime()
                     if (primary === this && (run.lastRestartNanos == null || now - run.lastRestartNanos!! >= TimeUnit.SECONDS.toNanos(10))) {
                         run.lastRestartNanos = now
-                        val settings = DisplaySettings(message.getValue("resolution").jsonPrimitive.content, message.getValue("iconSize").jsonPrimitive.content)
+                        val settings = DisplaySettings(message.getValue("resolution").jsonPrimitive.content, message.getValue("screenWidth").jsonPrimitive.int)
                         run.host { port.set(settings, origin) }
                     }
                 }

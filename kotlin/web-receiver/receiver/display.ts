@@ -24,8 +24,8 @@ export class DisplayDebounce {
 export class DisplaySettingsGate {
   supported = false;
   welcome(features?: string[]): void { this.supported = features?.includes('display-settings') ?? false; }
-  message(resolution: DisplaySettings['resolution'], iconSize: DisplaySettings['iconSize']): DisplaySettings | undefined {
-    return this.supported ? { type: 'display-settings', resolution, iconSize } : undefined;
+  message(resolution: DisplaySettings['resolution'], screenWidth: DisplaySettings['screenWidth']): DisplaySettings | undefined {
+    return this.supported ? { type: 'display-settings', resolution, screenWidth } : undefined;
   }
 }
 export function pictureSize(width: number, height: number): string {

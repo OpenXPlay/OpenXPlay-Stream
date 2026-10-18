@@ -122,7 +122,7 @@ public object WebJsonCodec {
                 it.getValue("y").jsonPrimitive.double + it.getValue("height").jsonPrimitive.double <= it.getValue("canvasHeight").jsonPrimitive.double } },
         message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display, "autoRestore" to optional(literal("restored", "denied", "off"))),
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
-        message("display-settings", "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "iconSize" to literal("small", "standard", "large")),
+        message("display-settings", "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "screenWidth" to { integer(it) && (it as JsonPrimitive).intOrNull in setOf(125, 200, 250, 300) }),
         message("restart"),
         message("hello", "videoCodec" to optional(literal("AUTO", "H264")), "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
             "decoders" to array(obj("codecString" to nonempty, "hardware" to bool)), "displays" to array(display),

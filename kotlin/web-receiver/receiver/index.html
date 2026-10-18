@@ -43,7 +43,8 @@ Created by riko chen on 2026-10-14 -->
 <div id="display-settings" hidden>
 <label class="row"><span data-text="resolution"></span><select id="resolution"><option value="auto" data-text="automatic"></option><option value="native" data-text="native"></option><option value="1080p">1080p</option><option value="720p">720p</option><option value="screen" data-text="wholeScreen"></option></select></label>
 <p class="secondary" data-text="nativeHint"></p>
-<label class="row"><span data-text="iconSize"></span><select id="icon-size"><option value="small" data-text="small"></option><option value="standard" data-text="standard"></option><option value="large" data-text="large"></option></select></label>
+<label class="row"><span data-text="screenWidth"></span><select id="screen-width" aria-describedby="screen-width-hint"><option value="125">125 mm</option><option value="200">200 mm</option><option value="250">250 mm</option><option value="300">300 mm</option></select></label>
+<p id="screen-width-hint" class="secondary" data-text="screenWidthHint"></p>
 </div>
 <label class="row"><span data-text="frameRate"></span><select id="frame-rate">
 <option value="AUTO" data-text="automatic"></option>

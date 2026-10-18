@@ -54,11 +54,11 @@ pluginSwitch.checked = pluginSlot.preference;
 pluginSwitch.onchange = () => pluginSlot.enable(pluginSwitch.checked);
 
 const displayGate = new DisplaySettingsGate(), displayDebounce = new DisplayDebounce();
-let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', iconSize: 'standard' };
+let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', screenWidth: 200 };
 function updateDisplaySettings(): void {
   element('display-settings').hidden = !displayGate.supported;
   element<HTMLSelectElement>('resolution').value = currentDisplaySettings.resolution;
-  element<HTMLSelectElement>('icon-size').value = currentDisplaySettings.iconSize;
+  element<HTMLSelectElement>('screen-width').value = String(currentDisplaySettings.screenWidth);
 }
 function updatePictureSize(): void {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
@@ -219,9 +219,9 @@ for (const fit of ['fit', 'fill'] as const) element(fit).onclick = () => {
   releaseAll(); preferences.fit = fit; storage.save(preferences); updateSettings(); post({ type: 'fit', fit });
 };
 const restartGate = new RestartGate();
-for (const id of ['resolution', 'icon-size']) element<HTMLSelectElement>(id).onchange = () => {
+for (const id of ['resolution', 'screen-width']) element<HTMLSelectElement>(id).onchange = () => {
   if (!initialized || !displayGate.supported || !restartGate.allow(performance.now())) { updateDisplaySettings(); return; }
-  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], element<HTMLSelectElement>('icon-size').value as DisplaySettings['iconSize']);
+  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth']);
   if (message) post(message);
   updateDisplaySettings();
 };
