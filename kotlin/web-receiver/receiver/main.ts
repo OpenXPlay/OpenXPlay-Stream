@@ -389,7 +389,7 @@ function resize(): void {
 function measuredDisplay(): Hello['displays'][number] {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   return { ...hello.displays[0], width: Math.max(1, Math.round(screen.width * dpr)), height: Math.max(1, Math.round(screen.height * dpr)), dpr, safeArea: safeArea(dpr),
-    viewport: { width: Math.max(1, Math.round(box.width * dpr)), height: Math.max(1, Math.round(box.height * dpr)) }, fullscreen: !!document.fullscreenElement };
+    viewport: { width: Math.max(1, Math.round(box.width * dpr)), height: Math.max(1, Math.round(box.height * dpr)) }, fullscreen: !!document.fullscreenElement, fullscreenPreferred: fullscreen.intent };
 }
 // Polling also catches DPR, safe-area and screen changes that do not resize the CSS box.
 setInterval(() => {

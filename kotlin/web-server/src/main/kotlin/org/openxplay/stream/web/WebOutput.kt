@@ -301,7 +301,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     d["frameRate"]?.let { FrameRatePreference.valueOf(it.jsonPrimitive.content) } ?: FrameRatePreference.AUTO,
                     d["sustainedFps"]?.jsonPrimitive?.double,
                     d["viewport"]?.jsonObject?.let { Viewport(it.int("width"), it.int("height")) },
-                    d["fullscreen"]?.jsonPrimitive?.boolean))
+                    d["fullscreen"]?.jsonPrimitive?.boolean, d["fullscreenPreferred"]?.jsonPrimitive?.boolean))
             } }
             val caps = OutputCapabilities(LatencyClass.INTERACTIVE, decoders, displays,
                 connected.maxOfOrNull { it.int("maxTouchContacts") } ?: 0, emptySet(), connected.flatMap { h -> h["audio"]!!.jsonArray.map { AudioCodec.valueOf(it.jsonPrimitive.content) } }.toSet(),

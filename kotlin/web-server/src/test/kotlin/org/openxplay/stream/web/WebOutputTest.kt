@@ -261,9 +261,17 @@ class WebOutputTest {
                 eventually { caps.lastOrNull()?.touch == 10 }
                 assertEquals(160, caps.last().displays[ScreenId.MAIN]!!.densityDpi)
                 assertTrue(caps.last().audio.isEmpty()); assertFalse(caps.last().microphone); assertTrue(caps.last().keys.isEmpty())
+                for (preferred in listOf(true, false)) {
+                    val report = WebJsonCodec.parse(vector("hello-fullscreen-preferred"))
+                    val display = report["displays"]!!.jsonArray[0].jsonObject
+                    client.send(1, JsonObject(report + ("displays" to JsonArray(listOf(JsonObject(display +
+                        ("fullscreenPreferred" to JsonPrimitive(preferred))))))).toString().toByteArray())
+                    eventually { caps.last().displays[ScreenId.MAIN]?.fullscreenPreferred == preferred }
+                }
                 val changed = WebJsonCodec.parse(vector("hello"))
                 client.send(1, JsonObject(changed + ("maxTouchContacts" to JsonPrimitive(1))).toString().toByteArray())
                 eventually { caps.last().touch == 1 }
+                assertNull(caps.last().displays[ScreenId.MAIN]?.fullscreenPreferred)
                 client.send(1, vector("stats").toByteArray())
                 eventually { observedStats.isNotEmpty() }
                 assertEquals(3200L, observedStats.last().decodeTimeUs)

@@ -5,7 +5,7 @@
 import type { DisplayInfo, DisplaySettings } from '../protocol/json';
 
 function displayKey(d: DisplayInfo): string {
-  return JSON.stringify([d.width, d.height, d.dpr, d.safeArea.top, d.safeArea.right, d.safeArea.bottom, d.safeArea.left, d.viewport, d.fullscreen]);
+  return JSON.stringify([d.width, d.height, d.dpr, d.safeArea.top, d.safeArea.right, d.safeArea.bottom, d.safeArea.left, d.viewport, d.fullscreen, d.fullscreenPreferred]);
 }
 /** Duplicate observations do not postpone a pending report. */
 export class DisplayDebounce {

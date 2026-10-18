@@ -61,3 +61,21 @@ it('provides hidden settings rows, bilingual labels and canvas/window ratios', (
   expect(pictureSize(1533, 906)).toBe('1533×906 (1.69:1)');
   expect(pictureSize(0, 0)).toBe('—');
 });
+
+it('reports fullscreen intent changes through the display debounce even without a resize', () => {
+  const gate = new DisplayDebounce(); gate.seed({ ...display, fullscreenPreferred: true });
+  const next = { ...display, fullscreenPreferred: false };
+  expect(gate.observe(next, 0)).toBe(false); expect(gate.observe(next, 499)).toBe(false);
+  expect(gate.observe(next, 500)).toBe(true); expect(gate.observe(next, 1000)).toBe(false);
+  expect(gate.observe({ ...next, fullscreenPreferred: true }, 1100)).toBe(false);
+  expect(gate.observe({ ...next, fullscreenPreferred: true }, 1600)).toBe(true);
+  const main = readFileSync(new URL('../receiver/main.ts', import.meta.url), 'utf8');
+  expect(main).toContain('fullscreenPreferred: fullscreen.intent');
+});
+it('accepts optional boolean fullscreen preference and rejects other types', () => {
+  for (const fullscreenPreferred of [true, false])
+    parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, fullscreenPreferred }] }, 'client-to-relay');
+  for (const fullscreenPreferred of [null, 0, 'true', {}])
+    expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, fullscreenPreferred }] })).toThrow();
+  parseMessage(vector('hello-viewport'), 'client-to-relay');
+});

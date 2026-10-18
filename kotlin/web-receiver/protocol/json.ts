@@ -11,7 +11,7 @@ export type VideoCodecPreference = 'AUTO' | 'H264';
 export type PlaybackMode = 'SMART' | 'QUALITY' | 'SPEED';
 export interface DisplayInfo {
   screen: number; width: number; height: number; dpr: number; refreshHz: number;
-  viewport?: { width: number; height: number }; fullscreen?: boolean;
+  viewport?: { width: number; height: number }; fullscreen?: boolean; fullscreenPreferred?: boolean;
   frameRate?: FrameRatePreference; sustainedFps?: number;
   safeArea: { top: number; right: number; bottom: number; left: number };
 }
@@ -76,7 +76,7 @@ function object(fields: Record<string, Validator>): Validator {
 const audioCodec = literal('AAC_LC', 'OPUS', 'PCM_S16LE');
 const session = object({ id: i64, phase: literal('CONNECTING', 'ACTIVE', 'RECONNECTING', 'ENDED'), reason: optional(str) });
 const display = object({ screen: range(255), width: x => int(x) && positive(x), height: x => int(x) && positive(x), dpr: positive, refreshHz: positive,
-  viewport: optional(object({ width: x => int(x) && positive(x), height: x => int(x) && positive(x) })), fullscreen: optional(bool),
+  viewport: optional(object({ width: x => int(x) && positive(x), height: x => int(x) && positive(x) })), fullscreen: optional(bool), fullscreenPreferred: optional(bool),
   frameRate: optional(literal('AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60')), sustainedFps: optional(positive),
   safeArea: object({ top: num, right: num, bottom: num, left: num }) });
 const video = object({ codec: literal('H264', 'H265'), codecString: nonempty, config: x => nonempty(x) && base64(x),

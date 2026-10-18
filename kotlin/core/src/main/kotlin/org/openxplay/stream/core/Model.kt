@@ -188,6 +188,7 @@ public data class DisplayInfo(
     public val sustainedFps: Double? = null,
     public val viewport: Viewport? = null,
     public val fullscreen: Boolean? = null,
+    public val fullscreenPreferred: Boolean? = null,
 )
 
 public data class InputCapabilities(

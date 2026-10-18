@@ -105,7 +105,7 @@ public object WebJsonCodec {
     private val sessionSchema = obj("id" to i64, "phase" to literal("CONNECTING", "ACTIVE", "RECONNECTING", "ENDED"), "reason" to optional(string))
     private val display = obj("screen" to range(255), "width" to positiveInt, "height" to positiveInt,
         "dpr" to positive, "refreshHz" to positive,
-        "viewport" to optional(obj("width" to positiveInt, "height" to positiveInt)), "fullscreen" to optional(bool),
+        "viewport" to optional(obj("width" to positiveInt, "height" to positiveInt)), "fullscreen" to optional(bool), "fullscreenPreferred" to optional(bool),
         "frameRate" to optional(literal("AUTO", "FPS_30", "FPS_35", "FPS_40", "FPS_45", "FPS_50", "FPS_55", "FPS_60")), "sustainedFps" to optional(positive), "safeArea" to obj("top" to number, "right" to number, "bottom" to number, "left" to number))
     private val videoSchema = obj("codec" to literal("H264", "H265"), "codecString" to nonempty,
         "config" to { nonempty(it) && base64(it) }, "width" to positiveInt, "height" to positiveInt, "fpsHint" to optional(positive))
