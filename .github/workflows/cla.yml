@@ -32,4 +32,4 @@ jobs:
           path-to-document: https://github.com/OpenXPlay/OpenXPlay-Stream/blob/main/CLA.md
           path-to-signatures: signatures/v1/cla.json
           branch: cla-signatures
-          allowlist: dependabot[bot]
+          allowlist: riko2chen,dependabot[bot]
