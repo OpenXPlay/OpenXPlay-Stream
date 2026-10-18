@@ -8,9 +8,13 @@ use std::{fs, io::Cursor, path::Path};
 
 #[test]
 fn shared_vectors() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/vectors");
-    for dir in ["wire", "web"] {
-        for entry in fs::read_dir(root.join(dir)).unwrap() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Web vectors belong to the Rust stack's own receiver; wire vectors stay shared.
+    for (dir, root) in [
+        ("wire", manifest.join("../../spec/vectors/wire")),
+        ("web", manifest.join("../web-receiver/spec/vectors/web")),
+    ] {
+        for entry in fs::read_dir(root).unwrap() {
             let path = entry.unwrap().path();
             if !matches!(
                 path.extension().and_then(|s| s.to_str()),
