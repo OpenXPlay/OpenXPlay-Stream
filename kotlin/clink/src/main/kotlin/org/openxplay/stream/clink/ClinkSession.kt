@@ -4,6 +4,7 @@
 
 package org.openxplay.stream.clink
 
+import org.openxplay.stream.clink.trace.*
 import java.io.Closeable
 import java.io.EOFException
 import java.net.*
@@ -38,7 +39,34 @@ public class ClinkSession(
     private val vehicleData: Boolean = false,
     private val onVehicle: (VehicleData) -> Unit = {},
     private val onLinkStalled: (Boolean) -> Unit = {},
+    private val trace: ClinkTrace = ClinkTrace.NONE,
+    sessionNumber: Long? = null,
 ) {
+    internal val traceSession: Long = sessionNumber ?: nextTraceSession()
+    internal companion object {
+        private val sessions = AtomicLong()
+        internal fun nextTraceSession(): Long = sessions.incrementAndGet()
+    }
+    private fun service(port: Int): String = when (port) {
+        ports.auth -> "auth"; ports.control -> "control"; ports.media -> "media"; ports.cert -> "cert"
+        ports.rtsp -> "rtsp"; ports.uibc -> "uibc"; ports.sensor -> "sensor"; else -> "rtp"
+    }
+    private fun socketEvent(port: Int, event: String, address: String? = null, error: Throwable? = null, name: String = service(port)) {
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Socket(System.nanoTime(), traceSession,
+            name, event, address, port, error?.javaClass?.name))
+    }
+    private fun frameEvent(direction: String, port: Int, frame: Frame, body: ByteArray, decrypted: Boolean = true) {
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Frame(System.nanoTime(), traceSession, direction,
+            port, service(port), frame.category, frame.method, frame.kind, frame.sequence, body.size,
+            ClinkTraceFields.decode(service(port), body, decrypted)))
+    }
+    private fun rtspEvent(direction: String, message: RtspMessage) {
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Rtsp(System.nanoTime(), traceSession,
+            direction, message.line, message.headers.toMap(), message.body))
+    }
+    private fun rtspWrite(socket: Socket, message: RtspMessage) {
+        rtspEvent("TX", message); write(socket, message.encode())
+    }
     private sealed interface Event {
         data class Accepted(val service: Int, val socket: Socket) : Event
         data class Bytes(val service: Int, val bytes: ByteArray) : Event
@@ -49,6 +77,7 @@ public class ClinkSession(
     private val resources = CopyOnWriteArrayList<Closeable>()
     private val writes = ConcurrentHashMap<Socket, Long>()
     private val sockets = ConcurrentHashMap<Int, Socket>()
+    private val tracedSockets = ConcurrentHashMap<Socket, Pair<Int, String>>()
     private val readers = mutableMapOf<Int, FrameReader>()
     private val ciphers = mutableMapOf<Int, SecureRecord>()
     private val accepted = ConcurrentHashMap.newKeySet<Int>()
@@ -77,7 +106,8 @@ public class ClinkSession(
     @Volatile public var malformedSensorFrames: Long = 0
         private set
     private fun reportSensorState() { listener.vehicleState(sensorActive, malformedSensorFrames) }
-    private fun malformedSensor(@Suppress("UNUSED_PARAMETER") failure: Exception) {
+    private fun malformedSensor(failure: Exception) {
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), traceSession, "malformed_sensor", failure.javaClass.name, "ClinkSession.sensor"))
         malformedSensorFrames++
         reportSensorState()
     }
@@ -174,7 +204,17 @@ public class ClinkSession(
     private fun enqueue(event: Event) {
         while (!stopped && !events.offer(event, 100, TimeUnit.MILLISECONDS)) { /* Backpressure on socket workers. */ }
     }
-    private fun closeResources() { resources.forEach { runCatching { it.close() } } }
+    private fun closeResources() { resources.forEach { resource ->
+        val wasClosed = when (resource) { is Socket -> resource.isClosed; is ServerSocket -> resource.isClosed; else -> false }
+        runCatching { resource.close() }
+        if (!wasClosed && resource is Socket) {
+            val acceptedPort = sockets.entries.firstOrNull { it.value === resource }?.key
+            val endpoint = tracedSockets[resource]
+            socketEvent(endpoint?.first ?: acceptedPort ?: resource.port, "CLOSED", resource.inetAddress?.hostAddress,
+                name = endpoint?.second ?: acceptedPort?.let(::service) ?: "rtp")
+        }
+        if (!wasClosed && resource is ServerSocket) socketEvent(resource.localPort, "CLOSED")
+    } }
     private fun write(socket: Socket, bytes: ByteArray, offset: Int = 0, length: Int = bytes.size) {
         check(!stopped)
         synchronized(socket) {
@@ -183,12 +223,15 @@ public class ClinkSession(
         }
     }
     private fun listen(service: Int, local: InetAddress, peer: InetAddress) {
-        val server = ServerSocket().also { resources += it; it.reuseAddress = true; it.bind(InetSocketAddress(local, service)) }
+        val server = ServerSocket().also { resources += it; it.reuseAddress = true; try { it.bind(InetSocketAddress(local, service)) } catch (e: Exception) { socketEvent(service, "ERROR", error = e); throw e } }
+        socketEvent(service, "LISTEN")
         worker("accept-$service") {
             try {
                 while (!stopped) {
                     val socket = server.accept()
                     if (stopped || socket.inetAddress != peer || !accepted.add(service)) { socket.close(); continue }
+                    if (trace !== ClinkTrace.NONE) tracedSockets[socket] = service to service(service)
+                    socketEvent(service, "ACCEPTED", socket.inetAddress.hostAddress)
                     socket.tcpNoDelay = true; resources += socket
                     enqueue(Event.Accepted(service, socket))
                     worker("read-$service") {
@@ -200,20 +243,24 @@ public class ClinkSession(
                                 if (n > 0) enqueue(Event.Bytes(service, buffer.copyOf(n)))
                             }
                         } catch (e: Exception) { cause = e }
-                        finally { enqueue(Event.Closed(service, cause)) }
+                        finally { socketEvent(service, if (cause == null) "CLOSED" else "ERROR", socket.inetAddress.hostAddress, cause); enqueue(Event.Closed(service, cause)) }
                     }
                 }
-            } catch (e: Exception) { enqueue(Event.Lost(e)) }
+            } catch (e: Exception) { socketEvent(service, "ERROR", error = e); enqueue(Event.Lost(e)) }
         }
     }
-    private fun dial(port: Int): Socket {
+    private fun dial(port: Int, name: String = "rtp"): Socket {
         val a = checkNotNull(addresses)
         check(!stopped)
         return Socket().also { socket ->
             resources += socket
+            if (trace !== ClinkTrace.NONE) tracedSockets[socket] = port to name
             if (stopped) { socket.close(); error("session_stopped") }
             socket.bind(InetSocketAddress(a.localIpv4, 0))
-            socket.connect(InetSocketAddress(a.headUnitIpv4, port), 12000)
+            socketEvent(port, "DIAL", a.headUnitIpv4, name = name)
+            try { socket.connect(InetSocketAddress(a.headUnitIpv4, port), 12000) }
+            catch (e: Exception) { socketEvent(port, "ERROR", a.headUnitIpv4, e, name); throw e }
+            socketEvent(port, "CONNECTED", a.headUnitIpv4, name = name)
             socket.tcpNoDelay = true
         }
     }
@@ -230,7 +277,7 @@ public class ClinkSession(
         var retries = 0
         while (!stopped && !stopRequested) {
             if (linkLost) throw linkLossCause ?: IllegalStateException("link_lost")
-            attempt.frames.forEach { write(socket, it.encode()) }
+            attempt.frames.forEach { frameEvent("TX", ports.auth, it, it.body, false); write(socket, it.encode()) }
             attempt.sessionKey?.let { sessionKey ->
                 peerKey = attempt.events.filterIsInstance<AuthEvent.PeerVerified>().single().publicKey
                 return sessionKey
@@ -242,6 +289,7 @@ public class ClinkSession(
             val frames = decoder.feed(buffer.copyOf(n))
             attempt = AuthOutput()
             for (frame in frames) {
+                frameEvent("RX", ports.auth, frame, frame.body, false)
                 attempt = auth.receive(frame, now())
                 attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.let { error(it.reason) }
                 val result = attempt.events.filterIsInstance<AuthEvent.Result>().firstOrNull()?.result
@@ -262,6 +310,7 @@ public class ClinkSession(
         kind: Int = 0, seq: Long? = null, format: Int = 1): Long {
         val number = seq ?: (sequence.incrementAndGet() and 0xffffffffL)
         val socket = checkNotNull(sockets[service])
+        if (trace !== ClinkTrace.NONE) frameEvent("TX", service, Frame(number, now(), 1, format, kind, category, method, body), body)
         write(socket, Frame(number, now(), 1, format, kind, category, method, SecureRecord(key).seal(body)).encode())
         return number
     }
@@ -280,12 +329,14 @@ public class ClinkSession(
     private fun handleFrame(service: Int, frame: Frame) {
         require(frame.source == 0 && frame.format <= 1) { "invalid_message_origin" }
         if (frame.category == 7 && frame.kind == 2 && frame.body.isEmpty()) {
+            frameEvent("RX", service, frame, frame.body)
             // A real car acknowledges with an empty plaintext record instead of a sealed empty body
             // (2026-10-16); dropping it timed out voice start and ended the session.
             acknowledgements[frame.sequence]?.let { if (it.service == service) it.done.countDown() }
             return
         }
         val body = try { ciphers.getValue(service).open(frame.body) } catch (e: IllegalArgumentException) {
+            frameEvent("RX", service, frame, frame.body, false)
             // The sensor channel already counts and tolerates malformed frames (see malformedSensor).
             if (service == ports.sensor) throw e
             // Head units occasionally send a record we cannot parse; one bad frame ended the whole
@@ -302,6 +353,7 @@ public class ClinkSession(
             if (malformedRecords.size > 10) throw e
             return
         }
+        frameEvent("RX", service, frame, body)
         if (frame.category == 7) {
             require(frame.format == 0 && frame.kind == 2 && body.isEmpty()) { "invalid_acknowledgement" }
             acknowledgements[frame.sequence]?.let { if (it.service == service) it.done.countDown() }
@@ -378,6 +430,7 @@ public class ClinkSession(
     /** Blocks until disconnect. A new instance is required for each network generation. */
     public fun run(): Unit {
         if (stopped || stopRequested) return
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), traceSession, "reset", "session"))
         worker("watchdog") {
             while (!stopped) {
                 val now = System.nanoTime()
@@ -392,7 +445,7 @@ public class ClinkSession(
             check(!stopped)
             val a = checkNotNull(addresses)
             val local = ipv4(a.localIpv4); val peer = ipv4(a.headUnitIpv4)
-            touch = UibcDecoder(Origin(outputId, a.headUnitId)) { videoSize }
+            touch = UibcDecoder(Origin(outputId, a.headUnitId), { videoSize }, trace, traceSession)
             wfd = WfdSource(a.localIpv4, ports) { display }
             // Bind before AuthConfirm; reverse connections can arrive immediately.
             listOf(ports.control, ports.cert, ports.media, ports.rtsp, ports.uibc).forEach { listen(it, local, peer) }
@@ -400,8 +453,8 @@ public class ClinkSession(
             val identity = trustStore.loadIdentity() ?: AuthIdentity.generate().also(trustStore::saveIdentity)
             listener.state(ClinkState.AUTHENTICATING)
             val authPort = if (ports.auth != 57209) ports.auth else a.authPort
-            val auth = dial(authPort)
-            key = authenticate(auth, identity); auth.close()
+            val auth = dial(authPort, "auth")
+            key = authenticate(auth, identity); auth.close(); socketEvent(authPort, "CLOSED", a.headUnitIpv4, name = "auth")
             listener.state(ClinkState.NEGOTIATING)
             var health = LinkHealth(System.nanoTime())
             var nextHeartbeat = System.nanoTime()
@@ -431,18 +484,26 @@ public class ClinkSession(
                                 reportSensorState()
                             }
                             ports.cert, ports.media -> { ciphers[event.service] = SecureRecord(key); readers[event.service] = FrameReader() }
-                            ports.rtsp -> write(event.socket, wfd.start().encode())
+                            ports.rtsp -> rtspWrite(event.socket, wfd.start())
                         }
                     }
                     is Event.Bytes -> when (event.service) {
                         ports.rtsp -> {
                             for (message in rtspReader.feed(event.bytes)) {
+                                rtspEvent("RX", message)
                                 val responses = wfd.handle(message)
-                                responses.forEach { write(sockets.getValue(ports.rtsp), it.encode()) }
+                                responses.forEach { rtspWrite(sockets.getValue(ports.rtsp), it) }
                                 mode = wfd.mode; destinationPort = wfd.rtpPort; selectedAudio = wfd.audio
                                 reportCapabilities(); updatePlay()
                                 wfd.takeReports().forEach(listener::diagnostic)
-                                if (wfd.takeKeyframe()) onKeyframe()
+                                if (trace !== ClinkTrace.NONE && (message.body.contains("wfd_video_formats:") || message.line.startsWith("SETUP ")))
+                                    trace.emit(ClinkTraceEvent.Negotiation(System.nanoTime(), traceSession, mode.toString(),
+                                        wfd.decoders.map { it.codecString }, selectedAudio, destinationPort, display.toString()))
+                                if (wfd.takeKeyframe()) {
+                                    if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), traceSession,
+                                        "keyframe_request", if (message.body.contains("wfd_idr_request")) "head_unit_rtsp" else "internal"))
+                                    onKeyframe()
+                                }
                                 if (message.line.startsWith("TEARDOWN ") && responses.firstOrNull()?.line == "RTSP/1.0 200 OK") error("rtsp_teardown")
                             }
                         }
@@ -456,7 +517,7 @@ public class ClinkSession(
                                 } catch (failure: Exception) {
                                     // A corrupt length loses stream boundaries. Close only SENSOR, preserving projection.
                                     malformedSensor(failure)
-                                    sockets.remove(ports.sensor)?.close()
+                                    sockets.remove(ports.sensor)?.let { it.close(); socketEvent(ports.sensor, "CLOSED", it.inetAddress.hostAddress) }
                                     readers.remove(ports.sensor); ciphers.remove(ports.sensor)
                                     reportSensorState()
                                 }
@@ -484,7 +545,10 @@ public class ClinkSession(
                 if (playing) startedPlaying = true
                 check(startedPlaying || now < negotiationDeadline) { "projection_timeout" }
             }
-        } catch (e: Exception) { if (!stopped) listener.error(e) }
+        } catch (e: Exception) {
+            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), traceSession, "session_failed", e.javaClass.name, "ClinkSession.run"))
+            if (!stopped) listener.error(e)
+        }
         finally {
             runCatching { microphone(null); updateMicrophone() }.onFailure { if (!stopped) listener.error(it) }
             stopped = true; playing = false; ready = false
@@ -501,7 +565,9 @@ public class ClinkSession(
     internal fun sendRtp(buffer: ByteArray, offset: Int, length: Int): Boolean {
         if (!isPlaying || isStalled) return false
         try {
-            if (video != null && connectedVideoPort != destinationPort) { video?.close(); video = null }
+            if (video != null && connectedVideoPort != destinationPort) {
+                video?.let { it.close(); socketEvent(connectedVideoPort, "CLOSED", it.inetAddress.hostAddress, name = "rtp") }; video = null
+            }
             val socket = video ?: dial(destinationPort).also { video = it; connectedVideoPort = destinationPort }
             write(socket, buffer, offset, length)
             return true

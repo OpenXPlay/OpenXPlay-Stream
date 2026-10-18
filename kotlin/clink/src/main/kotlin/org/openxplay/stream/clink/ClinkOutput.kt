@@ -4,6 +4,8 @@
 
 package org.openxplay.stream.clink
 
+import org.openxplay.stream.clink.trace.*
+import java.util.concurrent.atomic.AtomicLong
 import java.util.ArrayDeque
 import java.util.concurrent.Executor
 import java.util.concurrent.ThreadFactory
@@ -37,9 +39,14 @@ public class ClinkOutput(
     private val deviceName: String = "OpenXPlay",
     /** Opt-in vehicle collection. False leaves the SENSOR port unbound and suppresses day/night. */
     private val vehicleData: Boolean = false,
+    private val trace: ClinkTrace = ClinkTrace.NONE,
+    private val mediaTap: ClinkMediaTap? = null,
 ) : ProjectionOutput {
     private class Run(val host: OutputHost) {
+        val traceSession = ClinkSession.nextTraceSession()
         val active = AtomicBoolean(true)
+        val rtpPackets = AtomicLong()
+        val rtpBytes = AtomicLong()
         val queue = VideoQueue()
         val voice = VoiceDelivery()
         val audio = ArrayDeque<AudioPacket>()
@@ -69,6 +76,7 @@ public class ClinkOutput(
                 try { run.voice.run({ run.active.get() }, { run.session }, { packet ->
                     synchronized(run.lock) { packet.session == run.inputSession }
                 }) } catch (e: Exception) {
+                    if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), run.traceSession, "output_failed", e.javaClass.name, "ClinkOutput"))
                     if (run.active.get()) listener.error(e)
                     run.session?.stop()
                 }
@@ -103,7 +111,7 @@ public class ClinkOutput(
                             { stalled -> synchronized(run.lock) {
                                 run.queue.setStalled(stalled); run.revision++
                                 run.audio.clear(); run.audioBytes = 0
-                            } })
+                            } }, trace, run.traceSession)
                         run.session = session
                         synchronized(run.lock) { session.microphone(run.microphone) }
                         if (!run.active.get()) session.stop()
@@ -128,6 +136,7 @@ public class ClinkOutput(
         synchronized(run.lock) {
             if (run.inputSession != state.id || state.phase != SessionPhase.ACTIVE) {
                 run.inputSession = if (state.phase == SessionPhase.ENDED) null else state.id
+                if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession, "reset", "input_session"))
                 run.queue.reset(); run.revision++; run.requestKeyframe = true
                 run.audio.clear(); run.audioBytes = 0; run.mediaStream = null; run.mediaFormats.clear(); run.voiceStreams.clear(); run.voice.reset()
                 run.microphone = null; run.session?.microphone(null)
@@ -139,6 +148,12 @@ public class ClinkOutput(
         val run = current ?: return
         synchronized(run.lock) {
             if (run.format !== format) {
+                if (trace !== ClinkTrace.NONE) {
+                    val config = if (format?.codec == VideoCodec.H264) runCatching { AvcConfig.parse(format.config) }.getOrNull() else null
+                    fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
+                    trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession, "format", codec = format?.codecString,
+                        width = format?.width, height = format?.height, sps = config?.sps?.map(::hex).orEmpty(), pps = config?.pps?.map(::hex).orEmpty()))
+                }
                 run.format = format; run.queue.reset(); run.revision++; run.requestKeyframe = true
             }
         }
@@ -214,6 +229,7 @@ public class ClinkOutput(
     private fun writer(run: Run) {
         try { run.sender.run { run.active.get() } }
         catch (e: Exception) {
+            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), run.traceSession, "output_failed", e.javaClass.name, "ClinkOutput"))
             if (run.active.get()) listener.error(e)
             run.session?.stop(); run.active.set(false)
         }
@@ -244,6 +260,7 @@ public class ClinkOutput(
             var outputPts = -1L
             var keyframeRequestedAt = Long.MIN_VALUE / 2
             var keyframePending = false
+            var keyframeSource = "internal"
             var audioReported: ClinkSession? = null
             var videoWrittenAt = 0L
             // Once live video has played, a reset freezes the last frame instead of flashing the
@@ -256,6 +273,8 @@ public class ClinkOutput(
             var transportPts = -1L
             var liveOffset = 0L
             var audioOffset: Long? = null
+            var liveFrames = 0L; var placeholderFrames = 0L; var keyframes = 0L; var videoBytes = 0L
+            var sendStalls = 0L; var audioFrames = 0L; var failedVideo = 0L
             var sent = 0L
             var reportedAt = 0L
             var mismatchReported: String? = null
@@ -275,7 +294,12 @@ public class ClinkOutput(
                     listener.diagnostic("rtp unit_dropped limit=${unit.maxBytes}")
                     return Emit.DROPPED
                 }
-                if (sender.submit { bytes, offset, length -> session.sendRtp(bytes, offset, length) }) return Emit.SENT
+                if (sender.submit { bytes, offset, length ->
+                    if (trace !== ClinkTrace.NONE) { run.rtpPackets.incrementAndGet(); run.rtpBytes.addAndGet((length - 2).toLong()) }
+                    if (mediaTap != null) try { mediaTap.rtp(bytes, offset + 2, length - 2) } catch (_: Exception) { }
+                    session.sendRtp(bytes, offset, length)
+                }) return Emit.SENT
+                if (trace !== ClinkTrace.NONE) sendStalls++
                 listener.diagnostic("rtp send stalled ms=${sender.waitNs / 1_000_000}")
                 return Emit.LATE
             }
@@ -295,13 +319,20 @@ public class ClinkOutput(
                 }
                 synchronized(run.lock) {
                     if (revision != run.revision || generation !== session) {
+                        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession,
+                            if (everLive) "freeze" else "reset", "revision"))
                         gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0; audioOffset = null
                         revision = run.revision
                         if (generation !== session) { muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false }
                         generation = session
                         if (format !== run.format) { format = run.format; avc = null; mismatchReported = null }
                     }
-                    if (run.queue.takeGap()) { gate.reset(); placeholderIndex = 0; nextPlaceholder = 0 }
+                    if (run.queue.takeGap()) {
+                        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession, "reset", "gap"))
+                        if (trace !== ClinkTrace.NONE && gate.live) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession, "freeze", "gap"))
+                        keyframeSource = "gap"
+                        gate.reset(); placeholderIndex = 0; nextPlaceholder = 0
+                    }
                     if (writable) frame = run.queue.poll()
                     while (run.diagnostics.isNotEmpty()) diagnostics += run.diagnostics.removeFirst()
                     request = run.requestKeyframe
@@ -323,6 +354,8 @@ public class ClinkOutput(
                 if (keyframePending && writable && System.nanoTime() - keyframeRequestedAt >= 1_000_000_000) {
                     keyframePending = false
                     keyframeRequestedAt = System.nanoTime()
+                    if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "keyframe_request", keyframeSource))
+                    keyframeSource = "internal"
                     withHost(run) { it.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin)) }
                 }
                 val f = frame
@@ -340,13 +373,18 @@ public class ClinkOutput(
                     val wasLive = gate.live
                     if (gate.accept(f.keyFrame)) {
                         if (!wasLive) {
+                            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "live", "placeholder"))
                             liveOffset = maxOf(0L, outputPts + 1_000_000 / placeholder.fps,
                                 f.ptsUs + (audioOffset ?: (0L - f.ptsUs))) - f.ptsUs
                         }
                         val pts = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset)
                         val result = emit(session, pts) { transport.writeVideo(f.data, config, pts, f.keyFrame) }
                         outputPts = pts; transportPts = pts
-                        if (result == Emit.DROPPED) { gate.reset(); keyframePending = true } else {
+                        if (result == Emit.DROPPED) {
+                            if (trace !== ClinkTrace.NONE) { failedVideo++; trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "freeze", "unit_dropped")) }
+                            gate.reset(); keyframePending = true; keyframeSource = "gap"
+                        } else {
+                            if (trace !== ClinkTrace.NONE) { liveFrames++; videoBytes += f.data.size; if (f.keyFrame) keyframes++ }
                             sent++
                             everLive = true; liveFrameAt = System.nanoTime(); videoWrittenAt = liveFrameAt
                         }
@@ -362,7 +400,8 @@ public class ClinkOutput(
                     val pts = maxOf(0L, transportPts + 1, outputPts + 1_000_000 / placeholder.fps)
                     val result = emit(session, pts) { transport.writeVideo(data, placeholderConfig, pts, placeholderIndex == 0) }
                     outputPts = pts; transportPts = pts
-                    if (result == Emit.DROPPED) placeholderIndex = 0 else {
+                    if (result == Emit.DROPPED) { if (trace !== ClinkTrace.NONE) failedVideo++; placeholderIndex = 0 } else {
+                        if (trace !== ClinkTrace.NONE) { placeholderFrames++; videoBytes += data.size; if (placeholderIndex == 0) keyframes++ }
                         sent++; videoWrittenAt = System.nanoTime()
                         placeholderIndex = (placeholderIndex + 1) % placeholder.frames.size
                     }
@@ -389,6 +428,7 @@ public class ClinkOutput(
                             // Keep mux calls ordered; bounded late arrival can shift PTS by at most 50 ms.
                             val pts = maxOf(mapped, transportPts)
                             val result = emit(session, pts) { transport.writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
+                            if (trace !== ClinkTrace.NONE && result != Emit.DROPPED) audioFrames++
                             transportPts = pts
                             if (result == Emit.LATE) writable = false
                         }
@@ -407,6 +447,9 @@ public class ClinkOutput(
                         reportedAudioDrops = audioDrops
                     }
                     val dropped = run.queue.droppedCount()
+                    if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Media(now, session.traceSession,
+                        liveFrames, placeholderFrames, dropped + failedVideo, keyframes, videoBytes, run.rtpPackets.get(), run.rtpBytes.get(),
+                        sendStalls, audioFrames, overflows))
                     listener.statistics(sent, dropped)
                     withHost(run) { it.stats(OutputStats(origin, ScreenId.MAIN, null, 0, dropped, 0, null)) }
                     reportedAt = now
@@ -414,6 +457,7 @@ public class ClinkOutput(
                 if (f == null) Thread.sleep(2)
             }
         } catch (e: Exception) {
+            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), run.traceSession, "output_failed", e.javaClass.name, "ClinkOutput"))
             if (run.active.get()) listener.error(e)
             run.session?.stop(); run.active.set(false)
         }
