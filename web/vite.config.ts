@@ -5,7 +5,9 @@
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { defineConfig } from 'vitest/config';
-const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+// A relay release sets OXP_APP_VERSION so the page shows the version of the release it ships in.
+const version = process.env.OXP_APP_VERSION
+  || JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(version) },
   base: '/',
