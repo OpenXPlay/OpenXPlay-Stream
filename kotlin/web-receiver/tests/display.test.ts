@@ -5,6 +5,7 @@
 import { expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { DisplayDebounce, DisplaySettingsGate, pictureSize } from '../receiver/display';
+import { strings } from '../receiver/ui';
 import { parseMessage, type Hello } from '../protocol/json';
 const vector = (name: string) => JSON.parse(readFileSync(new URL('../spec/vectors/web/' + name + '.json', import.meta.url), 'utf8'));
 const display = (vector('hello-viewport') as Hello).displays[0];
@@ -37,12 +38,13 @@ it('requires a welcome feature and clears it on legacy welcome or disconnect', (
   gate.welcome(['unrelated']); expect(gate.message('auto', 'small')).toBeUndefined();
   gate.welcome(['display-settings']);
   expect(gate.message('720p', 'small')).toEqual(vector('display-settings-client'));
+  expect(gate.message('native', 'standard')).toEqual(vector('display-settings-native'));
   gate.welcome(); expect(gate.supported).toBe(false);
 });
 it('accepts the exact vectors and rejects malformed viewport, feature and setting fields', () => {
   parseMessage(vector('hello-viewport'), 'client-to-relay');
   parseMessage(vector('welcome-display-settings'), 'relay-to-client');
-  for (const name of ['display-settings-client', 'display-settings-relay'])
+  for (const name of ['display-settings-client', 'display-settings-relay', 'display-settings-native'])
     for (const direction of ['client-to-relay', 'relay-to-client'] as const) expect(parseMessage(vector(name), direction)).toEqual(vector(name));
   for (const viewport of [{ width: 0, height: 1 }, { width: 1.5, height: 2 }, { width: 1 }, null, { width: 1, height: 2, extra: 0 }])
     expect(() => parseMessage({ ...vector('hello-viewport'), displays: [{ ...display, viewport }] })).toThrow();
@@ -56,6 +58,13 @@ it('accepts the exact vectors and rejects malformed viewport, feature and settin
 it('provides hidden settings rows, bilingual labels and canvas/window ratios', () => {
   const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
   expect(html).toContain('id="display-settings" hidden');
+  const options = [...html.matchAll(/<option value="(auto|native|1080p|720p|screen)"/g)].map(match => match[1]);
+  expect(options).toEqual(['auto', 'native', '1080p', '720p', 'screen']);
+  expect(html).toContain('value="native" data-text="native"');
+  expect(html).toContain('data-text="nativeHint"');
+  expect(strings.en.native).toBe('Native'); expect(strings['zh-CN'].native).toBe('原画');
+  expect(strings.en.nativeHint).toContain('sharpest'); expect(strings.en.nativeHint).toContain('Wi-Fi bandwidth');
+  expect(strings['zh-CN'].nativeHint).toContain('最清晰'); expect(strings['zh-CN'].nativeHint).toContain('Wi-Fi 带宽');
   for (const id of ['resolution', 'icon-size', 'picture-size']) expect(html).toContain('id="' + id + '"');
   expect(pictureSize(1920, 960)).toBe('1920×960 (2.00:1)');
   expect(pictureSize(1533, 906)).toBe('1533×906 (1.69:1)');

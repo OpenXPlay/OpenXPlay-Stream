@@ -62,7 +62,7 @@ class DisplaySettingsTest {
                     primary.send(1, """{"type":"display-settings","resolution":"screen","iconSize":"large"}""".toByteArray())
                     primary.send(1, vector("ping").toByteArray()); assertEquals("pong", primary.json()["type"]!!.jsonPrimitive.content)
                     output.awaitHostIdle(); assertEquals(1, port.changes.size)
-                    port.set(DisplaySettings("1080p", "large"), Origin("phone", "settings"))
+                    port.set(DisplaySettings("native", "large"), Origin("phone", "settings"))
                     assertEquals(port.current().message(), primary.json())
                     assertEquals(port.current().message(), secondary.json())
                     assertEquals(1, port.listeners.size)
@@ -85,9 +85,10 @@ class DisplaySettingsTest {
     }
 
     @Test fun validatesNewFieldsStrictlyAndAcceptsBothSettingsDirections() {
-        for (name in listOf("display-settings-client", "display-settings-relay")) {
+        for (name in listOf("display-settings-client", "display-settings-relay", "display-settings-native")) {
             for (direction in WebJsonCodec.Direction.entries) WebJsonCodec.parse(vector(name), direction)
         }
+        assertEquals(WebJsonCodec.parse(vector("display-settings-native")), DisplaySettings("native").message())
         val hello = WebJsonCodec.parse(vector("hello-viewport"))
         val display = hello["displays"]!!.jsonArray[0].jsonObject
         for ((field, bad) in listOf("viewport" to JsonNull, "fullscreen" to JsonPrimitive("false"),
