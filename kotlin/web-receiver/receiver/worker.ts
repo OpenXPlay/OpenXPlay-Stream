@@ -314,7 +314,7 @@ function control(message: JsonMessage): void {
     case 'welcome':
       displaySettingsSupported = message.features?.includes('display-settings') ?? false;
       ready = true; retry = 0; resetMetrics(); if (receiverInfo) send(receiverInfo);
-      notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, token: sentHelloToken, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
+      notice({ type: 'welcome', features: message.features, sourceUrl: message.sourceUrl, ...(message.plugins ? { plugins: message.plugins } : {}), ...(message.relay ? { relay: message.relay } : {}) });
       session(message.session); break;
     case 'display-settings': if (ready && displaySettingsSupported) notice(message); break;
     case 'session': session(message.session); break;
@@ -398,14 +398,13 @@ function media(data: ArrayBuffer): void {
   if (recovering) { dropped += held.length; held = []; }
   held.push(item); pump();
 }
-let sentHelloToken = '';
 function connect(): void {
   if (stopped) return;
   ready = false; displaySettingsSupported = false; notice({ type: 'display-disconnected' });
   notice({ type: 'status', text: 'Connecting…' });
   const current = new WebSocket(url); socket = current; current.binaryType = 'arraybuffer';
   current.onopen = () => {
-    if (socket === current) { sentHelloToken = hello.token; send(hello); send({ type: 'pause', screen: SCREEN, paused: !visible }); }
+    if (socket === current) { send({ ...hello, token: '' }); send({ type: 'pause', screen: SCREEN, paused: !visible }); }
   };
   current.onmessage = event => {
     if (socket !== current) return;
@@ -416,14 +415,10 @@ function connect(): void {
     } catch (e) { updateHold('interrupt'); notice({ type: 'status', text: `Protocol error: ${String(e)}` }); current.close(1002, 'Invalid OXP-Web message'); }
   };
   current.onerror = () => { updateHold('interrupt'); notice({ type: 'status', text: 'Connection failed' }); };
-  current.onclose = event => {
+  current.onclose = () => {
     if (socket !== current) return;
     ready = false; displaySettingsSupported = false; notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
-    if (event?.code === 1008) {
-      stopped = true; clearTimeout(holdTimer); hold = { ...hold, deadline: null, clearAt: null };
-      notice({ type: 'rejected', token: sentHelloToken }); return;
-    }
     notice({ type: 'status', text: 'Disconnected; reconnecting…' });
     if (!stopped) {
       const delay = Math.min(30000, 500 * 2 ** Math.min(retry++, 6)) * (0.8 + Math.random() * 0.4);
@@ -466,11 +461,10 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
       connect(); break;
     case 'hello':
       restartChangesFrameRate = effectiveFrameRate(hello.displays[0]) !== effectiveFrameRate(message.hello.displays[0]);
-      hello = message.hello; setPlayback(playbackMode(hello.playback)); if (ready) send(hello); break;
+      hello = message.hello; setPlayback(playbackMode(hello.playback)); if (ready) send({ ...hello, token: '' }); break;
     case 'display-settings': if (ready && displaySettingsSupported) send(message); break;
     case 'restart': if (ready) { restartSession = restartChangesFrameRate ? sessionId ?? '0' : null; playing = false; send({ type: 'restart' }); } break;
     case 'fit': fit = message.fit; break;
-    case 'pair': hello = { ...hello, token: message.token }; stopped = false; clearTimeout(reconnectTimer); connect(); break;
     case 'receiver-info': receiverInfo = message.info; if (ready) send(receiverInfo); break;
     case 'page-metrics': pageMetrics = message.metrics; break;
     case 'reconnect': {

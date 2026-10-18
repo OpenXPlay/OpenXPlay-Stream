@@ -28,8 +28,7 @@ export const strings = {
     resetPositions: 'Reset button positions', settings: 'Settings', close: 'Close', sound: 'Sound', microphone: 'Microphone', fit: 'Picture fit',
     contain: 'Fit', fill: 'Fill', fullscreen: 'Full screen', developer: 'Developer mode', about: 'About',
     source: 'Source', version: 'Web version', relayVersion: 'version', powered: 'Powered by OpenXPlay.', soundHint: 'Tap for sound',
-    code: 'Enter pairing code', codeHint: 'Enter the 8-digit code shown on the relay.', incorrect: 'Incorrect code',
-    retryIn: 'Trying again in {seconds} s. Check your relay and network.', connect: 'Connect', connecting: 'Connecting', connectingHint: 'Connecting to your relay…',
+    retryIn: 'Trying again in {seconds} s. Check your relay and network.', connecting: 'Connecting', connectingHint: 'Connecting to your relay…',
     waiting: 'Waiting for iPhone', waitingHint: 'Connect your iPhone to the relay to start CarPlay.',
     reconnecting: 'Reconnecting', reconnectingHint: 'Keep the relay on and check your network connection.',
     error: 'Relay unreachable', errorHint: 'Keep the relay on and join the same network, then try again.', retry: 'Try again',
@@ -47,7 +46,7 @@ export const strings = {
     enabled: 'On', off: 'Off', fullscreenUnavailable: 'Unavailable in this browser',
     soundBlocked: 'Sound is paused', soundBlockedHint: 'Tap to allow sound in this browser.',
     microphoneDenied: 'Microphone blocked', microphoneDeniedHint: 'Allow microphone access in browser settings.',
-    playing: 'CarPlay is running', playingHint: 'Use CarPlay on this screen.', paired: 'Code accepted',
+    playing: 'CarPlay is running', playingHint: 'Use CarPlay on this screen.',
     attempt: 'Attempt {attempt} · {seconds} s until retry. Check your relay and network.',
   },
   'zh-CN': {
@@ -61,8 +60,7 @@ export const strings = {
     resetPositions: '重置按钮位置', settings: '设置', close: '关闭', sound: '声音', microphone: '麦克风', fit: '画面适配',
     contain: '适应', fill: '填满', fullscreen: '全屏', developer: '开发者模式', about: '关于',
     source: '源代码', version: '网页版本', relayVersion: '版本', powered: 'Powered by OpenXPlay.', soundHint: '轻触开启声音',
-    code: '输入配对码', codeHint: '输入中继设备上显示的 8 位数字配对码。', incorrect: '配对码错误',
-    retryIn: '{seconds} 秒后重试。请检查中继设备和网络。', connect: '连接', connecting: '正在连接', connectingHint: '正在连接中继设备…',
+    retryIn: '{seconds} 秒后重试。请检查中继设备和网络。', connecting: '正在连接', connectingHint: '正在连接中继设备…',
     waiting: '等待 iPhone', waitingHint: '将 iPhone 连接到中继设备以启动 CarPlay。',
     reconnecting: '正在重新连接', reconnectingHint: '请保持中继设备开启并检查网络连接。',
     error: '无法连接中继设备', errorHint: '请开启中继设备并连接同一网络，然后重试。', retry: '重试',
@@ -78,7 +76,7 @@ export const strings = {
     micRequestHint: '请在浏览器权限提示中选择允许。', enabled: '已开启', off: '已关闭',
     fullscreenUnavailable: '此浏览器不支持', soundBlocked: '声音已暂停', soundBlockedHint: '轻触以允许浏览器播放声音。',
     microphoneDenied: '麦克风已被阻止', microphoneDeniedHint: '请在浏览器设置中允许使用麦克风。',
-    playing: 'CarPlay 正在运行', playingHint: '在此屏幕上操作 CarPlay。', paired: '配对码已接受',
+    playing: 'CarPlay 正在运行', playingHint: '在此屏幕上操作 CarPlay。',
     attempt: '第 {attempt} 次重试 · {seconds} 秒后重试。请检查中继设备和网络。',
   },
 };
@@ -86,11 +84,10 @@ export type TextKey = keyof typeof strings.en;
 export function playbackHint(mode: PlaybackMode): TextKey {
   return mode === 'QUALITY' ? 'qualityHint' : mode === 'SPEED' ? 'speedHint' : 'smartHint';
 }
-export type StatusState = 'code' | 'incorrect' | 'connecting' | 'waiting' | 'reconnecting' | 'error' | 'unsupported' | 'playing' | 'soundBlocked' | 'microphoneDenied';
+export type StatusState = 'connecting' | 'waiting' | 'reconnecting' | 'error' | 'unsupported' | 'playing' | 'soundBlocked' | 'microphoneDenied';
 export function statusCard(state: StatusState): { headline: TextKey; subline: TextKey; hidden: boolean } {
   const headline = state;
-  const subline: TextKey = state === 'code' || state === 'incorrect' ? 'codeHint' :
-    state === 'playing' ? 'playingHint' : `${state}Hint`;
+  const subline: TextKey = `${state}Hint`;
   return { headline, subline, hidden: state === 'playing' };
 }
 export interface Preferences { videoCodec: VideoCodecPreference; frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean; gear: GearPosition }
@@ -108,18 +105,6 @@ export class ReceiverPreferences {
   save(preferences: Preferences): void {
     for (const [key, value] of Object.entries(preferences)) this.write(key, key === 'gear' ? JSON.stringify(value) : String(value));
   }
-}
-export class Pairing {
-  token: string | null;
-  constructor(private readonly preferences: ReceiverPreferences, fragment: URLSearchParams) {
-    this.token = fragment.get('k') || preferences.read('code');
-  }
-  submit(code: string): boolean {
-    if (!/^\d{8}$/.test(code)) return false;
-    this.token = code; return true;
-  }
-  welcome(token = this.token ?? ''): void { if (token) this.preferences.write('code', token); }
-  rejected(token = this.token ?? ''): 'code' | 'incorrect' { this.token = null; this.preferences.write('code', null); return token ? 'incorrect' : 'code'; }
 }
 
 /** Keep protocol terminology behind developer mode and map it to one useful next step. */

@@ -107,7 +107,7 @@ class AudioTest {
     @Test fun rejectsWrongStreamPartialFramesAndUnadvertisedMicrophone() {
         val controls = CopyOnWriteArrayList<ControlEvent>()
         val web = WebOutput(WebOutputConfig(port = 0, staticAssetRoot = root,
-            tokenVerifier = TokenVerifier { true }, sourceUrl = "https://example.org/source"))
+            sourceUrl = "https://example.org/source"))
         web.open(object : OutputHost {
             override fun capabilities(capabilities: OutputCapabilities): Unit = Unit
             override fun control(event: ControlEvent) { controls.add(event) }
@@ -134,7 +134,7 @@ class AudioTest {
         val controls = CopyOnWriteArrayList<ControlEvent>()
         val observedStats = CopyOnWriteArrayList<OutputStats>()
         val web = WebOutput(WebOutputConfig(port = 0, staticAssetRoot = root,
-            tokenVerifier = TokenVerifier { true }, sourceUrl = "https://example.org/source"))
+            sourceUrl = "https://example.org/source"))
         web.open(object : OutputHost {
             override fun capabilities(capabilities: OutputCapabilities) { caps.add(capabilities) }
             override fun control(event: ControlEvent) { controls.add(event) }

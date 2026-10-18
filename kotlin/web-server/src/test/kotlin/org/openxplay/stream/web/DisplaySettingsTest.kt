@@ -28,7 +28,7 @@ class DisplaySettingsTest {
         }
     }
     private fun output(port: DisplaySettingsPort? = null) = WebOutput(WebOutputConfig(
-        port = 0, staticAssetRoot = root, tokenVerifier = TokenVerifier { true },
+        port = 0, staticAssetRoot = root,
         sourceUrl = "https://example.org/source", displaySettings = port))
 
     @Test fun negotiatesPortReportsViewportAndBroadcastsBothDirectionsWithOneListener() {

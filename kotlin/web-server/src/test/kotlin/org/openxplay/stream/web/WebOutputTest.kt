@@ -105,7 +105,7 @@ class WebOutputTest {
     @TempDir lateinit var root: Path
     private fun output(ssl: SSLContext? = null, maxClients: Int = 8, sendBufferBytes: Int = 32 * 1024): WebOutput = WebOutput(WebOutputConfig(
         port = 0, staticAssetRoot = root, sslContext = ssl,
-        tokenVerifier = TokenVerifier.constantTime("example-pairing-token"), sourceUrl = "https://example.org/source", maxClients = maxClients,
+        sourceUrl = "https://example.org/source", maxClients = maxClients,
         sendBufferBytes = sendBufferBytes))
 
     @Test fun hevcFormatAndFramesOnlyReachCapableClients() {
@@ -184,7 +184,7 @@ class WebOutputTest {
         } finally { web.close() }
     }
 
-    @Test fun failedHellosBlockTheAddressEvenWithTheCorrectToken() {
+    @Test fun helloAcceptsAndIgnoresAnyToken() {
         val web = output()
         web.open(object : OutputHost {
             override fun capabilities(capabilities: OutputCapabilities): Unit = Unit
@@ -193,16 +193,16 @@ class WebOutputTest {
         })
         try {
             val port = web.awaitListening()
-            repeat(5) {
+            for (token in listOf("", "wrong", "00123456", "legacy-token", "anything")) {
                 TestClient(Socket("127.0.0.1", port)).use { client ->
-                    client.hello("wrong")
-                    assertContentEquals(closePayload(1008), client.read().payload)
+                    client.hello(token)
+                    assertEquals("welcome", client.json()["type"]!!.jsonPrimitive.content)
                     client.send(8, closePayload(1000))
                 }
             }
             TestClient(Socket("127.0.0.1", port)).use { client ->
                 client.hello()
-                assertContentEquals(closePayload(1008), client.read().payload)
+                assertEquals("welcome", client.json()["type"]!!.jsonPrimitive.content)
             }
         } finally { web.close() }
     }
@@ -257,10 +257,6 @@ class WebOutputTest {
         })
         try {
             val port = web.awaitListening()
-            TestClient(Socket("127.0.0.1", port)).use { bad ->
-                bad.hello("wrong"); val close = bad.read()
-                assertEquals(8, close.opcode); assertContentEquals(closePayload(1008), close.payload)
-            }
             TestClient(Socket("127.0.0.1", port)).use { client ->
                 client.hello(); client.json()
                 eventually { caps.lastOrNull()?.touch == 10 }
@@ -679,7 +675,7 @@ class WebOutputContractTest : ProjectionOutputContract() {
     @TempDir lateinit var root: Path
     private lateinit var web: WebOutput
     override fun createOutput(): ProjectionOutput = WebOutput(WebOutputConfig(port = 0, staticAssetRoot = root,
-        tokenVerifier = TokenVerifier { true }, sourceUrl = "https://example.org/source")).also { web = it }
+        sourceUrl = "https://example.org/source")).also { web = it }
     override fun videoFormat(): VideoFormat = fixtureFormat()
     override fun stimulate(output: ProjectionOutput) {
         output.onVideoFrame(VideoFrame(ScreenId.MAIN, SessionId(1), byteArrayOf(0, 0, 0, 2, 0x65, 0), 0, true, 0))

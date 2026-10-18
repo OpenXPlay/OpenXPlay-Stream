@@ -58,7 +58,7 @@ class PluginsTest {
     }
     @Test fun disabledGoldenWelcomeAndOrdinaryStaticRoutes() {
         val url = "https://github.com/OpenXPlay/OpenXPlay-Stream"
-        val output = WebOutput(WebOutputConfig(bindAddress = "127.0.0.1", port = 0, staticAssetRoot = root.resolve("absent"), tokenVerifier = TokenVerifier { true }, sourceUrl = url))
+        val output = WebOutput(WebOutputConfig(bindAddress = "127.0.0.1", port = 0, staticAssetRoot = root.resolve("absent"), sourceUrl = url))
         assertFalse(output.wantsContext())
         val golden = Json.parseToJsonElement(checkNotNull(javaClass.getResource("/vectors/web/welcome.json")).readText()).jsonObject
         val welcome = receiverWelcome("browser-1", SessionState(SessionId(42), SessionPhase.ACTIVE), url)

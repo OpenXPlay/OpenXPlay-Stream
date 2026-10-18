@@ -59,7 +59,7 @@ class WriteDeadlineTest {
 
     @Test fun aBrowserThatStopsReadingIsClosedAfterTheWriteTimeoutWithAReason() {
         val diagnostics = CopyOnWriteArrayList<Pair<String, String>>()
-        val web = WebOutput(WebOutputConfig(port = 0, staticAssetRoot = root, tokenVerifier = TokenVerifier { true },
+        val web = WebOutput(WebOutputConfig(port = 0, staticAssetRoot = root,
             sourceUrl = "https://example.org/source", writeTimeoutMillis = 300))
         web.open(object : OutputHost {
             override fun capabilities(capabilities: OutputCapabilities): Unit = Unit

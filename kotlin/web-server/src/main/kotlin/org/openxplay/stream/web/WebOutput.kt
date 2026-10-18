@@ -11,7 +11,6 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
@@ -23,21 +22,6 @@ import kotlinx.serialization.json.*
 import org.openxplay.stream.core.*
 import org.openxplay.stream.core.wire.*
 import kotlin.math.roundToInt
-
-/** Verifies without logging the token. Implementations must compare in constant time; use [TokenVerifier.constantTime]. */
-public fun interface TokenVerifier {
-    public fun verify(token: String): Boolean
-
-    public companion object {
-        /** Fixed-size digests avoid length and matching-prefix timing differences. */
-        public fun constantTime(expected: String): TokenVerifier {
-            val digest = MessageDigest.getInstance("SHA-256").digest(expected.toByteArray(Charsets.UTF_8))
-            return TokenVerifier { supplied ->
-                MessageDigest.isEqual(digest, MessageDigest.getInstance("SHA-256").digest(supplied.toByteArray(Charsets.UTF_8)))
-            }
-        }
-    }
-}
 
 /**
  * Plain HTTP is intended for development; supply an SSL context for HTTPS/WSS. [queueDurationUs] is the per-client Smart video queue.
@@ -52,7 +36,6 @@ public data class WebOutputConfig(
     public val port: Int = 8443,
     public val sslContext: SSLContext? = null,
     public val staticAssetRoot: Path,
-    public val tokenVerifier: TokenVerifier,
     public val sourceUrl: String,
     public val maxClients: Int = 8,
     public val plugins: PluginsConfig? = null,
@@ -101,7 +84,6 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
     override fun onContext(update: ContextUpdate) { plugins?.update(update) }
     private val lock = Any()
     private val hostGate = Any()
-    private val helloRateLimit = HelloRateLimit()
     private var runtime: Runtime? = null
     private var state = SessionState(SessionId(0), SessionPhase.CONNECTING)
     private val formats = linkedMapOf<ScreenId, VideoFormat>()
@@ -549,10 +531,6 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         private fun handle(message: JsonObject) {
             when (message["type"]!!.jsonPrimitive.content) {
                 "hello" -> {
-                    if (!helloRateLimit.allow(socket.inetAddress.hostAddress) { config.tokenVerifier.verify(message["token"]!!.jsonPrimitive.content) }) {
-                        // Pairing failure is conveyed by a policy-violation close, without exposing the token.
-                        finish(1008); return
-                    }
                     synchronized(lock) {
                         if (closing || !run.active) return
                         val first = hello == null

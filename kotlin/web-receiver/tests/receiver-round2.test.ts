@@ -21,7 +21,7 @@ it('maps microphone lifecycle to honest status, guidance and only useful actions
   expect(microphoneStatus('unavailable')).toEqual({ label: 'blocked', hint: 'micUnavailableHint', retry: false });
 });
 it('supplies plain bilingual copy for every receiver state and microphone status', () => {
-  const states: StatusState[] = ['code', 'incorrect', 'connecting', 'waiting', 'playing', 'reconnecting', 'error', 'unsupported', 'soundBlocked', 'microphoneDenied'];
+  const states: StatusState[] = ['connecting', 'waiting', 'playing', 'reconnecting', 'error', 'unsupported', 'soundBlocked', 'microphoneDenied'];
   for (const language of ['en', 'zh-CN'] as const) {
     for (const state of states) {
       const card = statusCard(state);

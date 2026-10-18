@@ -33,26 +33,24 @@ class DevRelayTest {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(9)
         fun remaining(): Long = (deadline - System.nanoTime()).coerceAtLeast(1)
         val root = repositoryRoot()
-        val token = "example-pairing-token"
         val capture = ByteArrayOutputStream()
         val messages = Messages()
         var socket: WebSocket? = null
         PrintStream(capture, true, Charsets.UTF_8).use { stdout ->
             DevRelay.start(RelayOptions(
                 clip = root.resolve("core/src/test/resources/media/baseline-640x360.h264"),
-                webPort = 0, webBind = "127.0.0.1", webRoot = assets, token = token,
+                webPort = 0, webBind = "127.0.0.1", webRoot = assets,
             ), stdout).use { relay ->
                 try {
                     assertTrue(relay.webPort!! > 0)
-                    assertEquals("http://127.0.0.1:${relay.webPort}/#k=$token", relay.receiverUrl)
+                    assertEquals("http://127.0.0.1:${relay.webPort}/", relay.receiverUrl)
                     val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
                     val connected = client.newWebSocketBuilder().connectTimeout(Duration.ofSeconds(2))
                         .buildAsync(URI("ws://127.0.0.1:${relay.webPort}/oxp/v0"), messages)
                         .get(remaining(), TimeUnit.NANOSECONDS)
                     socket = connected
-                    // Use the complete canonical hello, including its fixed token.
+                    // Use the complete canonical hello; the token is ignored.
                     val hello = Files.readString(root.resolve("web-receiver/spec/vectors/web/hello.json"))
-                    assertTrue(hello.contains("\"token\": \"$token\""))
                     connected.sendText(hello, true).get(remaining(), TimeUnit.NANOSECONDS)
                     var welcome: String? = null
                     var format: String? = null

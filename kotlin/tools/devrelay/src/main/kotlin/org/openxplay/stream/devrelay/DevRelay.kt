@@ -8,7 +8,6 @@ import java.io.PrintStream
 import java.net.URI
 import java.nio.file.Files
 import java.security.KeyStore
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.KeyManagerFactory
@@ -41,11 +40,9 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
     private fun startComponents() {
         hub.start()
         options.webPort?.let { port ->
-            val expected = options.token.toByteArray(Charsets.UTF_8)
             val web = WebOutput(WebOutputConfig(
                 bindAddress = options.webBind, port = port, sslContext = sslContext(options),
                 staticAssetRoot = options.webRoot,
-                tokenVerifier = TokenVerifier { MessageDigest.isEqual(expected, it.toByteArray(Charsets.UTF_8)) },
                 sourceUrl = options.sourceUrl,
             ))
             hub.addOutput(LoggedOutput(web, log, reportOpened = false))
@@ -58,7 +55,7 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
                     else -> options.webBind
                 }
                 receiverUrl = URI(if (options.tlsKeystore == null) "http" else "https", null,
-                    address, webPort!!, "/", null, "k=${options.token}").toASCIIString()
+                    address, webPort!!, "/", null, null).toASCIIString()
                 log.event("output-opened", "output" to web.id, "port" to webPort)
                 log.event("receiver", "url" to receiverUrl)
             } catch (failure: Exception) {

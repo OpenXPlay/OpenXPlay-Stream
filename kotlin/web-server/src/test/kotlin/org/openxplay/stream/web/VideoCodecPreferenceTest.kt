@@ -28,7 +28,7 @@ class VideoCodecPreferenceTest {
     @Test fun repeatedHelloRepublishesPreferenceAndPreservesHardware() {
         val reports = CopyOnWriteArrayList<OutputCapabilities>()
         val web = WebOutput(WebOutputConfig(port = 0, staticAssetRoot = root,
-            tokenVerifier = TokenVerifier.constantTime("example-pairing-token"), sourceUrl = "https://example.org/source"))
+            sourceUrl = "https://example.org/source"))
         web.open(object : OutputHost {
             override fun capabilities(capabilities: OutputCapabilities) { reports.add(capabilities) }
             override fun control(event: ControlEvent) = Unit

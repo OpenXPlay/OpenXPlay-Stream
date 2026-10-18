@@ -43,21 +43,11 @@ h2 { font-size: 1.25rem; margin: 0; }
 #headline { min-width: 0; overflow-wrap: anywhere; }
 #status-dot { flex: 0 0 .5rem; width: .5rem; height: .5rem; border-radius: 50%; background: #a8a8a8; align-self: baseline; position: relative; top: -.125rem; }
 #card[data-state=connecting] #status-dot, #card[data-state=reconnecting] #status-dot { background: #5ca8ff; }
-#card[data-state=incorrect] #status-dot, #card[data-state=code] #status-dot { background: #ffb547; }
 #card[data-state=error] #status-dot, #card[data-state=unsupported] #status-dot { background: #ff5c5c; }
 #card[data-state=connecting] #brand-x, #card[data-state=reconnecting] #brand-x { animation: pulse 1.8s ease-in-out infinite alternate; }
 p { line-height: 1.5; color: #a8a8a8; margin: .5rem 0 1.25rem; }
 .attribution { display: block; margin-top: 1.75rem; font-size: .875rem; color: #a8a8a8; min-height: 3rem; padding: .75rem 0; }
-#pairing label { position: absolute; width: .0625rem; height: .0625rem; overflow: hidden; }
-.code-input { position: relative; margin: 1.25rem 0 1rem; }
-.code-input:focus-within { outline: .125rem solid #54e8a0; outline-offset: .25rem; border-radius: .5rem; }
-#digits { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: .25rem; }
-#digits span { position: relative; height: 3.5rem; display: grid; place-items: center; border: .0625rem solid #2c2c2c; border-radius: .5rem; background: #080808; font: 1.75rem ui-monospace, monospace; }
-#digits span::after { content: ''; position: absolute; inset: -.125rem; border: .125rem solid #54e8a0; border-radius: .625rem; opacity: 0; transition: opacity 150ms; }
-.code-input:focus-within #digits .next::after { opacity: 1; }
-#code { position: absolute; inset: 0; width: 100%; height: 3.5rem; min-height: 3rem; opacity: 0; font: 1.875rem ui-monospace, monospace; }
 .primary { width: 100%; min-height: 3.5rem; border-radius: 1.75rem; background: #54e8a0; color: #080808; font-weight: 600; }
-#paired { display: block; font-size: 1rem; margin: .5rem 0; color: #54e8a0; }
 #sheet-backdrop { position: fixed; z-index: 3; inset: 0; pointer-events: none; opacity: 0; transition: opacity 300ms; }
 #sheet-backdrop.open { opacity: 1; }
 dialog { position: fixed; z-index: 4; inset: auto 0 0 auto; margin: 0; width: min(35rem, calc(100% - var(--safe-left))); max-height: calc(100dvh - var(--safe-top)); overflow: auto; padding: 1rem max(1.5rem, var(--safe-right)) max(1.5rem, var(--safe-bottom)) 1.5rem; border: .0625rem solid #2c2c2c; border-radius: 1rem 1rem 0 0; background: #151515; color: #fff; animation: sheet-in 300ms cubic-bezier(.2, 0, 0, 1); }
@@ -97,29 +87,16 @@ button[aria-pressed=true] { background: #54e8a0; color: #080808; }
 @keyframes pulse { from { opacity: .5; } to { opacity: 1; } }
 @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes backdrop-out { from { opacity: 1; } to { opacity: 0; } }
-@media (max-height: 500px) { #card { padding: 1rem 1.5rem; } h1 { margin-top: .5rem; } .attribution { margin-top: 1rem; } .code-input { margin: .75rem 0; } }
+@media (max-height: 500px) { #card { padding: 1rem 1.5rem; } h1 { margin-top: .5rem; } .attribution { margin-top: 1rem; } }
 @media (min-width: 700px) and (orientation: landscape) {
   dialog { width: min(55rem, calc(100% - 2rem - var(--safe-left) - var(--safe-right))); right: max(1rem, var(--safe-right)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 2rem; }
   dialog:not([open]) { display: none; }
   dialog header { grid-column: 1 / -1; } dialog > .row { grid-column: 1; }
   #about { grid-column: 2; grid-row: 2 / span 5; margin-top: 0; padding-top: 1rem; }
 }
-@media (max-width: 420px) { #card { padding: 1.5rem 1rem; } #digits { gap: .1875rem; } #digits span { font-size: 1.25rem; } }
-/* Use columns only when each column has room at the current text scale. */
-@media (min-width: 700px) and (max-height: 600px) {
-  #card[data-state=code], #card[data-state=incorrect] { width: min(45rem, calc(100% - var(--edge-left) - var(--edge-right))); }
-}
-@media (min-width: 42rem) and (max-height: 600px) {
-  #card[data-state=code], #card[data-state=incorrect] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1.5rem; text-align: start; }
-  #card[data-state=code] .logo, #card[data-state=incorrect] .logo, #card[data-state=code] #status, #card[data-state=incorrect] #status { grid-column: 1; }
-  #card[data-state=code] h1, #card[data-state=incorrect] h1 { justify-content: start; }
-  #card[data-state=code] #pairing, #card[data-state=incorrect] #pairing { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
-  #card[data-state=code] .attribution, #card[data-state=incorrect] .attribution { grid-column: 1 / -1; margin-top: .5rem; text-align: center; }
-}
+@media (max-width: 420px) { #card { padding: 1.5rem 1rem; } }
 .reduced-motion *, .reduced-motion *::before, .reduced-motion *::after, .reduced-motion dialog::backdrop { animation: none !important; transition: none !important; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after, dialog::backdrop { animation: none !important; transition: none !important; } }
-/* The fixture doubles the viewport font; keep pairing readable in one scrollable column. */
-.large-text #card[data-state=code], .large-text #card[data-state=incorrect] { display: block; text-align: center; }
 .large-text #card h1 { justify-content: center; }
 
 #frame-rate, #playback, #video-codec { font: inherit; color: inherit; background: #202020; border: 1px solid #555; border-radius: 8px; padding: 8px; }

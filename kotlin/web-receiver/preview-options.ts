@@ -3,7 +3,7 @@
 // Created by riko chen on 2026-10-15
 
 import { parseGearPosition, selectLanguage, type StatusState } from './receiver/ui';
-export const previewStates: (StatusState | 'playingSoundBlocked')[] = ['code', 'incorrect', 'connecting', 'waiting', 'playing', 'reconnecting', 'error', 'unsupported', 'soundBlocked', 'playingSoundBlocked', 'microphoneDenied'];
+export const previewStates: (StatusState | 'playingSoundBlocked')[] = ['connecting', 'waiting', 'playing', 'reconnecting', 'error', 'unsupported', 'soundBlocked', 'playingSoundBlocked', 'microphoneDenied'];
 export const previewSizes = [[800, 480], [1024, 600], [1920, 720], [360, 800], [412, 915], [915, 412]];
 export function previewOptions(params: URLSearchParams) {
   const state = params.get('state');
@@ -12,7 +12,7 @@ export function previewOptions(params: URLSearchParams) {
   const size = /^(\d{1,4})x(\d{1,4})$/i.exec(params.get('size') ?? '');
   const dimensions = size?.slice(1).map(Number);
   return {
-    state: previewStates.find(value => value === state) ?? 'code',
+    state: previewStates.find(value => value === state) ?? 'connecting',
     language: selectLanguage([params.get('lang') ?? 'en']),
     gear: parseGearPosition({ side, y: y?.trim() ? Number(y) : NaN }),
     sheet: flag('sheet'), large: flag('large'), motion: flag('motion'),

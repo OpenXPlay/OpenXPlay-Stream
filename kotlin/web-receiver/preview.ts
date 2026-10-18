@@ -35,7 +35,7 @@ function paint(frame: HTMLIFrameElement): void {
   el('version').textContent = version; el('card').dataset.state = state; el('card').hidden = card.hidden;
   el('headline').textContent = text[card.headline];
   el('subline').textContent = state === 'reconnecting' ? text.attempt.replace('{attempt}', '3').replace('{seconds}', '5') : text[card.subline];
-  el('pairing').hidden = state !== 'code' && state !== 'incorrect'; el('retry').hidden = !['error', 'microphoneDenied'].includes(state);
+  el('retry').hidden = !['error', 'microphoneDenied'].includes(state);
   const prompt = soundPrompt(playing, true, fixture === 'soundBlocked' || fixture === 'playingSoundBlocked' ? 'suspended' : 'running');
   el('sound-hint').hidden = prompt !== 'pill'; el('card-sound').hidden = prompt !== 'card';
   el('controls').classList.toggle('playing', playing);
@@ -58,9 +58,6 @@ function paint(frame: HTMLIFrameElement): void {
   const resume = () => { el('sound-hint').hidden = true; el('card-sound').hidden = true; };
   for (const type of ['pointerup', 'touchend', 'click', 'keydown']) doc.addEventListener(type, resume, { once: true, passive: true });
   for (const fit of ['fit', 'fill']) el(fit).onclick = () => { el('fit').setAttribute('aria-pressed', String(fit === 'fit')); el('fill').setAttribute('aria-pressed', String(fit === 'fill')); };
-  const input = el<HTMLInputElement>('code');
-  input.oninput = () => { input.value = input.value.replace(/\D/g, '').slice(0, 8); [...el('digits').children].forEach((digit, i) => { digit.textContent = input.value[i] ?? ''; digit.classList.toggle('next', i === Math.min(7, input.value.length)); }); };
-  el<HTMLFormElement>('pairing').onsubmit = event => { event.preventDefault(); el('paired').hidden = false; };
 }
 function render(): void { for (const frame of frames) { frame.srcdoc = markup.replace(/<script[\s\S]*?<\/script>/g, '').replace('</head>', `<style>${css}</style></head>`); } }
 for (const [width, height] of options.sizes) {

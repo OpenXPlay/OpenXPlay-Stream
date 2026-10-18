@@ -12,7 +12,7 @@ import type { TouchContact } from '../protocol/binary';
 import type { PageCommand, WorkerNotice } from './messages';
 import workletUrl from './audio-worklet.ts?worker&url';
 import type { MicFormat } from '../protocol/json';
-import { Pairing, ReceiverPreferences, playbackHint, selectLanguage, strings, statusCard, soundPrompt, gearOffset, clampGear, GearGesture, type GearBounds, type StatusState, type TextKey } from './ui';
+import { ReceiverPreferences, playbackHint, selectLanguage, strings, statusCard, soundPrompt, gearOffset, clampGear, GearGesture, type GearBounds, type StatusState, type TextKey } from './ui';
 import { bindSheet } from './sheet';
 import { PluginSlot } from './plugin-slot';
 import { microphoneStatus, applyReducedMotion } from './ui';
@@ -32,7 +32,6 @@ const storage = new ReceiverPreferences(() => localStorage);
 const preferences = storage.load(fragment);
 // Capture is controlled by CarPlay requests rather than a saved UI switch.
 preferences.microphone = true;
-const pairing = new Pairing(storage, fragment);
 const language = selectLanguage(navigator.languages);
 const text = strings[language];
 document.documentElement.lang = language;
@@ -92,15 +91,6 @@ element('version').textContent = version;
 element('close-settings').setAttribute('aria-label', text.close);
 let cardTimer: ReturnType<typeof setTimeout>;
 let countdown: ReturnType<typeof setInterval> | undefined;
-const codeInput = element<HTMLInputElement>('code');
-function renderCode(): void {
-  codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 8);
-  [...element('digits').children].forEach((digit, index) => {
-    digit.textContent = codeInput.value[index] ?? '';
-    digit.classList.toggle('next', index === Math.min(7, codeInput.value.length));
-  });
-}
-codeInput.oninput = renderCode; renderCode();
 function setState(state: StatusState): void {
   if (state === uiState && element('card').dataset.state === state) return;
   uiState = state;
@@ -122,7 +112,6 @@ function setState(state: StatusState): void {
     } else headline.textContent = text[card.headline];
   }
   element('subline').textContent = text[card.subline];
-  element('pairing').hidden = state !== 'code' && state !== 'incorrect';
   element('retry').hidden = state !== 'error';
   if (state !== 'playing') setGearFaded(false);
 }
@@ -227,12 +216,6 @@ element<HTMLSelectElement>('video-codec').onchange = event => {
 };
 element('mic-retry').onclick = () => { if (requestedMic?.request) void microphone(requestedMic.request, requestedMic.token); };
 for (const id of ['sound-hint', 'card-sound']) element(id).onclick = () => { void audioContext?.resume().then(syncSound).catch(() => {}); };
-element<HTMLFormElement>('pairing').onsubmit = event => {
-  event.preventDefault(); if (!pairing.submit(codeInput.value)) return;
-  element('paired').hidden = true; setState('connecting');
-  if (initialized) { hello = { ...hello, token: pairing.token! }; post({ type: 'pair', token: pairing.token! }); }
-  else void start().catch(() => setState('error'));
-};
 element('retry').onclick = () => { if (initialized) post({ type: 'reconnect' }); else void start().catch(() => setState('error')); setState('connecting'); };
 function statistics(message: Extract<WorkerNotice, { type: 'stats' }>): void {
   if (debug.hidden) return;
@@ -450,7 +433,7 @@ async function start(): Promise<void> {
     });
     const [probes, refreshHz] = await Promise.all([probeDecoders(), estimateRefreshHz()]);
     const dpr = devicePixelRatio || 1;
-    hello = { type: 'hello', version: 0, token: pairing.token ?? '',
+    hello = { type: 'hello', version: 0, token: '',
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
       displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
@@ -476,28 +459,16 @@ async function start(): Promise<void> {
         case 'hold': updatePlayback(message); break;
         case 'ended': updatePlayback(message); break;
         case 'playing': element('frame-rate-status').hidden = true; updatePlayback(message); wakeGear(); break;
-        case 'rejected': {
-          protocolState = 'Pairing rejected (1008)'; const rejectedState = pairing.rejected(message.token); fragment.delete('k');
-          const hash = fragment.toString();
-          history.replaceState(null, '', `${location.pathname}${location.search}${hash ? `#${hash}` : ''}`);
-          codeInput.value = ''; renderCode(); playback = { state: rejectedState, protocol: protocolState, holding: false }; setState(rejectedState);
-          if (rejectedState === 'incorrect' && !reducedMotion()) element('digits').animate?.([{ transform: 'translateX(0)' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }], { duration: 250 });
-          codeInput.focus(); break;
-        }
         case 'display-disconnected': displayGate.welcome(); updateDisplaySettings(); break;
         case 'display-settings': currentDisplaySettings = message; updateDisplaySettings(); break;
         case 'welcome':
           displayGate.welcome(message.features); updateDisplaySettings();
           pluginSlot.configure(message);
           if (!receiverInfoStarted) { receiverInfoStarted = true; void collectReceiverInfo().then(info => post({ type: 'receiver-info', info })); }
-          pairing.welcome(message.token); source.href = message.sourceUrl;
+          source.href = message.sourceUrl;
           element('relay-version-row').hidden = !message.relay;
           element('relay-name').textContent = message.relay?.name ?? '';
           element('relay-version').textContent = message.relay?.version ?? '';
-          if (!codeInput.value) break;
-          element('paired').hidden = false;
-          element('paired').textContent = `✓ ${text.paired}`;
-          setTimeout(() => { element('paired').hidden = true; }, reducedMotion() ? 0 : 250);
           break;
         case 'format':
           releaseAll(); videoWidth = message.format?.width ?? 0; videoHeight = message.format?.height ?? 0;

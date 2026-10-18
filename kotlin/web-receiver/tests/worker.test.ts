@@ -7,7 +7,10 @@ import { readFileSync } from 'node:fs';
 import { BinaryKind, KEYFRAME, encodeBinary } from '../protocol/binary';
 
 const vectors = new URL('../spec/vectors/web/', import.meta.url);
-const vector = (name: string) => JSON.parse(readFileSync(new URL(name + '.json', vectors), 'utf8'));
+const vector = (name: string) => {
+  const message = JSON.parse(readFileSync(new URL(name + '.json', vectors), 'utf8'));
+  return message.type === 'hello' ? { ...message, token: '' } : message;
+};
 let scope: { onmessage: (event: { data: unknown }) => void; postMessage: ReturnType<typeof vi.fn> };
 class Socket {
   static OPEN = 1;
@@ -225,14 +228,15 @@ it('rejects stale port installation and same-token callbacks from replaced captu
   socket.receive({ type: 'mic', stream: 7, request: null });
   current.onmessage({ data: { token, data: new ArrayBuffer(1920) } }); expect(socket.sent).toHaveLength(1);
 });
-it('stops reconnecting after policy close and resumes with the new pairing code', async () => {
-  const socket = init(); socket.open(); await welcome(socket);
+it('reconnects with backoff after a 1008 close and sends an empty token', async () => {
+  const socket = init(null, { ...vector('hello'), token: 'legacy-token' }); socket.open(); await welcome(socket);
+  expect(socket.json()[0]).toMatchObject({ type: 'hello', token: '' });
   socket.close(1008);
-  expect(scope.postMessage).toHaveBeenCalledWith({ type: 'rejected', token: 'example-pairing-token' });
-  await vi.advanceTimersByTimeAsync(60000); expect(Socket.instances).toHaveLength(1);
-  command({ type: 'pair', token: '00123456' });
-  const next = Socket.instances.at(-1)!; next.open();
-  expect(next.json()[0]).toMatchObject({ type: 'hello', token: '00123456' });
+  expect(scope.postMessage).toHaveBeenCalledWith({ type: 'status', text: 'Disconnected; reconnecting…' });
+  await vi.advanceTimersByTimeAsync(100); expect(Socket.instances).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(1000); expect(Socket.instances).toHaveLength(2);
+  const next = Socket.instances[1]; next.open();
+  expect(next.json()[0]).toMatchObject({ type: 'hello', token: '' });
 });
 it('detaches capture immediately while permission or the relay response is pending', async () => {
   const socket = init(); socket.open(); await welcome(socket);
@@ -245,18 +249,6 @@ it('detaches capture immediately while permission or the relay response is pendi
   port.onmessage({ data: { token, data: new ArrayBuffer(1920) } }); expect(socket.sent).toHaveLength(0);
 });
 
-it('starts without a token and waits after rejection until a code is submitted', async () => {
-  const hello = { ...vector('hello'), token: '' };
-  command({ type: 'init', canvas: { getContext: () => null }, url: 'wss://relay/oxp/v0', hello, queueDepth: 1 });
-  const socket = Socket.instances[0]; socket.open();
-  expect(socket.sent[0]).toEqual(hello);
-  command({ type: 'hello', hello: { ...hello, token: 'not-sent-yet' } });
-  socket.close(1008);
-  expect(scope.postMessage).toHaveBeenCalledWith({ type: 'rejected', token: '' });
-  await vi.advanceTimersByTimeAsync(60000); expect(Socket.instances).toHaveLength(1);
-  command({ type: 'pair', token: '00123456' }); Socket.instances[1].open();
-  expect(Socket.instances[1].sent[0]).toMatchObject({ token: '00123456' });
-});
 
 const notices = () => scope.postMessage.mock.calls.map(([value]) => value);
 async function picture(socket: Socket) {
@@ -367,13 +359,6 @@ it.each(['socket', 'decoder', 'manual reconnect'] as const)('shows the card afte
   await vi.advanceTimersByTimeAsync(1);
   expect(notices()).toContainEqual({ type: 'hold', active: false });
   expect(context.fillRect).not.toHaveBeenCalled();
-});
-it('preserves pairing rejection after an interruption without a delayed status override', async () => {
-  const { socket } = await streaming();
-  socket.close(1008); scope.postMessage.mockClear();
-  await vi.advanceTimersByTimeAsync(4000);
-  expect(notices().filter(v => v.type === 'hold' || v.type === 'status')).toEqual([]);
-  expect(Socket.instances).toHaveLength(1);
 });
 it('preserves the frozen canvas across resize without clearing it again at the same size', async () => {
   const { socket, context } = await streaming();

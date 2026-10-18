@@ -22,7 +22,6 @@ export type PageCommand = import('../protocol/json').DisplaySettings |
   { type: 'audio-probe' } |
   { type: 'mic-detach' } |
   { type: 'mic-port'; port: MessagePort; token: number } |
-  { type: 'pair'; token: string } |
   { type: 'reconnect' } |
   { type: 'restart' } |
   { type: 'fit'; fit: 'fit' | 'fill' } |
@@ -32,11 +31,10 @@ export type WorkerNotice = { type: 'display-disconnected' } | import('../protoco
   { type: 'playing' } |
   { type: 'hold'; active: boolean } |
   { type: 'ended' } |
-  { type: 'rejected'; token: string } |
   { type: 'audio-support'; aac: boolean } |
   { type: 'audio-active'; active: boolean } |
   { type: 'mic'; stream: number; request: import('../protocol/json').MicFormat | null; token: number } |
   { type: 'status'; text: string } |
-  { type: 'welcome'; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; sourceUrl: string; token: string } |
+  { type: 'welcome'; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; sourceUrl: string } |
   { type: 'format'; format: VideoFormat | null } |
   { type: 'stats'; stats: Stats; skipped: number; renderQueue: number; queueDepth: number; playback: PlaybackMode; audio: AudioDebug[]; audioBuffers: AudioBufferDebug[] };

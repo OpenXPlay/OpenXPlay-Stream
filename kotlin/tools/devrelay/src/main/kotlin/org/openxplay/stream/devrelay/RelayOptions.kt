@@ -6,7 +6,6 @@ package org.openxplay.stream.devrelay
 
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.SecureRandom
 import org.openxplay.stream.replay.ReplayAudioOptions
 
 data class RelayOptions(
@@ -15,7 +14,6 @@ data class RelayOptions(
     val webPort: Int? = null,
     val webBind: String = "127.0.0.1",
     val webRoot: Path = repositoryRoot().resolve("web-receiver/dist").normalize(),
-    val token: String = randomToken(),
     val sourceUrl: String = "https://github.com/OpenXPlay/OpenXPlay-Stream",
     val tlsKeystore: Path? = null,
     val tlsPassword: String? = null,
@@ -31,7 +29,6 @@ data class RelayOptions(
             "Invalid frame rate"
         }
         require(webPort == null || webPort in 0..65535) { "Invalid web port" }
-        require(token.isNotEmpty()) { "Token must not be empty" }
         require((tlsKeystore == null) == (tlsPassword == null)) { "TLS requires both keystore and password" }
         require(tlsKeystore == null || webPort != null) { "TLS requires --web-port" }
         require((clinkHeadUnit == null) == (clinkLocal == null)) { "Clink requires both head-unit and local IPv4 addresses" }
@@ -46,7 +43,6 @@ data class RelayOptions(
   --web-port <port>          Enable web output (0 selects an ephemeral port)
   --web-bind <address>       Bind address (default 127.0.0.1)
   --web-root <dir>           Assets (default web-receiver/dist; relative to repository root in Gradle)
-  --token <token>            Pairing token (default random 128-bit hex)
   --source-url <url>         Source URL (default https://github.com/OpenXPlay/OpenXPlay-Stream)
   --tls-keystore <p12>       PKCS12 keystore for HTTPS/WSS
   --tls-password <password>  Keystore and key password
@@ -62,7 +58,7 @@ data class RelayOptions(
 """
 
         fun parse(args: Array<String>, root: Path = repositoryRoot()): RelayOptions {
-            val names = setOf("clip", "fps", "web-port", "web-bind", "web-root", "token", "source-url",
+            val names = setOf("clip", "fps", "web-port", "web-bind", "web-root", "source-url",
                 "tls-keystore", "tls-password", "clink-head-unit", "clink-local", "clink-pin", "audio-media", "audio-voice", "audio-voice-every", "mic-rate", "mic-out")
             val values = mutableMapOf<String, String>()
             var index = 0
@@ -81,7 +77,6 @@ data class RelayOptions(
                 webPort = values["web-port"]?.toInt(),
                 webBind = values["web-bind"] ?: "127.0.0.1",
                 webRoot = path(values["web-root"] ?: "web-receiver/dist"),
-                token = values["token"] ?: randomToken(),
                 sourceUrl = values["source-url"] ?: "https://github.com/OpenXPlay/OpenXPlay-Stream",
                 tlsKeystore = values["tls-keystore"]?.let(::path), tlsPassword = values["tls-password"],
                 audio = ReplayAudioOptions(values["audio-media"]?.let(::path), values["audio-voice"]?.let(::path),
@@ -93,8 +88,6 @@ data class RelayOptions(
 }
 
 internal fun repositoryRoot(): Path = Path.of(System.getProperty("devrelay.repositoryRoot", System.getProperty("user.dir")))
-internal fun randomToken(): String = ByteArray(16).also { SecureRandom().nextBytes(it) }
-    .joinToString("") { "%02x".format(it.toInt() and 255) }
 private fun ipv4(value: String): Boolean = value.split('.').let { parts ->
     parts.size == 4 && parts.all { it.isNotEmpty() && it.length <= 3 && it.all { c -> c in '0'..'9' } && it.toInt() in 0..255 }
 }
