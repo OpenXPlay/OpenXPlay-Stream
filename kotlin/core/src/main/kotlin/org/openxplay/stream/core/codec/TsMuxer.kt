@@ -21,6 +21,12 @@ public class TsMuxer(
     public val audioPid: Int = 0x102,
     public val programNumber: Int = 1,
     public val audioEnabled: Boolean = false,
+    /**
+     * Carlink 的调用方必须传 false：ICCOA 车机靠检查每个 access unit 的开头几个字节
+     * 来决定是否送解码器（VideoQueueManager.isKeyFrame 只接受 NAL 7 或 5），
+     * 所以前面加一个 access unit delimiter (NAL 9) 会把关键帧全藏起来，
+     * 车机于是丢弃整条流—— 有声音但画面全黑（2026-10-19）。
+     */
     public val insertAud: Boolean = true,
     public val psiIntervalFrames: Int = 15,
 ) {

@@ -141,7 +141,9 @@ internal class TsCapture {
             ((u8(11).toLong() shr 1) shl 15) or (u8(12).toLong() shl 7) or (u8(13).toLong() shr 1)
         val data = bytes.copyOfRange(9 + u8(8), bytes.size)
         val nals = Nal.units(data, Nal.Format.ANNEX_B).toList()
-        require(nals.first()[0].toInt() and 31 == 9) { "AUD required" }
+        // Carlink 车机会拒收以 AUD 开头的 access unit，所以复用器不再输出它
+        //（2026-10-19）；两种形式都接受，但要求第一个是真正的视频 NAL。
+        require(nals.first()[0].toInt() and 31 in setOf(1, 5, 7, 8, 9)) { "video NAL required" }
         nals.lastOrNull { it[0].toInt() and 31 == 7 }?.let { currentSps = it.copyOf() }
         val key = Nal.isKeyFrame(data, VideoCodec.H264, Nal.Format.ANNEX_B)
         if (key) {

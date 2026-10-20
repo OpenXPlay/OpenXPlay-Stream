@@ -147,7 +147,7 @@ public class ClinkOutput(
         if (screen != ScreenId.MAIN) return
         val run = current ?: return
         synchronized(run.lock) {
-            if (run.format !== format) {
+            if (!sameVideoFormat(run.format, format)) {
                 if (trace !== ClinkTrace.NONE) {
                     val config = if (format?.codec == VideoCodec.H264) runCatching { AvcConfig.parse(format.config) }.getOrNull() else null
                     fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
@@ -219,6 +219,19 @@ public class ClinkOutput(
         run.session?.stop()
     }
     /**
+     * iPhone 在每个关键帧都会重复下发一份相同的配置，而直通模式下每次都会 new 一个
+     * 新的 [VideoFormat] 实例。用引用比较会导致队列被反复重置、revision 递增，
+     * 每秒强制请求一次关键帧（Carlink 画面闪烁，2026-10-19）。
+     * 改为只比较真正会影响编码流的字段。
+     */
+    private fun sameVideoFormat(a: VideoFormat?, b: VideoFormat?): Boolean {
+        if (a === b) return true
+        if (a == null || b == null) return false
+        return a.codec == b.codec && a.codecString == b.codecString &&
+            a.width == b.width && a.height == b.height && a.config.contentEquals(b.config)
+    }
+
+    /**
      * Never calls the host under [Run.lock]: the hub delivers frames into this output from threads that
      * hold an input's lock, so a host call made under our lock deadlocked with an input waiting for that
      * frame (2026-10-15). The hub fences the host of a removed output, so a call racing stop() is harmless.
@@ -275,6 +288,8 @@ public class ClinkOutput(
             var audioOffset: Long? = null
             var liveFrames = 0L; var placeholderFrames = 0L; var keyframes = 0L; var videoBytes = 0L
             var sendStalls = 0L; var audioFrames = 0L; var failedVideo = 0L
+            var lastAudioPts = -1L
+            var clockAt = 0L
             var sent = 0L
             var reportedAt = 0L
             var mismatchReported: String? = null
@@ -321,9 +336,15 @@ public class ClinkOutput(
                     if (revision != run.revision || generation !== session) {
                         if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession,
                             if (everLive) "freeze" else "reset", "revision"))
-                        gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0; audioOffset = null
+                        // revision 切换时保留 audio 锚点：输入时钟并没有重启，
+                        // 归零会让每个 audio 包回落到raw PTS 然后被丢弃
+                        //（2026-10-19 的 trace 里能看到 47 -> 27 packets/s 的衰减）。
+                        // 只有开启新会话时才重置。
+                        gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0
                         revision = run.revision
-                        if (generation !== session) { muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false }
+                        if (generation !== session) {
+                            muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false; audioOffset = null
+                        }
                         generation = session
                         if (format !== run.format) { format = run.format; avc = null; mismatchReported = null }
                     }
@@ -346,7 +367,11 @@ public class ClinkOutput(
                     listener.diagnostic("audio negotiated media=${session.mediaAudio}")
                 }
                 require(session.videoSize == (placeholder.format.width to placeholder.format.height)) { "placeholder_timing_mismatch" }
-                val transport = muxer ?: TsMuxer({ rtp.append(unit, it) }, audioEnabled = session.mediaAudio).also { muxer = it }
+                // 不写 access unit delimiter：车机只有在 access unit 以 SPS (NAL 7) 或
+                // IDR slice (NAL 5) 开头时才认得出关键帧，前面放一个 AUD 会让它丢弃所有帧
+                // —— 有声音但画面全黑（2026-10-19）。
+                val transport = muxer ?: TsMuxer({ rtp.append(unit, it) }, audioEnabled = session.mediaAudio,
+                    insertAud = false).also { muxer = it }
                 val origin = Origin(id, session.headUnitId)
                 // At most one keyframe request per second per session: each one makes the phone send an IDR
                 // frame. A request inside the interval, or during a stalled send, stays pending instead of being lost.
@@ -373,9 +398,17 @@ public class ClinkOutput(
                     val wasLive = gate.live
                     if (gate.accept(f.keyFrame)) {
                         if (!wasLive) {
-                            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "live", "placeholder"))
                             liveOffset = maxOf(0L, outputPts + 1_000_000 / placeholder.fps,
                                 f.ptsUs + (audioOffset ?: (0L - f.ptsUs))) - f.ptsUs
+                            // 绝对 PTS 决定了接收端到底会不会渲染：video 时间轴如果停在
+                            // audio 时钟前面太远，帧就一直在接收端的「未来」，
+                            // 于是流量和计数器都在涨、屏幕却一直黑。
+                            // 在切换的那一刻检测一次，重新对齐到共享时钟。
+                            val lead = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset) - transportPts
+                            if (lead > MAX_LEAD_US) liveOffset -= lead - 1
+                            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession,
+                                if (lead > MAX_LEAD_US) "reanchor" else "live",
+                                "in=${f.ptsUs} out=$outputPts tr=$transportPts off=$liveOffset aoff=${audioOffset ?: -1} lead=$lead"))
                         }
                         val pts = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset)
                         val result = emit(session, pts) { transport.writeVideo(f.data, config, pts, f.keyFrame) }
@@ -429,6 +462,7 @@ public class ClinkOutput(
                             val pts = maxOf(mapped, transportPts)
                             val result = emit(session, pts) { transport.writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
                             if (trace !== ClinkTrace.NONE && result != Emit.DROPPED) audioFrames++
+                            lastAudioPts = pts
                             transportPts = pts
                             if (result == Emit.LATE) writable = false
                         }
@@ -447,6 +481,12 @@ public class ClinkOutput(
                         reportedAudioDrops = audioDrops
                     }
                     val dropped = run.queue.droppedCount()
+                    // 接收端实际看到的东西：video 与 audio 的 PTS 共用同一个 transport 时钟。
+                    if (trace !== ClinkTrace.NONE && now - clockAt >= 2_000_000_000L) {
+                        clockAt = now
+                        trace.emit(ClinkTraceEvent.Video(now, session.traceSession, "clock",
+                            "v=$outputPts a=$lastAudioPts t=$transportPts off=$liveOffset"))
+                    }
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Media(now, session.traceSession,
                         liveFrames, placeholderFrames, dropped + failedVideo, keyframes, videoBytes, run.rtpPackets.get(), run.rtpBytes.get(),
                         sendStalls, audioFrames, overflows))
@@ -464,8 +504,10 @@ public class ClinkOutput(
     }
 }
 
-/** Everything the Carlink media path retains at one instant; every field has a fixed bound. */
-internal data class MediaBacklog(
+/** video 时间戳最多可以领先共享 transport 时钟多久，超过就重新锚定。 */
+private const val MAX_LEAD_US: Long = 500_000
+
+/** Carlink 媒体路径在某一瞬间保留的全部状态，每个字段都有固定上限。 */internal data class MediaBacklog(
     val videoFrames: Int, val videoBytes: Long,
     val audioPackets: Int, val audioBytes: Int,
     val voiceCommands: Int, val voiceBytes: Int,

@@ -45,7 +45,9 @@ public class BundledPlaceholderVideo : PlaceholderVideo {
         for (unit in units) {
             val type = unit[0].toInt() and 31
             if (type == 9) flush()
-            if (type in listOf(1, 5, 6, 9)) {
+            // 分隔符只起边界作用；把它放在 slice 前面会让车机看不到关键帧，
+            // 车机是检查每个 access unit 的第4 个字节来判断的（2026-10-19）。
+            if (type in listOf(1, 5, 6)) {
                 DataOutputStream(current).apply { writeInt(unit.size); write(unit) }
             }
         }
