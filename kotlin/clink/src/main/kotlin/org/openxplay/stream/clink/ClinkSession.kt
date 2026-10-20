@@ -21,6 +21,9 @@ import org.openxplay.stream.clink.uibc.UibcDecoder
 import org.openxplay.stream.clink.wfd.*
 import org.openxplay.stream.core.*
 
+/** 表示「已保存的车机公钥已经不属于这台车机」的失败原因。 */
+private val stalePeerReasons = setOf("peer_key_changed", "auth_signature_failed")
+
 /** One authenticated socket generation. Run on a lifecycle worker; stop is non-blocking. */
 public class ClinkSession(
     private val link: ClinkLink,
@@ -268,13 +271,19 @@ public class ClinkSession(
         socket.soTimeout = 250
         val a = checkNotNull(addresses)
         val pinned = trustStore.loadPeerKey(a.headUnitId)
-        val auth = Auth(identity, deviceId, deviceName, a.localIpv4, pinned)
+        var auth = Auth(identity, deviceId, deviceName, a.localIpv4, pinned)
         var full = pinned == null
         var pin: String? = if (full) pinProvider.requestPin(a.headUnitId) ?: error("pin_cancelled") else null
-        var attempt = auth.start(now(), 1, pin)
+        var sequence = 1L
+        var attempt = auth.start(now(), sequence, pin)
         val decoder = FrameReader(); val buffer = ByteArray(65536)
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         var retries = 0
+        // 车机启动时重建配对存储，会给出一个新的 P-256 身份，而本地保存的 pin 还是旧的；
+        // 之后每次尝试都会在 quick 模式（auth_signature_failed）
+        // 或 full 握手（peer_key_changed）里失败，不清数据就永远恢复不了（2026-10-19）。
+        // 在这条 socket 上丢弃过期的 pin 并重新配对一次。
+        var repinned = false
         while (!stopped && !stopRequested) {
             if (linkLost) throw linkLossCause ?: IllegalStateException("link_lost")
             attempt.frames.forEach { frameEvent("TX", ports.auth, it, it.body, false); write(socket, it.encode()) }
@@ -291,15 +300,31 @@ public class ClinkSession(
             for (frame in frames) {
                 frameEvent("RX", ports.auth, frame, frame.body, false)
                 attempt = auth.receive(frame, now())
-                attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.let { error(it.reason) }
+                val failed = attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.reason
+                if (failed != null) {
+                    if (failed !in stalePeerReasons || repinned) error(failed)
+                    // 重试前先 forget：full 握手不能再拿那把旧公钥去比对。
+                    trustStore.forgetPeer(a.headUnitId)
+                    listener.diagnostic("auth repin reason=$failed")
+                    repinned = true
+                    full = true
+                    pin = pinProvider.requestPin(a.headUnitId) ?: error("pin_cancelled")
+                    sequence = (sequence + 2) and 0xffffffffL
+                    auth = Auth(identity, deviceId, deviceName, a.localIpv4, null)
+                    attempt = auth.start(now(), sequence, pin, forceFull = true)
+                    deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+                    break
+                }
                 val result = attempt.events.filterIsInstance<AuthEvent.Result>().firstOrNull()?.result
                 if (result == AuthResult.PIN_REQUIRED && !full && retries++ == 0) {
                     full = true; pin = pinProvider.requestPin(a.headUnitId) ?: error("pin_cancelled")
-                    attempt = auth.start(now(), 3, pin, forceFull = true)
+                    sequence = (sequence + 2) and 0xffffffffL
+                    attempt = auth.start(now(), sequence, pin, forceFull = true)
                     deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
                 } else if (result == AuthResult.CONFIRMATION_REQUIRED && retries++ < 3) {
                     check(pinProvider.confirmPairing(a.headUnitId)) { "pairing_confirmation_cancelled" }
-                    attempt = auth.start(now(), 5, pin, forceFull = full, confirmed = true)
+                    sequence = (sequence + 2) and 0xffffffffL
+                    attempt = auth.start(now(), sequence, pin, forceFull = full, confirmed = true)
                     deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
                 } else if (result != null && result != AuthResult.SUCCESS) error("auth_${result.name.lowercase()}")
             }
