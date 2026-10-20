@@ -17,7 +17,7 @@ import { microphoneStatus, applyReducedMotion } from './ui';
 import { CaptureLifecycle } from './capture-lifecycle';
 import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version, shouldReload } from './version';
-import { DisplayDebounce, DisplaySettingsGate } from './display';
+import { StableScreen, DisplayDebounce, DisplaySettingsGate } from './display';
 import { FullscreenIntent, FullscreenExitHistory, autoRestoreFullscreen } from './fullscreen';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
 import { playbackMode, withPlayback } from '../shared/playback';
@@ -28,6 +28,8 @@ const source = element<HTMLAnchorElement>('source');
 const debug = element('debug');
 const fragment = new URLSearchParams(location.hash.slice(1));
 const storage = new ReceiverPreferences(() => localStorage);
+const stableScreen = new StableScreen(() => localStorage);
+stableScreen.measure(screen.width, screen.height, devicePixelRatio || 1);
 const preferences = storage.load(fragment);
 // Capture is controlled by CarPlay requests rather than a saved UI switch.
 preferences.microphone = true;
@@ -174,7 +176,7 @@ function fullscreenState(): void {
   document.querySelectorAll<SVGElement>('[data-fullscreen]').forEach(icon => icon.toggleAttribute('hidden', (icon.dataset.fullscreen === 'on') !== fullscreen.intent));
   element('fullscreen').setAttribute('aria-pressed', String(fullscreen.intent));
   element('fullscreen-hint').hidden = !fullscreen.pending;
-  element('fullscreen-state').textContent = !document.fullscreenEnabled || fullscreen.failed ? text.fullscreenUnavailable : fullscreen.intent ? text.enabled : text.off;
+  element('fullscreen-state').textContent = text[fullscreen.state];
 }
 async function requestFullscreen(): Promise<void> {
   try {
@@ -194,15 +196,17 @@ async function reportFullscreenExit(): Promise<void> {
     request: () => document.documentElement.requestFullscreen(), delay: ms => new Promise(resolve => setTimeout(resolve, ms)) });
   post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
-let restorePointer: number | undefined;
 document.addEventListener('pointerdown', event => {
   if (settings.open || (event.target instanceof Node && element('fullscreen').contains(event.target))) return;
-  if (fullscreen.pointerDown(event, () => { void requestFullscreen(); })) restorePointer = event.pointerId;
+  const decision = fullscreen.pointerDown(event);
+  if (decision.swallow) { event.preventDefault(); event.stopImmediatePropagation(); }
+  if (decision.request) void requestFullscreen();
 }, { capture: true });
 for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, event => {
   const pointer = event as PointerEvent;
-  if (pointer.pointerId !== restorePointer) return;
-  restorePointer = undefined; event.preventDefault(); event.stopImmediatePropagation();
+  const decision = fullscreen.pointerUp(pointer.pointerId, type === 'pointercancel');
+  if (decision.swallow) { event.preventDefault(); event.stopImmediatePropagation(); }
+  if (decision.request) void requestFullscreen();
 }, { capture: true });
 document.addEventListener('fullscreenchange', () => {
   if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) { releaseAll(); void reportFullscreenExit(); }
@@ -402,7 +406,7 @@ function resize(): void {
 }
 function measuredDisplay(): DisplayInfo {
   const dpr = devicePixelRatio || 1, box = canvas.getBoundingClientRect();
-  return { ...hello.displays[0], width: Math.max(1, Math.round(screen.width * dpr)), height: Math.max(1, Math.round(screen.height * dpr)), dpr, safeArea: safeArea(dpr),
+  return { ...hello.displays[0], ...stableScreen.measure(screen.width, screen.height, dpr), safeArea: safeArea(dpr),
     viewport: { width: Math.max(1, Math.round(box.width)), height: Math.max(1, Math.round(box.height)) },
     fullscreen: !!document.fullscreenElement, fullscreenPreferred: fullscreen.intent };
 }
@@ -474,7 +478,7 @@ async function start(): Promise<void> {
     const dpr = devicePixelRatio || 1;
     hello = { type: 'hello', version: 0, token: pairing.token ?? '',
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
-      displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
+      displays: [{ screen: 0, ...stableScreen.measure(screen.width, screen.height, dpr), refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
     hello = withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback);
     hello = { ...hello, displays: [fullscreen.display(measuredDisplay())] }; displayDebounce.seed(hello.displays[0]);

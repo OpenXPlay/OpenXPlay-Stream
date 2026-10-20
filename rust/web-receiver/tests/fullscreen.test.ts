@@ -5,16 +5,46 @@
 import { it, expect } from 'vitest';
 import { FullscreenIntent, FullscreenExitHistory, autoRestoreFullscreen } from '../receiver/fullscreen';
 const storage = () => ({ getItem: () => null, setItem: () => {}, removeItem: () => {} });
-it('consumes the restore gesture but allows later touches after failure until the next exit', () => {
-  const intent = new FullscreenIntent(true, storage); let prevented = 0, requested = 0;
-  const event = { preventDefault: () => prevented++, stopImmediatePropagation: () => prevented++ };
+it('requests on mouse down and consumes the release even after failure', () => {
+  const intent = new FullscreenIntent(true, storage);
   intent.changed(true); expect(intent.changed(false)).toBe(true);
-  expect(intent.pointerDown(event, () => requested++)).toBe(true);
+  expect(intent.pointerDown({ pointerId: 1, pointerType: 'mouse' })).toEqual({ swallow: true, request: true });
   intent.denied(); expect(intent.failed).toBe(true); expect(intent.pending).toBe(false);
-  expect(intent.pointerDown(event, () => requested++)).toBe(false);
-  expect(prevented).toBe(2); expect(requested).toBe(1);
+  expect(intent.pointerUp(1)).toEqual({ swallow: true, request: false });
+  expect(intent.pointerDown({ pointerId: 2, pointerType: 'mouse' })).toEqual({ swallow: false, request: false });
+  expect(intent.pointerUp(2)).toEqual({ swallow: false, request: false });
   intent.changed(true); intent.changed(false); expect(intent.pending).toBe(true);
   intent.setRestore(false); expect(intent.pending).toBe(false);
+});
+for (const pointerType of ['touch', 'pen']) it(`defers ${pointerType} restore until the matching release`, () => {
+  const intent = new FullscreenIntent(true, storage);
+  expect(intent.pointerDown({ pointerId: 3, pointerType })).toEqual({ swallow: true, request: false });
+  expect(intent.pointerUp(4)).toEqual({ swallow: false, request: false });
+  expect(intent.pointerUp(3)).toEqual({ swallow: true, request: true });
+  expect(intent.pointerUp(3)).toEqual({ swallow: false, request: false });
+  intent.denied();
+  expect(intent.pointerDown({ pointerId: 5, pointerType })).toEqual({ swallow: false, request: false });
+});
+it('consumes cancellation without requesting and leaves the next tap pending', () => {
+  const intent = new FullscreenIntent(true, storage);
+  intent.pointerDown({ pointerId: 1, pointerType: 'touch' });
+  expect(intent.pointerUp(1, true)).toEqual({ swallow: true, request: false });
+  expect(intent.pending).toBe(true); expect(intent.failed).toBe(false);
+  expect(intent.pointerDown({ pointerId: 2, pointerType: 'touch' })).toEqual({ swallow: true, request: false });
+  expect(intent.pointerUp(2)).toEqual({ swallow: true, request: true });
+});
+it('shows unavailable only for unsupported fullscreen or a failed enabled intent', () => {
+  const intent = new FullscreenIntent(true, storage); let requested = 0;
+  expect(intent.state).toBe('enabled');
+  intent.denied(); expect(intent.state).toBe('fullscreenUnavailable');
+  intent.toggle(() => requested++, () => {});
+  expect(intent.intent).toBe(false); expect(intent.failed).toBe(false); expect(intent.state).toBe('off');
+  intent.toggle(() => requested++, () => {});
+  expect(requested).toBe(1); expect(intent.state).toBe('enabled');
+  const unavailable = new FullscreenIntent(false, storage);
+  expect(unavailable.state).toBe('fullscreenUnavailable');
+  unavailable.toggle(() => requested++, () => {});
+  expect(unavailable.state).toBe('fullscreenUnavailable'); expect(requested).toBe(1);
 });
 it('tries twice with a 500 ms retry, checks visibility and returns diagnostics', async () => {
   let calls = 0, enabled = true, hidden = true; const delays: number[] = [];
