@@ -16,7 +16,7 @@ public data class WfdMode(public val width: Int, public val height: Int, public 
 
 /** Pure source negotiation, confined to its RTSP worker. Transport remains separate. */
 public class WfdSource(private val address: String, private val ports: ClinkPorts,
-    private val hevc: ClinkHevcMode = ClinkHevcMode.OFF,
+    private val hevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
     private val display: () -> DisplayInfo = { DisplayInfo(1280, 720, 160, 30.0) }) {
     public var mode: WfdMode = WfdMode(1280, 720, 30, 5, 1, 1)
         private set
@@ -92,7 +92,10 @@ public class WfdSource(private val address: String, private val ports: ClinkPort
             }
         }
         // The flag names no level; claim Main 4.1 so the iPhone's 720p60 H.265 passes through untouched.
-        if (hevcEnabled) supported += DecoderSupport("hvc1.1.6.L123.B0", true)
+        if (hevcEnabled) {
+            supported.clear()
+            supported += DecoderSupport("hvc1.1.6.L123.B0", true)
+        }
         mode = checkNotNull(selected) { "projection_timing_mismatch" }; decoders = supported.distinct()
         peer["wfd_client_rtp_ports"]?.let {
             require(it.startsWith("RTP/AVP/TCP;unicast")) { "tcp_transport_required" }

@@ -44,7 +44,7 @@ public class ClinkSession(
     private val onLinkStalled: (Boolean) -> Unit = {},
     private val trace: ClinkTrace = ClinkTrace.NONE,
     sessionNumber: Long? = null,
-    private val hevc: ClinkHevcMode = ClinkHevcMode.OFF,
+    private val hevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
 ) {
     internal val traceSession: Long = sessionNumber ?: nextTraceSession()
     internal companion object {
@@ -433,6 +433,14 @@ public class ClinkSession(
                     25 -> {
                         require(frame.kind == 2 && frame.sequence == configSequence) { "unexpected_configuration" }
                         display = Control.display(body, display); controlConfigured = true; reportCapabilities()
+                    }
+                    // Methods 4 and 5 arrive when the car takes the screen and gives it back (2026-10-20,
+                    // shifting through reverse; field 1 epoch ms, field 2 its RTSP port). Its decoder restarts
+                    // on return, and H.265 passthrough has no encoder that sends periodic key frames.
+                    4, 5 -> {
+                        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), traceSession,
+                            "keyframe_request", "head_unit_m${frame.method}"))
+                        onKeyframe()
                     }
                     23 -> { stopRequested = true; return }
                     12 -> {

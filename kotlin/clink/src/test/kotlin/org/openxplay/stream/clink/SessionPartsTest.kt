@@ -70,10 +70,18 @@ class SessionPartsTest {
             val (source, m4) = negotiate(mode, flag)
             val enabled = mode != ClinkHevcMode.OFF && flag == "supported"
             assertEquals(enabled, source.hevcEnabled)
-            assertEquals(enabled, source.decoders.any { it.codecString == "hvc1.1.6.L123.B0" && it.hardware })
+            if (enabled) assertEquals(listOf(org.openxplay.stream.core.DecoderSupport("hvc1.1.6.L123.B0", true)), source.decoders)
+            else assertTrue(source.decoders.isNotEmpty() && source.decoders.all { it.codecString.startsWith("avc1.") })
             assertEquals((if (enabled && mode == ClinkHevcMode.SIGNAL) "iccoa_support_hevc: supported\r\n" else "") + baseline, m4)
             assertContains(source.takeReports(), "video caps iccoa_support_hevc=${flag ?: "absent"}")
         }
+    }
+    @Test fun `default mode locks advertised HEVC without signalling M4`() {
+        val source = WfdSource("127.0.0.1", ClinkPorts())
+        val get = source.handle(response(source.start())).single()
+        val m4 = source.handle(response(get, fixture() + "\r\niccoa_support_hevc: supported\r\n")).single()
+        assertEquals(listOf("hvc1.1.6.L123.B0"), source.decoders.map { it.codecString })
+        assertFalse(m4.body.contains("iccoa_support_hevc"))
     }
     @Test fun `HEVC placeholder matches AVC playback and has no AUD`() {
         val avc = BundledPlaceholderVideo()

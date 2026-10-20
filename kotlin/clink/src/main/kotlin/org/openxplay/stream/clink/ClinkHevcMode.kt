@@ -4,5 +4,5 @@
 
 package org.openxplay.stream.clink
 
-/** Experimental ICCOA HEVC hypotheses, enabled only for peers advertising support. */
-public enum class ClinkHevcMode { OFF, SIGNAL, STREAM_ONLY }
+/** ICCOA HEVC modes, enabled only for peers advertising support. Stored settings use these names. */
+public enum class ClinkHevcMode { STREAM_ONLY, OFF, SIGNAL }
