@@ -75,8 +75,8 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
                         log.event("output-failed", "output" to "clink", "message" to error.message)
                         log.error("clink", error)
                     }
-                    override fun statistics(sentFrames: Long, droppedFrames: Long) = log.event("clink-stats",
-                        "sentFrames" to sentFrames, "droppedFrames" to droppedFrames)
+                    override fun statistics(stats: org.openxplay.stream.clink.ClinkStatistics) = log.event("clink-stats",
+                        "liveFrames" to stats.liveFrames, "placeholderFrames" to stats.placeholderFrames, "droppedFrames" to stats.droppedFrames)
                     override fun profileMismatch(inputCodec: String, decoders: List<String>) = log.event("error",
                         "component" to "clink", "message" to "Decoder profile mismatch",
                         "inputCodec" to inputCodec, "decoders" to decoders)

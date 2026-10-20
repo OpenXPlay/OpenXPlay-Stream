@@ -301,6 +301,9 @@ public class ClinkOutput(
             var audioOffset: Long? = null
             var liveFrames = 0L; var placeholderFrames = 0L; var keyframes = 0L; var videoBytes = 0L
             var sendStalls = 0L; var audioFrames = 0L; var failedVideo = 0L
+            var liveBytes = 0L; var codecMismatchDrops = 0L; var queueDropBase = 0L
+            var liveBase = 0L; var placeholderBase = 0L; var failedBase = 0L; var stallBase = 0L
+            var statsFormat: VideoFormat? = null
             var lastAudioPts = -1L
             var clockAt = 0L
             var sent = 0L
@@ -327,7 +330,7 @@ public class ClinkOutput(
                     if (mediaTap != null) try { mediaTap.rtp(bytes, offset + 2, length - 2) } catch (_: Exception) { }
                     session.sendRtp(bytes, offset, length)
                 }) return Emit.SENT
-                if (trace !== ClinkTrace.NONE) sendStalls++
+                sendStalls++
                 listener.diagnostic("rtp send stalled ms=${sender.waitNs / 1_000_000}")
                 return Emit.LATE
             }
@@ -355,6 +358,9 @@ public class ClinkOutput(
                         gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0
                         revision = run.revision
                         if (generation !== session) {
+                            liveBase = liveFrames; placeholderBase = placeholderFrames; failedBase = failedVideo; stallBase = sendStalls
+                            liveBytes = 0; codecMismatchDrops = 0
+                            statsFormat = null; queueDropBase = run.queue.droppedCount()
                             muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false; audioOffset = null
                         }
                         generation = session
@@ -394,6 +400,7 @@ public class ClinkOutput(
                 if (frame != null && format?.codec != sessionCodec) {
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession,
                         "codec_mismatch", "expected=$sessionCodec actual=${format?.codec}", codec = format?.codecString))
+                    codecMismatchDrops++
                     frame = null
                     gate.reset(); keyframePending = true; keyframeSource = "codec_mismatch"
                 }
@@ -446,10 +453,12 @@ public class ClinkOutput(
                         }
                         outputPts = pts; transportPts = pts
                         if (result == Emit.DROPPED) {
-                            if (trace !== ClinkTrace.NONE) { failedVideo++; trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "freeze", "unit_dropped")) }
+                            failedVideo++
+                            if (trace !== ClinkTrace.NONE) { trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "freeze", "unit_dropped")) }
                             gate.reset(); keyframePending = true; keyframeSource = "gap"
                         } else {
-                            if (trace !== ClinkTrace.NONE) { liveFrames++; videoBytes += f.data.size; if (f.keyFrame) keyframes++ }
+                            liveFrames++; liveBytes += f.data.size; videoBytes += f.data.size; statsFormat = format
+                            if (trace !== ClinkTrace.NONE && f.keyFrame) keyframes++
                             sent++
                             everLive = true; liveFrameAt = System.nanoTime(); videoWrittenAt = liveFrameAt
                         }
@@ -467,8 +476,9 @@ public class ClinkOutput(
                         else mux.writeVideo(data, placeholderConfig, pts, placeholderIndex == 0)
                     }
                     outputPts = pts; transportPts = pts
-                    if (result == Emit.DROPPED) { if (trace !== ClinkTrace.NONE) failedVideo++; placeholderIndex = 0 } else {
-                        if (trace !== ClinkTrace.NONE) { placeholderFrames++; videoBytes += data.size; if (placeholderIndex == 0) keyframes++ }
+                    if (result == Emit.DROPPED) { failedVideo++; placeholderIndex = 0 } else {
+                        placeholderFrames++; videoBytes += data.size
+                        if (trace !== ClinkTrace.NONE && placeholderIndex == 0) keyframes++
                         sent++; videoWrittenAt = System.nanoTime()
                         placeholderIndex = (placeholderIndex + 1) % clip.frames.size
                     }
@@ -524,7 +534,8 @@ public class ClinkOutput(
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Media(now, session.traceSession,
                         liveFrames, placeholderFrames, dropped + failedVideo, keyframes, videoBytes, run.rtpPackets.get(), run.rtpBytes.get(),
                         sendStalls, audioFrames, overflows))
-                    listener.statistics(sent, dropped)
+                    listener.statistics(ClinkStatistics(liveFrames - liveBase, placeholderFrames - placeholderBase,
+                        dropped - queueDropBase + failedVideo - failedBase + codecMismatchDrops, liveBytes, sendStalls - stallBase, statsFormat?.codec, statsFormat?.width ?: 0, statsFormat?.height ?: 0))
                     withHost(run) { it.stats(OutputStats(origin, ScreenId.MAIN, null, 0, dropped, 0, null)) }
                     reportedAt = now
                 }

@@ -31,6 +31,6 @@ public interface ClinkListener {
     public fun diagnostic(message: String): Unit = Unit
     /** SENSOR connectivity and cumulative malformed-frame count for this session. */
     public fun vehicleState(sensorActive: Boolean, malformedFrames: Long): Unit = Unit
-    public fun statistics(sentFrames: Long, droppedFrames: Long): Unit = Unit
+    public fun statistics(stats: ClinkStatistics): Unit = Unit
     public fun profileMismatch(inputCodec: String, decoders: List<String>): Unit = Unit
 }
