@@ -21,7 +21,7 @@ import org.openxplay.stream.clink.uibc.UibcDecoder
 import org.openxplay.stream.clink.wfd.*
 import org.openxplay.stream.core.*
 
-/** 表示「已保存的车机公钥已经不属于这台车机」的失败原因。 */
+/** Failure reasons meaning the saved head-unit key no longer belongs to this head unit. */
 private val stalePeerReasons = setOf("peer_key_changed", "auth_signature_failed")
 
 /** One authenticated socket generation. Run on a lifecycle worker; stop is non-blocking. */
@@ -281,10 +281,10 @@ public class ClinkSession(
         val decoder = FrameReader(); val buffer = ByteArray(65536)
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         var retries = 0
-        // 车机启动时重建配对存储，会给出一个新的 P-256 身份，而本地保存的 pin 还是旧的；
-        // 之后每次尝试都会在 quick 模式（auth_signature_failed）
-        // 或 full 握手（peer_key_changed）里失败，不清数据就永远恢复不了（2026-10-19）。
-        // 在这条 socket 上丢弃过期的 pin 并重新配对一次。
+        // A head unit that rebuilds its pairing store at boot presents a new P-256 identity while the stored
+        // pin is still the old one; every attempt then fails in quick mode (auth_signature_failed) or in the
+        // full handshake (peer_key_changed), and only clearing app data recovered (2026-10-19). Drop the
+        // stale pin and pair again once on this socket.
         var repinned = false
         while (!stopped && !stopRequested) {
             if (linkLost) throw linkLossCause ?: IllegalStateException("link_lost")
@@ -305,7 +305,7 @@ public class ClinkSession(
                 val failed = attempt.events.filterIsInstance<AuthEvent.Failed>().firstOrNull()?.reason
                 if (failed != null) {
                     if (failed !in stalePeerReasons || repinned) error(failed)
-                    // 重试前先 forget：full 握手不能再拿那把旧公钥去比对。
+                    // Forget before retrying: the full handshake must not compare against the old key.
                     trustStore.forgetPeer(a.headUnitId)
                     listener.diagnostic("auth repin reason=$failed")
                     repinned = true

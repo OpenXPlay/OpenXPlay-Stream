@@ -71,8 +71,8 @@ public class ClinkOutput(
     @Volatile private var current: Run? = null
 
     /**
-     * 只有语音和通话可以开启车机语音通道。系统音效（键盘点击、提示音）
-     * 真车机会自己混合；把它们送到这里会让 Carlink 压低或暂停媒体通道（2026-10-19）。
+     * Only voice and phone calls open the head unit's voice channel: system sounds such as keyboard
+     * clicks sent here made Carlink duck or pause media (2026-10-19). Other roles are not delivered here.
      */
     private fun voiceRole(role: AudioRole): Boolean = role == AudioRole.VOICE || role == AudioRole.TELEPHONY
     private val opened = AtomicBoolean(false)
@@ -229,10 +229,10 @@ public class ClinkOutput(
         run.session?.stop()
     }
     /**
-     * iPhone 在每个关键帧都会重复下发一份相同的配置，而直通模式下每次都会 new 一个
-     * 新的 [VideoFormat] 实例。用引用比较会导致队列被反复重置、revision 递增，
-     * 每秒强制请求一次关键帧（Carlink 画面闪烁，2026-10-19）。
-     * 改为只比较真正会影响编码流的字段。
+     * The iPhone repeats an identical configuration with every keyframe, and passthrough creates a new
+     * [VideoFormat] instance each time. Comparing references reset the queue, bumped the revision and
+     * forced a keyframe request every second (Carlink picture flicker, 2026-10-19), so compare only the
+     * fields that affect the coded stream.
      */
     private fun sameVideoFormat(a: VideoFormat?, b: VideoFormat?): Boolean {
         if (a === b) return true
@@ -349,10 +349,9 @@ public class ClinkOutput(
                     if (revision != run.revision || generation !== session) {
                         if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession,
                             if (everLive) "freeze" else "reset", "revision"))
-                        // revision 切换时保留 audio 锚点：输入时钟并没有重启，
-                        // 归零会让每个 audio 包回落到raw PTS 然后被丢弃
-                        //（2026-10-19 的 trace 里能看到 47 -> 27 packets/s 的衰减）。
-                        // 只有开启新会话时才重置。
+                        // Keep the audio anchor across revisions: the input clock did not restart, and a reset
+                        // made audio packets fall back to raw PTS and be dropped (47 -> 27 packets/s in the
+                        // 2026-10-19 trace). Reset it only for a new session.
                         gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0
                         revision = run.revision
                         if (generation !== session) {
@@ -429,10 +428,10 @@ public class ClinkOutput(
                         if (!wasLive) {
                             liveOffset = maxOf(0L, outputPts + 1_000_000 / placeholder.fps,
                                 f.ptsUs + (audioOffset ?: (0L - f.ptsUs))) - f.ptsUs
-                            // 绝对 PTS 决定了接收端到底会不会渲染：video 时间轴如果停在
-                            // audio 时钟前面太远，帧就一直在接收端的「未来」，
-                            // 于是流量和计数器都在涨、屏幕却一直黑。
-                            // 在切换的那一刻检测一次，重新对齐到共享时钟。
+                            // The absolute PTS decides whether the receiver renders at all: a video timeline far
+                            // ahead of the audio clock keeps frames in the receiver's future, so traffic and
+                            // counters grow while the screen stays black. Check once at the switch and re-anchor
+                            // to the shared clock.
                             val lead = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset) - transportPts
                             if (lead > MAX_LEAD_US) liveOffset -= lead - 1
                             if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession,
@@ -516,7 +515,7 @@ public class ClinkOutput(
                         reportedAudioDrops = audioDrops
                     }
                     val dropped = run.queue.droppedCount()
-                    // 接收端实际看到的东西：video 与 audio 的 PTS 共用同一个 transport 时钟。
+                    // What the receiver sees: video and audio PTS share one transport clock.
                     if (trace !== ClinkTrace.NONE && now - clockAt >= 2_000_000_000L) {
                         clockAt = now
                         trace.emit(ClinkTraceEvent.Video(now, session.traceSession, "clock",
@@ -539,10 +538,11 @@ public class ClinkOutput(
     }
 }
 
-/** video 时间戳最多可以领先共享 transport 时钟多久，超过就重新锚定。 */
+/** How far video timestamps may lead the shared transport clock before they are re-anchored. */
 private const val MAX_LEAD_US: Long = 500_000
 
-/** Carlink 媒体路径在某一瞬间保留的全部状态，每个字段都有固定上限。 */internal data class MediaBacklog(
+/** Everything the Carlink media path retains at one instant; every field has a fixed bound. */
+internal data class MediaBacklog(
     val videoFrames: Int, val videoBytes: Long,
     val audioPackets: Int, val audioBytes: Int,
     val voiceCommands: Int, val voiceBytes: Int,
