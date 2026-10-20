@@ -67,6 +67,12 @@ public class ClinkOutput(
         var requestKeyframe = false
     }
     @Volatile private var current: Run? = null
+
+    /**
+     * 只有语音和通话可以开启车机语音通道。系统音效（键盘点击、提示音）
+     * 真车机会自己混合；把它们送到这里会让 Carlink 压低或暂停媒体通道（2026-10-19）。
+     */
+    private fun voiceRole(role: AudioRole): Boolean = role == AudioRole.VOICE || role == AudioRole.TELEPHONY
     private val opened = AtomicBoolean(false)
     override fun open(host: OutputHost) {
         check(opened.compareAndSet(false, true)) { "output_already_open" }
@@ -185,9 +191,9 @@ public class ClinkOutput(
             run.mediaStream = run.mediaFormats.keys.lastOrNull()
             if (previous != run.mediaStream || previous == stream) { run.audio.clear(); run.audioBytes = 0 }
             run.voiceStreams.remove(stream)
-            if (format != null && format.role != AudioRole.MEDIA && format.codec == AudioCodec.PCM_S16LE &&
+            if (format != null && voiceRole(format.role) && format.codec == AudioCodec.PCM_S16LE &&
                 format.sampleRate in 8000..48000 && format.channels in 1..2) run.voiceStreams.add(stream)
-            run.voice.format(stream, format)
+            run.voice.format(stream, format?.takeIf { voiceRole(it.role) })
         }
     }
     override fun onAudioPacket(packet: AudioPacket) {
