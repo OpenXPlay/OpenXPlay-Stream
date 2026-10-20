@@ -44,6 +44,7 @@ public class ClinkSession(
     private val onLinkStalled: (Boolean) -> Unit = {},
     private val trace: ClinkTrace = ClinkTrace.NONE,
     sessionNumber: Long? = null,
+    private val hevc: ClinkHevcMode = ClinkHevcMode.OFF,
 ) {
     internal val traceSession: Long = sessionNumber ?: nextTraceSession()
     internal companion object {
@@ -196,6 +197,7 @@ public class ClinkSession(
     private lateinit var wfd: WfdSource
     private lateinit var touch: UibcDecoder
     public val headUnitId: String get() = addresses?.headUnitId.orEmpty()
+    public val hevcEnabled: Boolean get() = decoderSnapshot.any { it.codecString.startsWith("hvc1.") }
     public val decoders: List<DecoderSupport> get() = decoderSnapshot
     @Volatile private var decoderSnapshot: List<DecoderSupport> = emptyList()
     public val isPlaying: Boolean get() = playing && ready && !stopped && !stopRequested
@@ -444,7 +446,8 @@ public class ClinkSession(
             }
             ports.cert -> {
                 require(frame.category == 6 && frame.method == 1 && !certified)
-                Certificate.check(body)
+                val identity = Certificate.check(body)
+                if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Link(System.nanoTime(), traceSession, "head_unit_certificate", identity))
                 trustStore.savePeerKey(headUnitId, checkNotNull(peerKey))
                 certified = true
             }
@@ -471,7 +474,7 @@ public class ClinkSession(
             val a = checkNotNull(addresses)
             val local = ipv4(a.localIpv4); val peer = ipv4(a.headUnitIpv4)
             touch = UibcDecoder(Origin(outputId, a.headUnitId), { videoSize }, trace, traceSession)
-            wfd = WfdSource(a.localIpv4, ports) { display }
+            wfd = WfdSource(a.localIpv4, ports, hevc) { display }
             // Bind before AuthConfirm; reverse connections can arrive immediately.
             listOf(ports.control, ports.cert, ports.media, ports.rtsp, ports.uibc).forEach { listen(it, local, peer) }
             if (vehicleData) { listen(ports.sensor, local, peer); reportSensorState() }
@@ -517,7 +520,13 @@ public class ClinkSession(
                             for (message in rtspReader.feed(event.bytes)) {
                                 rtspEvent("RX", message)
                                 val responses = wfd.handle(message)
-                                responses.forEach { rtspWrite(sockets.getValue(ports.rtsp), it) }
+                                responses.forEach {
+                                    if (trace !== ClinkTrace.NONE && it.line.startsWith("SET_PARAMETER") && it.body.contains("wfd_video_formats:"))
+                                        trace.emit(ClinkTraceEvent.Link(System.nanoTime(), traceSession, "hevc_m4", mapOf(
+                                            "mode" to hevc.name, "peer" to (wfd.iccoaSupportHevc ?: "absent"),
+                                            "variant" to if (wfd.hevcEnabled && hevc == ClinkHevcMode.SIGNAL) "signal" else "unchanged")))
+                                    rtspWrite(sockets.getValue(ports.rtsp), it)
+                                }
                                 mode = wfd.mode; destinationPort = wfd.rtpPort; selectedAudio = wfd.audio
                                 reportCapabilities(); updatePlay()
                                 wfd.takeReports().forEach(listener::diagnostic)

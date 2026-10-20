@@ -15,6 +15,7 @@ import org.openxplay.stream.clink.media.RtpSender
 import org.openxplay.stream.core.*
 import org.openxplay.stream.core.audio.Adts
 import org.openxplay.stream.core.audio.AudioSpecificConfig
+import org.openxplay.stream.core.codec.HevcConfig
 import org.openxplay.stream.core.codec.AvcConfig
 import org.openxplay.stream.core.codec.Nal
 import org.openxplay.stream.core.codec.TsMuxer
@@ -41,6 +42,7 @@ public class ClinkOutput(
     private val vehicleData: Boolean = false,
     private val trace: ClinkTrace = ClinkTrace.NONE,
     private val mediaTap: ClinkMediaTap? = null,
+    private val hevc: ClinkHevcMode = ClinkHevcMode.OFF,
 ) : ProjectionOutput {
     private class Run(val host: OutputHost) {
         val traceSession = ClinkSession.nextTraceSession()
@@ -77,6 +79,8 @@ public class ClinkOutput(
     override fun open(host: OutputHost) {
         check(opened.compareAndSet(false, true)) { "output_already_open" }
         val run = Run(host); current = run
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Link(System.nanoTime(), run.traceSession,
+            "hevc_mode", mapOf("mode" to hevc.name)))
         try {
             threadFactory.newThread {
                 try { run.voice.run({ run.active.get() }, { run.session }, { packet ->
@@ -104,7 +108,7 @@ public class ClinkOutput(
                             }
                         }
                         val session = ClinkSession(link, pinProvider, trustStore, ports, threadFactory, id, sessionListener,
-                            { caps -> withHost(run) { it.capabilities(caps.copy(decoders = caps.decoders.filter { decoder -> decoder.codecString.startsWith("avc1.") })) } },
+                            { caps -> withHost(run) { it.capabilities(caps) } },
                             { event -> withHost(run) { host ->
                                 if (event !is ControlEvent.MicPacket || run.microphone?.stream == event.stream) host.control(event)
                             } },
@@ -117,7 +121,7 @@ public class ClinkOutput(
                             { stalled -> synchronized(run.lock) {
                                 run.queue.setStalled(stalled); run.revision++
                                 run.audio.clear(); run.audioBytes = 0
-                            } }, trace, run.traceSession)
+                            } }, trace, run.traceSession, hevc)
                         run.session = session
                         synchronized(run.lock) { session.microphone(run.microphone) }
                         if (!run.active.get()) session.stop()
@@ -271,6 +275,9 @@ public class ClinkOutput(
             var generation: ClinkSession? = null
             var format: VideoFormat? = null
             var avc: AvcConfig? = null
+            var hvc: HevcConfig? = null
+            val hevcPlaceholder by lazy { BundledHevcPlaceholderVideo() }
+            val hevcPlaceholderConfig by lazy { HevcConfig.parse(hevcPlaceholder.format.config) }
             val placeholderConfig = AvcConfig.parse(placeholder.format.config)
             require(placeholder.frames.isNotEmpty() && placeholder.fps > 0 &&
                 Nal.isKeyFrame(placeholder.frames.first(), VideoCodec.H264))
@@ -307,6 +314,7 @@ public class ClinkOutput(
             var lateVideo = false
             val diagnostics = mutableListOf<String>()
             var muxer: TsMuxer? = null
+            var pmtVersion = 0
             val aac = AudioSpecificConfig(2, 48000, 2)
             // The muxer streams TS packets straight into the reusable RTP unit; nothing is retained per packet.
             fun emit(session: ClinkSession, pts: Long, mux: () -> Unit): Emit {
@@ -349,10 +357,10 @@ public class ClinkOutput(
                         gate.play(run.playing); placeholderIndex = 0; nextPlaceholder = 0
                         revision = run.revision
                         if (generation !== session) {
-                            muxer = null; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false; audioOffset = null
+                            muxer = null; pmtVersion = 0; keyframeRequestedAt = Long.MIN_VALUE / 2; everLive = false; audioOffset = null
                         }
                         generation = session
-                        if (format !== run.format) { format = run.format; avc = null; mismatchReported = null }
+                        if (format !== run.format) { format = run.format; avc = null; hvc = null; mismatchReported = null }
                     }
                     if (run.queue.takeGap()) {
                         if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession, "reset", "gap"))
@@ -373,11 +381,18 @@ public class ClinkOutput(
                     listener.diagnostic("audio negotiated media=${session.mediaAudio}")
                 }
                 require(session.videoSize == (placeholder.format.width to placeholder.format.height)) { "placeholder_timing_mismatch" }
-                // 不写 access unit delimiter：车机只有在 access unit 以 SPS (NAL 7) 或
-                // IDR slice (NAL 5) 开头时才认得出关键帧，前面放一个 AUD 会让它丢弃所有帧
-                // —— 有声音但画面全黑（2026-10-19）。
-                val transport = muxer ?: TsMuxer({ rtp.append(unit, it) }, audioEnabled = session.mediaAudio,
-                    insertAud = false).also { muxer = it }
+                val clip = if (session.hevcEnabled) hevcPlaceholder else placeholder
+                fun transport(codec: VideoCodec): TsMuxer {
+                    if (muxer?.videoCodec != codec) {
+                        val previous = muxer?.videoCodec
+                        if (previous != null) pmtVersion = (pmtVersion + 1) and 31
+                        muxer = TsMuxer({ rtp.append(unit, it) }, audioEnabled = session.mediaAudio,
+                            insertAud = false, videoCodec = codec, pmtVersion = pmtVersion)
+                        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession,
+                            "muxer_codec", "${previous ?: "initial"}->$codec pmtVersion=$pmtVersion", codec = codec.name))
+                    }
+                    return checkNotNull(muxer)
+                }
                 val origin = Origin(id, session.headUnitId)
                 // At most one keyframe request per second per session: each one makes the phone send an IDR
                 // frame. A request inside the interval, or during a stalled send, stays pending instead of being lost.
@@ -390,9 +405,12 @@ public class ClinkOutput(
                     withHost(run) { it.control(ControlEvent.KeyFrameRequest(ScreenId.MAIN, origin)) }
                 }
                 val f = frame
-                if (f != null && format?.codec == VideoCodec.H264) {
-                    val config = avc ?: AvcConfig.parse(checkNotNull(format).config).also { avc = it }
-                    val supportsProfile = session.decoders.any {
+                if (f != null && (format?.codec == VideoCodec.H264 || format?.codec == VideoCodec.H265 && session.hevcEnabled)) {
+                    val config = if (format?.codec == VideoCodec.H264)
+                        avc ?: AvcConfig.parse(checkNotNull(format).config).also { avc = it } else null
+                    val hevcConfig = if (format?.codec == VideoCodec.H265)
+                        hvc ?: HevcConfig.parse(checkNotNull(format).config).also { hvc = it } else null
+                    val supportsProfile = config == null || session.decoders.any {
                         val profile = it.codecString.substringAfter("avc1.").take(2).toIntOrNull(16)
                         val level = it.codecString.takeLast(2).toIntOrNull(16) ?: 0
                         (profile == config.profile || profile == 100 && config.profile == 66) && level >= config.level
@@ -417,7 +435,11 @@ public class ClinkOutput(
                                 "in=${f.ptsUs} out=$outputPts tr=$transportPts off=$liveOffset aoff=${audioOffset ?: -1} lead=$lead"))
                         }
                         val pts = maxOf(outputPts + 1, transportPts + 1, f.ptsUs + liveOffset)
-                        val result = emit(session, pts) { transport.writeVideo(f.data, config, pts, f.keyFrame) }
+                        val result = emit(session, pts) {
+                            val mux = transport(checkNotNull(format).codec)
+                            if (hevcConfig != null) mux.writeVideo(f.data, hevcConfig, pts, f.keyFrame)
+                            else mux.writeVideo(f.data, checkNotNull(config), pts, f.keyFrame)
+                        }
                         outputPts = pts; transportPts = pts
                         if (result == Emit.DROPPED) {
                             if (trace !== ClinkTrace.NONE) { failedVideo++; trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "freeze", "unit_dropped")) }
@@ -435,14 +457,19 @@ public class ClinkOutput(
                 }
                 val now = System.nanoTime()
                 if (writable && gate.placeholder && now >= nextPlaceholder && (!everLive || now - liveFrameAt > 3_000_000_000)) {
-                    val data = placeholder.frames[placeholderIndex]
+                    val data = clip.frames[placeholderIndex]
                     val pts = maxOf(0L, transportPts + 1, outputPts + 1_000_000 / placeholder.fps)
-                    val result = emit(session, pts) { transport.writeVideo(data, placeholderConfig, pts, placeholderIndex == 0) }
+                    val result = emit(session, pts) {
+                        val mux = transport(clip.format.codec)
+                        if (clip.format.codec == VideoCodec.H265)
+                            mux.writeVideo(data, hevcPlaceholderConfig, pts, placeholderIndex == 0)
+                        else mux.writeVideo(data, placeholderConfig, pts, placeholderIndex == 0)
+                    }
                     outputPts = pts; transportPts = pts
                     if (result == Emit.DROPPED) { if (trace !== ClinkTrace.NONE) failedVideo++; placeholderIndex = 0 } else {
                         if (trace !== ClinkTrace.NONE) { placeholderFrames++; videoBytes += data.size; if (placeholderIndex == 0) keyframes++ }
                         sent++; videoWrittenAt = System.nanoTime()
-                        placeholderIndex = (placeholderIndex + 1) % placeholder.frames.size
+                        placeholderIndex = (placeholderIndex + 1) % clip.frames.size
                     }
                     if (result == Emit.LATE) { writable = false; lateVideo = true }
                     nextPlaceholder = now + 1_000_000_000 / placeholder.fps
@@ -466,7 +493,7 @@ public class ClinkOutput(
                         if (mapped >= 0 && mapped >= transportPts - 50_000) {
                             // Keep mux calls ordered; bounded late arrival can shift PTS by at most 50 ms.
                             val pts = maxOf(mapped, transportPts)
-                            val result = emit(session, pts) { transport.writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
+                            val result = emit(session, pts) { transport(muxer?.videoCodec ?: clip.format.codec).writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
                             if (trace !== ClinkTrace.NONE && result != Emit.DROPPED) audioFrames++
                             lastAudioPts = pts
                             transportPts = pts
