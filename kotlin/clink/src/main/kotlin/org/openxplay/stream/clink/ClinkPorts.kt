@@ -29,6 +29,11 @@ public interface ClinkListener {
     public fun state(state: ClinkState): Unit = Unit
     public fun error(error: Throwable): Unit = Unit
     public fun diagnostic(message: String): Unit = Unit
+    /**
+     * Head-unit view size from UIBC touch reports, reported on the first touch of a session and
+     * whenever it changes. The car does not otherwise announce a window change.
+     */
+    public fun viewSize(width: Int, height: Int): Unit = Unit
     /** SENSOR connectivity and cumulative malformed-frame count for this session. */
     public fun vehicleState(sensorActive: Boolean, malformedFrames: Long): Unit = Unit
     public fun statistics(stats: ClinkStatistics): Unit = Unit

@@ -10,10 +10,19 @@ import org.openxplay.stream.core.*
 
 /** Stateful Android pointer mapper. Wire track IDs are assigned stable core slots 0 and 1. */
 public class UibcDecoder(private val origin: Origin, private val streamSize: () -> Pair<Int, Int>,
-    private val trace: ClinkTrace = ClinkTrace.NONE, private val session: Long = 0) {
+    private val trace: ClinkTrace = ClinkTrace.NONE, private val session: Long = 0,
+    private val onViewSize: (Int, Int) -> Unit = { _, _ -> }) {
     public constructor(origin: Origin, videoSize: () -> Pair<Int, Int>) : this(origin, videoSize, ClinkTrace.NONE, 0)
     private data class Point(val x: Double, val y: Double)
     private val active = linkedMapOf<Long, Pair<Int, Point>>()
+    private var lastViewSize: Pair<Int, Int>? = null
+    private fun reportViewSize(size: Pair<Int, Int>?) {
+        if (size == null || size == lastViewSize) return
+        lastViewSize = size
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Link(System.nanoTime(), session,
+            "view_size", mapOf("width" to size.first.toString(), "height" to size.second.toString())))
+        runCatching { onViewSize(size.first, size.second) }
+    }
     public fun release(): ControlEvent.Touch {
         active.clear()
         return ControlEvent.Touch(ScreenId.MAIN, emptyList(), origin)
@@ -44,13 +53,15 @@ public class UibcDecoder(private val origin: Origin, private val streamSize: () 
             1L -> Unit
             else -> return null
         }
+        val view = viewSize()
         val rawCount = number("count"); require(rawCount in 0..16)
         val count = rawCount.toInt(); val action = number("action")
         require(count in 0..16 && action in 0..65535)
         val masked = (action and 255).toInt(); val index = ((action shr 8) and 255).toInt()
         if (masked == 3) {
+            reportViewSize(view)
             if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Input(System.nanoTime(), session, "touch_cancel", emptyList(),
-                streamSize = streamSize(), viewSize = viewSize()))
+                streamSize = streamSize(), viewSize = view))
             return release()
         }
         require(count > 0 && index < count && masked in listOf(0, 1, 2, 5, 6))
@@ -79,9 +90,10 @@ public class UibcDecoder(private val origin: Origin, private val streamSize: () 
                 contacts += TouchContact(slot, p.x, p.y, true)
             }
         }
+        reportViewSize(view)
         if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Input(System.nanoTime(), session,
             when (masked) { 0 -> "touch_down"; 1 -> "touch_up"; 2 -> "touch_move"; 5 -> "pointer_down"; else -> "pointer_up" },
-            points.values.map { it.x to it.y }, raw, size, viewSize()))
+            points.values.map { it.x to it.y }, raw, size, view))
         return ControlEvent.Touch(ScreenId.MAIN, contacts, origin)
     }
     public companion object {

@@ -104,6 +104,7 @@ public class ClinkOutput(
                             }
                             override fun error(error: Throwable) { listener.error(error) }
                             override fun diagnostic(message: String) { listener.diagnostic(message) }
+                            override fun viewSize(width: Int, height: Int) { listener.viewSize(width, height) }
                             override fun vehicleState(sensorActive: Boolean, malformedFrames: Long) {
                                 listener.vehicleState(sensorActive, malformedFrames)
                             }
