@@ -289,7 +289,10 @@ fn receiver_hello_off_is_byte_identical_to_golden() {
         );
     }
     crate::handle(
-        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/hello.json")).unwrap(),
+        serde_json::from_str(include_str!(
+            "../../web-receiver/spec/vectors/web/hello.json"
+        ))
+        .unwrap(),
         "browser-1",
         &config,
         &web.state,
@@ -306,8 +309,10 @@ fn receiver_hello_off_is_byte_identical_to_golden() {
         .messages
         .pop_front()
         .unwrap();
-    let golden: Value =
-        serde_json::from_str(include_str!("../../web-receiver/spec/vectors/web/welcome.json")).unwrap();
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../web-receiver/spec/vectors/web/welcome.json"
+    ))
+    .unwrap();
     assert_eq!(actual.to_string().as_bytes(), golden.to_string().as_bytes());
 }
 
