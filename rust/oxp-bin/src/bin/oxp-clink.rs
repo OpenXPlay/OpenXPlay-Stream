@@ -33,7 +33,7 @@ fn run() -> Result<()> {
     ])?;
     if args.get("--help").is_some() {
         println!(
-            "oxp-clink [--stdio | --unix PATH | --tcp PORT] --link static --head-unit IPV4 --local IPV4 [--pin DIGITS | --pin-file PATH] --state-dir DIR [--port auth=N,control=N,media=N,cert=N,rtsp=N,uibc=N,rtp=N]"
+            "oxp-clink [--stdio | --unix PATH | --tcp PORT] --link static --head-unit IPV4 --local IPV4 [--pin DIGITS | --pin-file PATH] --state-dir DIR [--port auth=N,control=N,media=N,cert=N,rtsp=N,uibc=N,rtp=N]\nPIN entry confirms pairing automatically (auto_confirm)."
         );
         return Ok(());
     }
@@ -60,6 +60,7 @@ fn run() -> Result<()> {
             digits: args.get("--pin").map(str::to_owned),
             file: args.get("--pin-file").map(str::to_owned),
             stopped: pin_stopped.clone(),
+            auto_confirm: true,
         }),
         Arc::new(FileTrust::new(std::path::Path::new(
             args.need("--state-dir")?,

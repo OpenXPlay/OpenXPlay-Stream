@@ -12,7 +12,7 @@ use crate::{
     ClinkStream, Result,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, SyncSender},
@@ -34,6 +34,8 @@ pub struct SessionOptions {
     pub output_id: String,
     pub device_id: String,
     pub device_name: String,
+    /// Monotonic session clock, injectable for timeout and record-window tests.
+    pub clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 impl Default for SessionOptions {
     fn default() -> Self {
@@ -42,6 +44,7 @@ impl Default for SessionOptions {
             output_id: "clink".into(),
             device_id: "openxplay-stream".into(),
             device_name: "OpenXPlay".into(),
+            clock: Arc::new(Instant::now),
         }
     }
 }
@@ -427,28 +430,28 @@ impl ClinkSession {
         socket.set_read_timeout(Some(Duration::from_millis(250)))?;
         let a = self.shared.connection.lock().unwrap().clone().unwrap();
         let pinned = self.trust.load_peer_key(&a.head_unit_id)?;
-        let mut full = pinned.is_none();
-        let mut pin = if full {
-            Some(
-                self.pin
-                    .request_pin(&a.head_unit_id)
-                    .ok_or("pin_cancelled")?,
-            )
-        } else {
-            None
+        let request_pin = || {
+            a.wired_pin
+                .clone()
+                .or_else(|| self.pin.request_pin(&a.head_unit_id))
+                .ok_or("pin_cancelled")
         };
+        let mut full = pinned.is_none();
+        let mut pin = if full { Some(request_pin()?) } else { None };
         let mut auth = Auth::new(
-            identity,
+            identity.clone(),
             self.options.device_id.clone(),
             self.options.device_name.clone(),
             a.local_ipv4.to_string(),
             pinned,
         )?;
-        let mut attempt = auth.start(now(), 1, pin.as_deref(), false, false)?;
+        let mut sequence = 1u32;
+        let mut attempt = auth.start(now(), sequence, pin.as_deref(), false, false)?;
         let mut decoder = FrameReader::default();
         let mut buffer = [0; 65536];
-        let mut deadline = Instant::now() + Duration::from_secs(20);
+        let mut deadline = (self.options.clock)() + Duration::from_secs(20);
         let mut retries = 0;
+        let mut repinned = false;
         while !stopped(&self.shared) && !self.shared.stop_requested.load(Ordering::Acquire) {
             if let Some(c) = lost.lock().unwrap().clone() {
                 return Err(c.into());
@@ -470,7 +473,7 @@ impl ClinkSession {
                     .ok_or("missing_verified_peer")?;
                 return Ok((k, peer));
             }
-            require(Instant::now() < deadline, "auth_timeout")?;
+            require((self.options.clock)() < deadline, "auth_timeout")?;
             let n = match socket.read(&mut buffer) {
                 Ok(0) => return Err("auth_closed".into()),
                 Ok(n) => n,
@@ -490,10 +493,39 @@ impl ClinkSession {
             }
             for frame in decoder.feed(&buffer[..n])? {
                 attempt = auth.receive(&frame, now())?;
-                for event in &attempt.events {
-                    if let AuthEvent::Failed(e) = event {
-                        return Err(e.clone().into());
+                let failed = attempt.events.iter().find_map(|e| match e {
+                    AuthEvent::Failed(reason) => Some(reason.clone()),
+                    _ => None,
+                });
+                if let Some(reason) = failed {
+                    if reason == "auth_pin_proof_failed" {
+                        self.pin.pin_incorrect(&a.head_unit_id);
                     }
+                    if !matches!(
+                        reason.as_str(),
+                        "peer_key_changed" | "auth_signature_failed"
+                    ) || repinned
+                    {
+                        return Err(reason.into());
+                    }
+                    // A head unit may rebuild its pairing store at boot. Pair again once on this socket.
+                    self.trust.forget_peer(&a.head_unit_id)?;
+                    self.listener
+                        .diagnostic(&format!("auth repin reason={reason}"));
+                    repinned = true;
+                    full = true;
+                    pin = Some(request_pin()?);
+                    sequence = sequence.wrapping_add(2);
+                    auth = Auth::new(
+                        identity.clone(),
+                        self.options.device_id.clone(),
+                        self.options.device_name.clone(),
+                        a.local_ipv4.to_string(),
+                        None,
+                    )?;
+                    attempt = auth.start(now(), sequence, pin.as_deref(), true, false)?;
+                    deadline = (self.options.clock)() + Duration::from_secs(20);
+                    break;
                 }
                 let result = attempt.events.iter().find_map(|e| {
                     if let AuthEvent::Result(r, _) = e {
@@ -502,18 +534,18 @@ impl ClinkSession {
                         None
                     }
                 });
+                if result == Some(AuthResult::PinRequired) && full {
+                    self.pin.pin_incorrect(&a.head_unit_id);
+                }
                 if result == Some(AuthResult::PinRequired) && !full {
                     let old = retries;
                     retries += 1;
                     if old == 0 {
                         full = true;
-                        pin = Some(
-                            self.pin
-                                .request_pin(&a.head_unit_id)
-                                .ok_or("pin_cancelled")?,
-                        );
-                        attempt = auth.start(now(), 3, pin.as_deref(), true, false)?;
-                        deadline = Instant::now() + Duration::from_secs(20);
+                        pin = Some(request_pin()?);
+                        sequence = sequence.wrapping_add(2);
+                        attempt = auth.start(now(), sequence, pin.as_deref(), true, false)?;
+                        deadline = (self.options.clock)() + Duration::from_secs(20);
                     } else {
                         return Err("auth_pin_required".into());
                     }
@@ -522,11 +554,12 @@ impl ClinkSession {
                     retries += 1;
                     require(old < 3, "auth_confirmation_required")?;
                     require(
-                        self.pin.confirm_pairing(&a.head_unit_id),
+                        a.auto_confirm || self.pin.confirm_pairing(&a.head_unit_id),
                         "pairing_confirmation_cancelled",
                     )?;
-                    attempt = auth.start(now(), 5, pin.as_deref(), full, true)?;
-                    deadline = Instant::now() + Duration::from_secs(20);
+                    sequence = sequence.wrapping_add(2);
+                    attempt = auth.start(now(), sequence, pin.as_deref(), full, true)?;
+                    deadline = (self.options.clock)() + Duration::from_secs(20);
                 } else if result.is_some_and(|r| r != AuthResult::Success) {
                     return Err(match result.unwrap() {
                         AuthResult::Success => "auth_success",
@@ -650,12 +683,13 @@ impl ClinkSession {
             readers: BTreeMap::new(),
             ciphers: BTreeMap::new(),
             display: control::head_unit_fallback_display(),
+            malformed_records: VecDeque::new(),
         };
         let mut rtsp = RtspReader::default();
         let mut input_cipher = SecureRecord::new(&key)?;
-        let mut health = LinkHealth::new(Instant::now());
-        let mut next_heartbeat = Instant::now();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut health = LinkHealth::new((self.options.clock)());
+        let mut next_heartbeat = (self.options.clock)();
+        let deadline = (self.options.clock)() + Duration::from_secs(10);
         let mut started_playing = false;
         while !stopped(&self.shared) && !self.shared.stop_requested.load(Ordering::Acquire) {
             if let Some(c) = lost.lock().unwrap().clone() {
@@ -665,7 +699,7 @@ impl ClinkSession {
             if owner.sockets.contains_key(&ports.control) {
                 self.update_link(
                     &mut health,
-                    Instant::now(),
+                    (self.options.clock)(),
                     matches!(&event, Some(Event::Bytes(_, bytes)) if !bytes.is_empty()),
                 )?;
             }
@@ -749,7 +783,7 @@ impl ClinkSession {
                 Some(Event::Lost(cause)) => return Err(cause.into()),
                 None => {}
             }
-            let now = Instant::now();
+            let now = (self.options.clock)();
             if owner.sockets.contains_key(&ports.control) {
                 self.update_link(&mut health, now, false)?;
             }
@@ -813,6 +847,7 @@ struct Owner<'a> {
     readers: BTreeMap<u16, FrameReader>,
     ciphers: BTreeMap<u16, SecureRecord>,
     display: DisplayInfo,
+    malformed_records: VecDeque<Instant>,
 }
 impl Owner<'_> {
     fn update_microphone(&mut self) -> Result<()> {
@@ -968,28 +1003,50 @@ impl Owner<'_> {
             frame.source == 0 && frame.format <= 1,
             "invalid_message_origin",
         )?;
-        let body = self
-            .ciphers
-            .get_mut(&service)
-            .ok_or("missing_cipher")?
-            .open(&frame.body)?;
+        // Some cars acknowledge with an empty plaintext record, including voice_state.
+        if frame.category == 7 && frame.kind == 2 && frame.body.is_empty() {
+            self.acknowledge(service, frame.sequence);
+            return Ok(());
+        }
+        let cipher = self.ciphers.get_mut(&service).ok_or("missing_cipher")?;
+        let body = match cipher.open(&frame.body) {
+            Ok(body) => body,
+            Err(e) => {
+                // Log only record headers; authentication and replay failures still count.
+                let record = &frame.body;
+                let number = |at| {
+                    record
+                        .get(at..at + 4)
+                        .map(|b| i32::from_be_bytes(b.try_into().unwrap()))
+                        .unwrap_or(-1)
+                };
+                let iv = number(0);
+                let size = if iv >= 0 { number(iv as usize + 4) } else { -1 };
+                self.session.listener.diagnostic(&format!(
+                    "frame record_skipped service={service} category={} method={} kind={} bytes={} iv={iv} cipher={size} reason={e}",
+                    frame.category, frame.method, frame.kind, record.len(),
+                ));
+                let now = (self.session.options.clock)();
+                self.malformed_records.push_back(now);
+                while self
+                    .malformed_records
+                    .front()
+                    .is_some_and(|at| now.saturating_duration_since(*at) > Duration::from_secs(60))
+                {
+                    self.malformed_records.pop_front();
+                }
+                if self.malformed_records.len() > 10 {
+                    return Err(e);
+                }
+                return Ok(());
+            }
+        };
         if frame.category == 7 {
             require(
                 frame.format == 0 && frame.kind == 2 && body.is_empty(),
                 "invalid_acknowledgement",
             )?;
-            if let Some((expected, tx)) = self
-                .session
-                .shared
-                .acknowledgements
-                .lock()
-                .unwrap()
-                .get(&frame.sequence)
-            {
-                if *expected == service {
-                    let _ = tx.send(());
-                }
-            }
+            self.acknowledge(service, frame.sequence);
             return Ok(());
         }
         if service == ports.media {
@@ -1067,6 +1124,7 @@ impl Owner<'_> {
                     self.configured = true;
                     self.report(wfd);
                 }
+                4 | 5 => self.session.callbacks.keyframe(),
                 23 => {
                     self.session.stop();
                     return Ok(());
@@ -1091,7 +1149,11 @@ impl Owner<'_> {
                 frame.category == 6 && frame.method == 1 && !self.certified,
                 "invalid_certificate_message",
             )?;
-            certificate::check(&body)?;
+            let identity = certificate::check(&body)?;
+            self.session.listener.diagnostic(&format!(
+                "head_unit_certificate {}",
+                serde_json::to_string(&identity)?,
+            ));
             self.session
                 .trust
                 .save_peer_key(&origin.client_id, &self.peer_key)?;
@@ -1102,6 +1164,20 @@ impl Owner<'_> {
         }
         self.update_play(wfd);
         Ok(())
+    }
+    fn acknowledge(&self, service: u16, sequence: u32) {
+        if let Some((expected, tx)) = self
+            .session
+            .shared
+            .acknowledgements
+            .lock()
+            .unwrap()
+            .get(&sequence)
+        {
+            if *expected == service {
+                let _ = tx.send(());
+            }
+        }
     }
 }
 impl Drop for Owner<'_> {
@@ -1303,6 +1379,153 @@ mod tests {
         *session.shared.video.lock().unwrap() = Some((session.options.ports.rtp, probe));
         session
     }
+    fn record_owner(session: &ClinkSession) -> Owner<'_> {
+        Owner {
+            session,
+            key: [7; 16],
+            config_sequence: 0,
+            certified: false,
+            configured: false,
+            peer_key: Vec::new(),
+            sockets: BTreeMap::new(),
+            readers: BTreeMap::new(),
+            ciphers: [session.options.ports.control, session.options.ports.media]
+                .into_iter()
+                .map(|service| (service, SecureRecord::new(&[7; 16]).unwrap()))
+                .collect(),
+            display: DisplayInfo::default(),
+            malformed_records: VecDeque::new(),
+        }
+    }
+    fn origin() -> Origin {
+        Origin {
+            output_id: "clink".into(),
+            client_id: "hu".into(),
+        }
+    }
+    #[test]
+    fn empty_plaintext_and_sealed_acknowledgements_complete_only_the_matching_service() {
+        let session = stall_session(Arc::new(StallProbe::default()));
+        let ports = session.options.ports;
+        let mut owner = record_owner(&session);
+        let wfd = WfdSource::new("127.0.0.1".into(), ports);
+        let (tx, rx) = mpsc::channel();
+        session
+            .shared
+            .acknowledgements
+            .lock()
+            .unwrap()
+            .insert(42, (ports.control, tx));
+        let mut ack = incoming(&[7; 16], 42, 2, 7, 0, &[]);
+        ack.body.clear();
+        owner.handle(ports.media, &ack, &wfd, &origin()).unwrap();
+        assert!(rx.try_recv().is_err());
+        // Kotlin accepts the plaintext exception in either supported format.
+        for format in [0, 1] {
+            ack.format = format;
+            owner.handle(ports.control, &ack, &wfd, &origin()).unwrap();
+            rx.try_recv().unwrap();
+        }
+        ack = incoming(&[7; 16], 42, 2, 7, 0, &[]);
+        ack.format = 0;
+        owner.handle(ports.control, &ack, &wfd, &origin()).unwrap();
+        rx.try_recv().unwrap();
+        ack.source = 1;
+        ack.body.clear();
+        assert!(owner.handle(ports.control, &ack, &wfd, &origin()).is_err());
+        ack.source = 0;
+        ack.format = 2;
+        assert!(owner.handle(ports.control, &ack, &wfd, &origin()).is_err());
+        assert!(owner.malformed_records.is_empty());
+    }
+    #[test]
+    fn malformed_record_window_allows_ten_and_expires_only_after_sixty_seconds() {
+        for (elapsed, fails) in [
+            (Duration::from_secs(60), true),
+            (Duration::from_secs(60) + Duration::from_nanos(1), false),
+        ] {
+            let probe = Arc::new(StallProbe::default());
+            let mut session = stall_session(probe.clone());
+            let start = Instant::now();
+            let clock = Arc::new(Mutex::new(start));
+            let time = clock.clone();
+            session.options.clock = Arc::new(move || *time.lock().unwrap());
+            let ports = session.options.ports;
+            let mut owner = record_owner(&session);
+            let wfd = WfdSource::new("127.0.0.1".into(), ports);
+            let valid = incoming(&[7; 16], 1, 0, 1, 1, &[]);
+            owner
+                .handle(ports.control, &valid, &wfd, &origin())
+                .unwrap();
+            // A replay must be skipped and counted, never dispatched a second time.
+            owner
+                .handle(ports.control, &valid, &wfd, &origin())
+                .unwrap();
+            for i in 1..10 {
+                let mut bad = incoming(&[7; 16], i, 0, 1, 1, &[]);
+                if i % 2 == 0 {
+                    bad.body.truncate(3);
+                } else {
+                    *bad.body.last_mut().unwrap() ^= 1;
+                }
+                owner.handle(ports.control, &bad, &wfd, &origin()).unwrap();
+            }
+            assert_eq!(owner.malformed_records.len(), 10);
+            // A good frame neither consumes the budget nor clears recent failures.
+            owner
+                .handle(
+                    ports.control,
+                    &incoming(&[7; 16], 20, 0, 1, 1, &[]),
+                    &wfd,
+                    &origin(),
+                )
+                .unwrap();
+            *clock.lock().unwrap() = start + elapsed;
+            let mut bad = valid;
+            bad.body = vec![0; 4];
+            let result = owner.handle(ports.control, &bad, &wfd, &origin());
+            assert_eq!(result.is_err(), fails);
+            if let Err(e) = result {
+                assert_eq!(e.to_string(), "invalid_cipher_record");
+            }
+            assert_eq!(owner.malformed_records.len(), if fails { 11 } else { 1 });
+            let messages = probe.diagnostics.lock().unwrap();
+            assert_eq!(messages.len(), 11);
+            assert!(messages[0].ends_with("reason=replayed_cipher_record"));
+            assert!(messages
+                .iter()
+                .any(|m| m.ends_with("reason=cipher_authentication_failed")));
+            assert!(messages
+                .iter()
+                .all(|m| m.starts_with("frame record_skipped service=")));
+        }
+    }
+    #[test]
+    fn control_m4_and_m5_request_keyframes_and_acknowledge_sync_messages() {
+        let probe = Arc::new(StallProbe::default());
+        let session = stall_session(probe.clone());
+        let ports = session.options.ports;
+        let mut owner = record_owner(&session);
+        let (socket, mut peer) = pair();
+        owner.sockets.insert(ports.control, socket);
+        let wfd = WfdSource::new("127.0.0.1".into(), ports);
+        for method in [4, 5] {
+            owner
+                .handle(
+                    ports.control,
+                    &incoming(&[7; 16], method as u32, 3, 1, method, &[]),
+                    &wfd,
+                    &origin(),
+                )
+                .unwrap();
+            let ack = read_frame(&mut peer);
+            assert_eq!(
+                (ack.sequence, ack.category, ack.kind),
+                (method as u32, 7, 2)
+            );
+        }
+        assert_eq!(probe.keyframes.load(Ordering::Relaxed), 2);
+    }
     #[test]
     fn ten_second_stall_drops_video_and_recovers_once_with_keyframe() {
         let probe = Arc::new(StallProbe::default());
@@ -1384,6 +1607,7 @@ mod tests {
     fn control_cert_sync_ack_trust_and_play_gates() {
         let trust = Arc::new(Trust::default());
         let callbacks = Arc::new(Callbacks::default());
+        let probe = Arc::new(StallProbe::default());
         let session = ClinkSession::new(
             Arc::new(StaticClinkLink(ClinkAddresses::new(
                 std::net::Ipv4Addr::LOCALHOST,
@@ -1391,7 +1615,7 @@ mod tests {
             ))),
             Arc::new(Pin),
             trust.clone(),
-            Arc::new(()),
+            probe.clone(),
             callbacks.clone(),
             SessionOptions::default(),
         )
@@ -1414,6 +1638,7 @@ mod tests {
                 (ports.cert, SecureRecord::new(&key).unwrap()),
             ]),
             display: DisplayInfo::default(),
+            malformed_records: VecDeque::new(),
         };
         let mut wfd = WfdSource::new("127.0.0.1".into(), ports);
         wfd.playing = true;
@@ -1513,6 +1738,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(vec![vec![9; 64]], *trust.saved.lock().unwrap());
+        let messages = probe.diagnostics.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        let identity: serde_json::Value =
+            serde_json::from_str(messages[0].strip_prefix("head_unit_certificate ").unwrap())
+                .unwrap();
+        assert_eq!(
+            identity,
+            serde_json::json!({"short_name":"car","product_name":"model","vendor_name":"vendor","vendor_id":"v1","product_id":"p1"})
+        );
+        drop(messages);
+        assert!(owner
+            .handle(
+                ports.cert,
+                &incoming(&key, 81, 3, 6, 1, &cert),
+                &wfd,
+                &origin
+            )
+            .is_err());
+        assert_eq!(probe.diagnostics.lock().unwrap().len(), 1);
         assert!(session.is_playing());
         assert_eq!(vec![true], *callbacks.play.lock().unwrap());
         let ack = read_frame(&mut cert_peer);
@@ -1658,6 +1902,7 @@ mod audio_tests {
                 ),
             ]),
             display: DisplayInfo::default(),
+            malformed_records: VecDeque::new(),
         }
     }
     fn incoming(
@@ -1951,7 +2196,7 @@ mod audio_tests {
             voice.format(
                 1,
                 Some(Arc::new(AudioFormat {
-                    role: AudioRole::Alert,
+                    role: AudioRole::Telephony,
                     ..format.as_ref().clone()
                 })),
             );

@@ -454,7 +454,16 @@ fn cert_signed_byte_envelope_and_control_projection_mode() {
         .encode()
         .unwrap()
     };
-    certificate::check(&body(&envelope)).unwrap();
+    assert_eq!(
+        certificate::check(&body(&envelope)).unwrap(),
+        BTreeMap::from([
+            ("short_name".into(), "car".into()),
+            ("product_name".into(), "model".into()),
+            ("vendor_name".into(), "vendor".into()),
+            ("vendor_id".into(), "v1".into()),
+            ("product_id".into(), "p1".into()),
+        ])
+    );
     let mut bad = envelope.clone();
     bad["version"] = 2.into();
     assert!(certificate::check(&body(&bad)).is_err());
@@ -500,6 +509,22 @@ fn cert_signed_byte_envelope_and_control_projection_mode() {
             .unwrap()
     );
 }
+#[test]
+fn placeholder_access_units_use_aud_only_as_boundaries() {
+    let p = BundledPlaceholderVideo::new().unwrap();
+    assert_eq!(p.frames().len(), 30);
+    for (i, frame) in p.frames().iter().enumerate() {
+        let units = oxp_media::nal::units(frame, oxp_media::nal::Format::Avcc).unwrap();
+        assert!(!units.is_empty());
+        assert!(units.iter().all(|n| [1, 5, 6].contains(&(n[0] & 31))));
+        assert_eq!(
+            i == 0,
+            oxp_media::nal::is_key_frame(frame, VideoCodec::H264, oxp_media::nal::Format::Avcc)
+                .unwrap()
+        );
+    }
+}
+
 #[test]
 fn placeholder_gate_and_queue_overflow_retains_shared_keyframe() {
     let p = BundledPlaceholderVideo::new().unwrap();

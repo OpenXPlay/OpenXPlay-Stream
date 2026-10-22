@@ -18,6 +18,8 @@ pub struct Pin {
     pub digits: Option<String>,
     pub file: Option<String>,
     pub stopped: Arc<AtomicBool>,
+    /// The user's PIN entry or Connect action already confirms pairing.
+    pub auto_confirm: bool,
 }
 impl Pin {
     pub fn request_with(
@@ -78,6 +80,12 @@ impl Pin {
 impl PinProvider for Pin {
     fn request_pin(&self, id: &str) -> Option<String> {
         self.request_with(id, Duration::from_secs(120), event)
+    }
+    fn confirm_pairing(&self, _: &str) -> bool {
+        self.auto_confirm && !self.stopped.load(Ordering::Acquire)
+    }
+    fn pin_incorrect(&self, id: &str) {
+        event(json!({"type":"clink-pin","result":"incorrect","client":id}));
     }
 }
 pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
@@ -462,6 +470,7 @@ mod tests {
                     .into_owned(),
             ),
             stopped: Arc::new(AtomicBool::new(false)),
+            auto_confirm: false,
         }
     }
     #[test]
@@ -556,6 +565,15 @@ mod tests {
             pin.request_with("unit", Duration::ZERO, |_| {}),
             Some("001234".into())
         );
+    }
+    #[test]
+    fn pairing_confirmation_requires_auto_confirm_and_an_active_session() {
+        let mut pin = pin();
+        assert!(!pin.confirm_pairing("unit"));
+        pin.auto_confirm = true;
+        assert!(pin.confirm_pairing("unit"));
+        pin.stopped.store(true, Ordering::Release);
+        assert!(!pin.confirm_pairing("unit"));
     }
     #[test]
     fn transcoding_defaults_to_auto_and_wraps_with_diagnostics() {

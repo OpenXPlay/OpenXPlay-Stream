@@ -135,15 +135,15 @@ impl ClinkTransport for MemoryTransport {
         Ok(())
     }
 }
-struct Link(Arc<MemoryTransport>, AtomicBool);
+struct Link(Arc<MemoryTransport>, AtomicBool, Option<String>, bool);
 impl ClinkLink for Link {
     fn connect(&self, _: Arc<dyn Fn(Option<String>) + Send + Sync>) -> Result<ClinkConnection> {
         Ok(ClinkConnection {
             head_unit_id: "memory-car".into(),
             local_ipv4: [127, 0, 0, 1].into(),
             transport: self.0.clone(),
-            wired_pin: None,
-            auto_confirm: false,
+            wired_pin: self.2.clone(),
+            auto_confirm: self.3,
         })
     }
     fn disconnect(&self) -> Result<()> {
@@ -182,21 +182,19 @@ impl SessionCallbacks for Callbacks {
     fn play(&self, _: bool) {}
     fn keyframe(&self) {}
 }
-fn authenticate(peer: &MemoryStream) -> [u8; 16] {
-    let request = Frame::decode(&peer.message()).unwrap();
+fn auth_response(request: &Frame, identity: &SecretKey, pin: &str) -> (Frame, [u8; 16]) {
     let fields = Fields::decode(&request.body).unwrap();
-    let identity = SecretKey::random(&mut OsRng);
     let agreement = SecretKey::random(&mut OsRng);
     let public = identity.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
     let ephemeral = agreement.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
     let nonce = [17; 32];
     let phone_nonce = fields.bytes(6).unwrap();
-    let phone_public = fields.bytes(2).unwrap();
+    let phone_public = fields.bytes(2).unwrap_or(&[]);
     let phone_agreement = fields.bytes(4).unwrap();
-    let proof_key = Sha256::digest([nonce.as_slice(), phone_nonce, b"123456"].concat());
+    let proof_key = Sha256::digest([nonce.as_slice(), phone_nonce, pin.as_bytes()].concat());
     let proof = hmac(&proof_key, &[public.as_slice(), phone_public].concat());
     let transcript = [ephemeral.as_slice(), phone_agreement, &nonce, phone_nonce].concat();
-    let signature: Signature = SigningKey::from(&identity).sign(&transcript);
+    let signature: Signature = SigningKey::from(identity).sign(&transcript);
     let shared = p256::ecdh::diffie_hellman(
         agreement.to_nonzero_scalar(),
         decode_public(phone_agreement).unwrap().as_affine(),
@@ -225,53 +223,108 @@ fn authenticate(peer: &MemoryStream) -> [u8; 16] {
         .encode()
         .unwrap(),
     };
-    peer.write_all(&response.encode().unwrap()).unwrap();
+    (response, key)
+}
+fn confirm(peer: &MemoryStream, key: &[u8; 16], sequence: u32) {
     let confirm = Frame::decode(&peer.message()).unwrap();
-    assert_eq!(confirm.method, 3);
+    assert_eq!((confirm.method, confirm.sequence), (3, sequence));
     assert_eq!(
-        SecureRecord::new(&key)
+        SecureRecord::new(key)
             .unwrap()
             .open(Fields::decode(&confirm.body).unwrap().bytes(1).unwrap())
             .unwrap(),
         b"127.0.0.1"
     );
+}
+fn authenticate(peer: &MemoryStream) -> [u8; 16] {
+    let request = Frame::decode(&peer.message()).unwrap();
+    let (response, key) = auth_response(&request, &SecretKey::random(&mut OsRng), "123456");
+    peer.write_all(&response.encode().unwrap()).unwrap();
+    confirm(peer, &key, request.sequence.wrapping_add(1));
     key
+}
+struct RunningSession {
+    session: Arc<ClinkSession>,
+    transport: Arc<MemoryTransport>,
+    link: Arc<Link>,
+    peers: BTreeMap<u16, Arc<MemoryStream>>,
+    worker: Option<thread::JoinHandle<Result<()>>>,
+}
+impl RunningSession {
+    fn new(
+        pin: Arc<dyn PinProvider>,
+        trust: Arc<dyn TrustStore>,
+        listener: Arc<dyn ClinkListener>,
+        wired_pin: Option<String>,
+        auto_confirm: bool,
+    ) -> Self {
+        let ports = ClinkPorts::default();
+        let mut streams = BTreeMap::new();
+        let mut peers = BTreeMap::new();
+        for service in [
+            ports.auth,
+            ports.control,
+            ports.cert,
+            ports.media,
+            ports.rtsp,
+            ports.uibc,
+        ] {
+            let (stream, peer) = MemoryStream::pair();
+            streams.insert(service, stream);
+            peers.insert(service, peer);
+        }
+        let transport = Arc::new(MemoryTransport {
+            streams: Mutex::new(streams),
+            offers: Mutex::new(Vec::new()),
+            authenticated: AtomicBool::new(false),
+        });
+        let link = Arc::new(Link(
+            transport.clone(),
+            AtomicBool::new(false),
+            wired_pin,
+            auto_confirm,
+        ));
+        let session = Arc::new(
+            ClinkSession::new(
+                link.clone(),
+                pin,
+                trust,
+                listener,
+                Arc::new(Callbacks),
+                SessionOptions::default(),
+            )
+            .unwrap(),
+        );
+        let worker_session = session.clone();
+        let worker = thread::spawn(move || worker_session.run());
+        Self {
+            session,
+            transport,
+            link,
+            peers,
+            worker: Some(worker),
+        }
+    }
+    fn finish(&mut self) -> Result<()> {
+        self.worker.take().unwrap().join().unwrap()
+    }
+}
+impl Drop for RunningSession {
+    fn drop(&mut self) {
+        self.session.stop();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join().unwrap();
+        }
+    }
 }
 fn run_memory_session(close_peer: bool) {
     let ports = ClinkPorts::default();
-    let mut streams = BTreeMap::new();
-    let mut peers = BTreeMap::new();
-    for service in [
-        ports.auth,
-        ports.control,
-        ports.cert,
-        ports.media,
-        ports.rtsp,
-        ports.uibc,
-    ] {
-        let (stream, peer) = MemoryStream::pair();
-        streams.insert(service, stream);
-        peers.insert(service, peer);
-    }
-    let transport = Arc::new(MemoryTransport {
-        streams: Mutex::new(streams),
-        offers: Mutex::new(Vec::new()),
-        authenticated: AtomicBool::new(false),
-    });
-    let link = Arc::new(Link(transport.clone(), AtomicBool::new(false)));
-    let session = Arc::new(
-        ClinkSession::new(
-            link.clone(),
-            Arc::new(Pin),
-            Arc::new(Trust),
-            Arc::new(()),
-            Arc::new(Callbacks),
-            SessionOptions::default(),
-        )
-        .unwrap(),
-    );
-    let worker_session = session.clone();
-    let worker = thread::spawn(move || worker_session.run());
+    let mut running =
+        RunningSession::new(Arc::new(Pin), Arc::new(Trust), Arc::new(()), None, false);
+    let session = running.session.clone();
+    let transport = running.transport.clone();
+    let link = running.link.clone();
+    let peers = running.peers.clone();
     let key = authenticate(&peers[&ports.auth]);
     let config = Frame::decode(&peers[&ports.control].message()).unwrap();
     assert_eq!((config.category, config.method), (1, 24));
@@ -298,7 +351,7 @@ fn run_memory_session(close_peer: bool) {
     } else {
         session.stop();
     }
-    let result = worker.join().unwrap();
+    let result = running.finish();
     if close_peer {
         assert!(result.is_err());
     } else {
@@ -317,4 +370,232 @@ fn session_authenticates_and_stops_over_memory_transport() {
 #[test]
 fn session_cleans_up_after_memory_peer_closes() {
     run_memory_session(true);
+}
+
+#[derive(Default)]
+struct Pairing {
+    peer: Mutex<Option<Vec<u8>>>,
+    events: Mutex<Vec<String>>,
+    confirm: bool,
+}
+impl PinProvider for Pairing {
+    fn request_pin(&self, _: &str) -> Option<String> {
+        self.events.lock().unwrap().push("pin".into());
+        Some("123456".into())
+    }
+    fn confirm_pairing(&self, _: &str) -> bool {
+        self.events.lock().unwrap().push("confirm".into());
+        self.confirm
+    }
+    fn pin_incorrect(&self, _: &str) {
+        self.events.lock().unwrap().push("incorrect".into());
+    }
+}
+impl TrustStore for Pairing {
+    fn load_identity(&self) -> Result<Option<AuthIdentity>> {
+        Ok(Some(AuthIdentity::generate()))
+    }
+    fn save_identity(&self, _: &AuthIdentity) -> Result<()> {
+        Ok(())
+    }
+    fn load_peer_key(&self, _: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.peer.lock().unwrap().clone())
+    }
+    fn save_peer_key(&self, _: &str, _: &[u8]) -> Result<()> {
+        self.events.lock().unwrap().push("save".into());
+        Ok(())
+    }
+    fn forget_peer(&self, _: &str) -> Result<()> {
+        *self.peer.lock().unwrap() = None;
+        self.events.lock().unwrap().push("forget".into());
+        Ok(())
+    }
+}
+impl ClinkListener for Pairing {
+    fn diagnostic(&self, message: &str) {
+        self.events.lock().unwrap().push(message.into());
+    }
+}
+fn result(peer: &MemoryStream, request: &Frame, code: u64) {
+    peer.write_all(
+        &Frame {
+            body: Fields(BTreeMap::from([
+                (1, FieldValue::Varint(1)),
+                (7, FieldValue::Varint(code)),
+            ]))
+            .encode()
+            .unwrap(),
+            source: 0,
+            kind: 2,
+            method: 2,
+            ..request.clone()
+        }
+        .encode()
+        .unwrap(),
+    )
+    .unwrap();
+}
+fn repin_after_key_change(full: bool) {
+    let old = SecretKey::random(&mut OsRng);
+    let new = SecretKey::random(&mut OsRng);
+    let pairing = Arc::new(Pairing {
+        peer: Mutex::new(Some(
+            old.public_key().to_encoded_point(false).as_bytes()[1..].to_vec(),
+        )),
+        confirm: true,
+        ..Default::default()
+    });
+    let running = RunningSession::new(
+        pairing.clone(),
+        pairing.clone(),
+        pairing.clone(),
+        None,
+        false,
+    );
+    let auth = &running.peers[&ClinkPorts::default().auth];
+    let mut request = Frame::decode(&auth.message()).unwrap();
+    assert_eq!(request.sequence, 1);
+    assert!(!Fields::decode(&request.body).unwrap().0.contains_key(&2));
+    if full {
+        result(auth, &request, 1);
+        request = Frame::decode(&auth.message()).unwrap();
+        assert_eq!(request.sequence, 3);
+    }
+    let (response, _) = auth_response(&request, &new, "123456");
+    auth.write_all(&response.encode().unwrap()).unwrap();
+    let request = Frame::decode(&auth.message()).unwrap();
+    assert_eq!(request.sequence, if full { 5 } else { 3 });
+    let fields = Fields::decode(&request.body).unwrap();
+    assert!(fields.0.contains_key(&2));
+    assert_eq!(fields.number(9).unwrap(), 0);
+    // Repinning can itself require confirmation; every new request advances by two.
+    result(auth, &request, 2);
+    let confirmed = Frame::decode(&auth.message()).unwrap();
+    assert_eq!(confirmed.sequence, request.sequence + 2);
+    assert_eq!(
+        Fields::decode(&confirmed.body).unwrap().number(9).unwrap(),
+        1
+    );
+    let (response, key) = auth_response(&confirmed, &new, "123456");
+    auth.write_all(&response.encode().unwrap()).unwrap();
+    confirm(auth, &key, confirmed.sequence + 1);
+    running.peers[&ClinkPorts::default().control].message();
+    assert!(running.transport.authenticated.load(Ordering::Acquire));
+    let events = pairing.events.lock().unwrap();
+    let reason = if full {
+        "peer_key_changed"
+    } else {
+        "auth_signature_failed"
+    };
+    let mut expected = Vec::new();
+    if full {
+        expected.push("pin".to_owned());
+    }
+    expected.extend([
+        "forget".to_owned(),
+        format!("auth repin reason={reason}"),
+        "pin".to_owned(),
+        "confirm".to_owned(),
+    ]);
+    assert_eq!(*events, expected);
+    // Trust is saved only after the later certificate check, never just after AUTH.
+    assert!(pairing.peer.lock().unwrap().is_none());
+}
+#[test]
+fn quick_auth_repins_once_on_the_same_transport_after_key_change() {
+    repin_after_key_change(false);
+}
+#[test]
+fn full_auth_repins_after_pin_retry_and_advances_confirmation_sequences() {
+    repin_after_key_change(true);
+}
+#[test]
+fn repin_is_attempted_only_once_even_if_the_new_signature_also_fails() {
+    let old = SecretKey::random(&mut OsRng);
+    let new = SecretKey::random(&mut OsRng);
+    let pairing = Arc::new(Pairing {
+        peer: Mutex::new(Some(
+            old.public_key().to_encoded_point(false).as_bytes()[1..].to_vec(),
+        )),
+        ..Default::default()
+    });
+    let mut running = RunningSession::new(
+        pairing.clone(),
+        pairing.clone(),
+        pairing.clone(),
+        None,
+        false,
+    );
+    let auth = &running.peers[&ClinkPorts::default().auth];
+    let request = Frame::decode(&auth.message()).unwrap();
+    let (response, _) = auth_response(&request, &new, "123456");
+    auth.write_all(&response.encode().unwrap()).unwrap();
+    let request = Frame::decode(&auth.message()).unwrap();
+    assert_eq!(request.sequence, 3);
+    let (mut response, _) = auth_response(&request, &new, "123456");
+    let mut fields = Fields::decode(&response.body).unwrap();
+    fields.0.insert(5, FieldValue::Bytes(vec![1]));
+    response.body = fields.encode().unwrap();
+    auth.write_all(&response.encode().unwrap()).unwrap();
+    assert_eq!(
+        running.finish().unwrap_err().to_string(),
+        "auth_signature_failed"
+    );
+    assert_eq!(
+        *pairing.events.lock().unwrap(),
+        ["forget", "auth repin reason=auth_signature_failed", "pin"]
+    );
+}
+#[test]
+fn incorrect_pin_is_reported_for_both_result_code_and_proof_failure_without_retrying() {
+    for proof_failure in [false, true] {
+        let pairing = Arc::new(Pairing::default());
+        let mut running = RunningSession::new(
+            pairing.clone(),
+            pairing.clone(),
+            pairing.clone(),
+            None,
+            false,
+        );
+        let auth = &running.peers[&ClinkPorts::default().auth];
+        let request = Frame::decode(&auth.message()).unwrap();
+        if proof_failure {
+            let (response, _) = auth_response(&request, &SecretKey::random(&mut OsRng), "654321");
+            auth.write_all(&response.encode().unwrap()).unwrap();
+        } else {
+            result(auth, &request, 1);
+        }
+        assert_eq!(
+            running.finish().unwrap_err().to_string(),
+            if proof_failure {
+                "auth_pin_proof_failed"
+            } else {
+                "auth_pin_required"
+            }
+        );
+        assert_eq!(*pairing.events.lock().unwrap(), ["pin", "incorrect"]);
+        assert!(!running.transport.authenticated.load(Ordering::Acquire));
+    }
+}
+#[test]
+fn wired_pin_and_auto_confirm_use_the_connections_existing_consent() {
+    let pairing = Arc::new(Pairing::default());
+    let running = RunningSession::new(
+        pairing.clone(),
+        pairing.clone(),
+        pairing.clone(),
+        Some("123456".into()),
+        true,
+    );
+    let auth = &running.peers[&ClinkPorts::default().auth];
+    let request = Frame::decode(&auth.message()).unwrap();
+    result(auth, &request, 2);
+    let request = Frame::decode(&auth.message()).unwrap();
+    assert_eq!(request.sequence, 3);
+    assert_eq!(Fields::decode(&request.body).unwrap().number(9).unwrap(), 1);
+    let (response, key) = auth_response(&request, &SecretKey::random(&mut OsRng), "123456");
+    auth.write_all(&response.encode().unwrap()).unwrap();
+    confirm(auth, &key, 4);
+    running.peers[&ClinkPorts::default().control].message();
+    assert!(pairing.events.lock().unwrap().is_empty());
 }

@@ -290,6 +290,38 @@ fn ts_pts_markers_rounding_and_wrap() {
     }
 }
 #[test]
+fn ts_without_aud_starts_keyframes_with_sps_and_other_frames_with_slice() {
+    let mut packets = Vec::new();
+    {
+        let mut muxer = TsMuxer::with_options(
+            |p: &[u8; 188]| packets.push(p.to_vec()),
+            TsOptions {
+                insert_aud: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        muxer.write_video(&frame(2, 5), &config(), 0, true).unwrap();
+        muxer
+            .write_video(&frame(2, 1), &config(), 33_333, false)
+            .unwrap();
+    }
+    let access_units = pes(&packets, 0x101);
+    let types: Vec<Vec<_>> = access_units
+        .iter()
+        .map(|p| {
+            nal::units(&p[14..], Format::AnnexB)
+                .unwrap()
+                .iter()
+                .map(|n| n[0] & 31)
+                .collect()
+        })
+        .collect();
+    assert_eq!(types, [vec![7, 8, 5], vec![1]]);
+    assert!(TsOptions::default().insert_aud);
+}
+
+#[test]
 fn ts_aud_parameter_sets_psi_and_continuity() {
     let mut packets = Vec::new();
     {

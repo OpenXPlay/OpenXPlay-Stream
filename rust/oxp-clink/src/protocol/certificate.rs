@@ -5,8 +5,10 @@
 use super::{json_object, Fields};
 use crate::{require, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use std::collections::BTreeMap;
 /// Structural checks only, matching Kotlin; no manufacturer signature verification.
-pub fn check(body: &[u8]) -> Result<()> {
+/// Returns the head unit's unverified, self-described names and IDs.
+pub fn check(body: &[u8]) -> Result<BTreeMap<String, String>> {
     let f = Fields::decode(body)?;
     let encoded = f.bytes(1)?;
     require(
@@ -78,10 +80,15 @@ pub fn check(body: &[u8]) -> Result<()> {
             }),
         "invalid_certificate",
     )?;
-    for k in metadata.keys() {
-        text(&metadata, k, if k.ends_with("_id") { 64 } else { 512 })?;
-    }
-    Ok(())
+    metadata
+        .keys()
+        .map(|k| {
+            Ok((
+                k.clone(),
+                text(&metadata, k, if k.ends_with("_id") { 64 } else { 512 })?.to_owned(),
+            ))
+        })
+        .collect()
 }
 fn text<'a>(
     obj: &'a serde_json::Map<String, serde_json::Value>,

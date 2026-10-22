@@ -35,7 +35,7 @@ impl BundledPlaceholderVideo {
             if t == 9 && !current.is_empty() {
                 frames.push(Arc::from(std::mem::take(&mut current)));
             }
-            if [1, 5, 6, 9].contains(&t) {
+            if [1, 5, 6].contains(&t) {
                 current.extend_from_slice(&(n.len() as u32).to_be_bytes());
                 current.extend_from_slice(n);
             }

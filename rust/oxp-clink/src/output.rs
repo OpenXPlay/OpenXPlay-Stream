@@ -10,6 +10,7 @@ use crate::{
     require,
     session::{ClinkSession, SessionCallbacks, SessionOptions},
     video_delivery::{VideoQueue, VideoSwitch},
+    voice_delivery::voice_role,
     Result,
 };
 use oxp_media::{
@@ -397,7 +398,7 @@ impl ClinkOutput {
             }
             h.voice_streams.remove(&stream);
             if format.as_ref().is_some_and(|f| {
-                f.role != AudioRole::Media
+                voice_role(f.role)
                     && f.codec == AudioCodec::PcmS16le
                     && (8000..=48000).contains(&f.sample_rate)
                     && (1..=2).contains(&f.channels)
@@ -498,11 +499,21 @@ impl ClinkListener for SessionListener {
     fn error(&self, e: &str) {
         self.0.error(e);
     }
+    fn diagnostic(&self, message: &str) {
+        self.0.diagnostic(message);
+    }
 }
 fn same_format(a: &Option<Arc<VideoFormat>>, b: &Option<Arc<VideoFormat>>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (Some(a), Some(b)) => {
+            Arc::ptr_eq(a, b)
+                || (a.codec == b.codec
+                    && a.codec_string == b.codec_string
+                    && a.width == b.width
+                    && a.height == b.height
+                    && a.config == b.config)
+        }
         _ => false,
     }
 }
@@ -537,7 +548,6 @@ fn media_worker(
     let mut video_clock = VideoClock::default();
     let mut keyframes = KeyframeRequests::default();
     let mut transport_pts = -1i64;
-    let mut audio_offset: Option<i64> = None;
     let mut live_offset = 0i64;
     let mut sent = 0;
     let mut reported_at = None;
@@ -578,11 +588,10 @@ fn media_worker(
             };
             if revision != Some(h.revision) || changed {
                 gate.play(h.playing);
-                audio_offset = None;
+                video_clock.revision(changed);
                 if changed {
                     muxer = None;
                     keyframes = KeyframeRequests::default();
-                    video_clock.live_frame_at = None;
                 }
                 placeholder_index = 0;
                 next_placeholder = Instant::now();
@@ -625,6 +634,8 @@ fn media_worker(
                 path.sink(),
                 oxp_media::ts::TsOptions {
                     audio_enabled: snapshot.media_audio,
+                    // The head unit identifies key frames from the first NAL.
+                    insert_aud: false,
                     ..Default::default()
                 },
             )
@@ -687,8 +698,10 @@ fn media_worker(
                     if !was_live {
                         live_offset = (output_pts + 1_000_000 / placeholder.fps() as i64)
                             .max(0)
-                            .max(frame.pts_us + audio_offset.unwrap_or(-frame.pts_us))
+                            .max(frame.pts_us + video_clock.audio_offset.unwrap_or(-frame.pts_us))
                             - frame.pts_us;
+                        live_offset =
+                            reanchor_video(frame.pts_us, live_offset, output_pts, transport_pts);
                     }
                     let pts = (output_pts + 1)
                         .max(transport_pts + 1)
@@ -754,15 +767,15 @@ fn media_worker(
                 }
                 let audio = {
                     let mut h = run.handoff.lock().unwrap();
-                    if !gate.live && audio_offset.is_none() {
+                    if !gate.live && video_clock.audio_offset.is_none() {
                         if let Some(p) = h.audio.front() {
-                            audio_offset = Some(output_pts.max(0) - p.pts_us);
+                            video_clock.audio_offset = Some(output_pts.max(0) - p.pts_us);
                         }
                     }
                     let offset = if gate.live {
                         live_offset
                     } else {
-                        audio_offset.unwrap_or(0)
+                        video_clock.audio_offset.unwrap_or(0)
                     };
                     poll_audio(&mut h, offset, video_clock.pts(output_pts, Instant::now()))
                 };
@@ -771,7 +784,7 @@ fn media_worker(
                         + if gate.live {
                             live_offset
                         } else {
-                            audio_offset.unwrap_or(0)
+                            video_clock.audio_offset.unwrap_or(0)
                         };
                     if mapped >= 0 && mapped >= transport_pts - 50_000 {
                         let pts = mapped.max(transport_pts);
@@ -935,6 +948,18 @@ struct KeyframeRequests {
     requested_at: Option<Instant>,
     pending: bool,
 }
+/// Keep the first live frame within 500 ms of the shared transport clock.
+fn reanchor_video(input_pts: i64, offset: i64, output_pts: i64, transport_pts: i64) -> i64 {
+    let lead = (output_pts + 1)
+        .max(transport_pts + 1)
+        .max(input_pts + offset)
+        - transport_pts;
+    if lead > 500_000 {
+        offset - (lead - 1)
+    } else {
+        offset
+    }
+}
 impl KeyframeRequests {
     fn defer(&mut self, request: bool) {
         self.pending |= request;
@@ -956,10 +981,18 @@ impl KeyframeRequests {
 }
 #[derive(Default)]
 struct VideoClock {
+    audio_offset: Option<i64>,
     written_at: Option<Instant>,
     live_frame_at: Option<Instant>,
 }
 impl VideoClock {
+    fn revision(&mut self, session_changed: bool) {
+        // Revisions keep the input clock; only a new socket session resets the anchor.
+        if session_changed {
+            self.audio_offset = None;
+            self.live_frame_at = None;
+        }
+    }
     fn pts(&self, output_pts: i64, now: Instant) -> i64 {
         // Video arrives in batches, but audio must advance even while the screen is static.
         output_pts
@@ -1028,6 +1061,159 @@ mod audio_tests {
         fn control(&self, _: ControlEvent) {}
         fn stats(&self, _: OutputStats) {}
     }
+    fn test_output() -> (ClinkOutput, Arc<Run>) {
+        let output = ClinkOutput::new(
+            Arc::new(StaticClinkLink(ClinkAddresses::new(
+                std::net::Ipv4Addr::LOCALHOST,
+                std::net::Ipv4Addr::LOCALHOST,
+            ))),
+            Arc::new(Pin),
+            Arc::new(Trust),
+        )
+        .unwrap();
+        let run = Arc::new(Run::new(Arc::new(Host)));
+        *output.current.lock().unwrap() = Some(run.clone());
+        (output, run)
+    }
+    #[test]
+    fn only_voice_and_telephony_are_delivered_to_the_voice_channel() {
+        let (output, run) = test_output();
+        for (stream, role) in [
+            AudioRole::Media,
+            AudioRole::Alert,
+            AudioRole::Voice,
+            AudioRole::Telephony,
+            AudioRole::Other,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let stream = stream as u32;
+            output.on_audio_format(
+                stream,
+                Some(Arc::new(AudioFormat {
+                    stream,
+                    role,
+                    codec: AudioCodec::PcmS16le,
+                    sample_rate: 16000,
+                    channels: 1,
+                    config: None,
+                })),
+            );
+        }
+        assert_eq!(
+            run.handoff.lock().unwrap().voice_streams,
+            BTreeSet::from([2, 3])
+        );
+        output.on_audio_format(2, None);
+        assert_eq!(
+            run.handoff.lock().unwrap().voice_streams,
+            BTreeSet::from([3])
+        );
+    }
+    #[test]
+    fn equal_video_formats_in_distinct_arcs_keep_the_queue_and_revision() {
+        let (output, run) = test_output();
+        let a = Arc::new(output.placeholder.format().clone());
+        let mut equal = a.as_ref().clone();
+        equal.config = a.config.to_vec().into();
+        equal.fps_hint = Some(60.0);
+        let b = Arc::new(equal);
+        assert!(!Arc::ptr_eq(&a, &b));
+        output.on_video_format(0, Some(a.clone()));
+        let revision = {
+            let mut h = run.handoff.lock().unwrap();
+            h.request_keyframe = false;
+            h.queue.offer(VideoFrame {
+                screen: 0,
+                session: 1,
+                data: output.placeholder.frames()[0].clone(),
+                pts_us: 0,
+                key_frame: true,
+                received_at_nanos: 0,
+            });
+            h.revision
+        };
+        output.on_video_format(0, Some(b));
+        let mut h = run.handoff.lock().unwrap();
+        assert_eq!(h.revision, revision);
+        assert!(!h.request_keyframe);
+        assert!(h.queue.poll().is_some());
+        drop(h);
+        for field in 0..5 {
+            let mut different = a.as_ref().clone();
+            match field {
+                0 => different.codec = VideoCodec::H265,
+                1 => different.codec_string.push('0'),
+                2 => different.width += 1,
+                3 => different.height += 1,
+                _ => different.config = Arc::from([1u8]),
+            }
+            assert!(!same_format(&Some(a.clone()), &Some(Arc::new(different))));
+        }
+        assert!(same_format(&None, &None));
+        assert!(!same_format(&Some(a), &None));
+        output.on_video_format(0, None);
+        assert_eq!(run.handoff.lock().unwrap().revision, revision + 1);
+    }
+    #[test]
+    fn session_diagnostics_reach_the_output_listener() {
+        #[derive(Default)]
+        struct Listener(Mutex<Vec<String>>);
+        impl ClinkListener for Listener {
+            fn diagnostic(&self, message: &str) {
+                self.0.lock().unwrap().push(message.into());
+            }
+        }
+        let listener = Arc::new(Listener::default());
+        let session_listener = SessionListener(listener.clone());
+        session_listener.diagnostic("link stalled ms=5000");
+        session_listener.diagnostic("link recovered after ms=10000");
+        assert_eq!(
+            *listener.0.lock().unwrap(),
+            ["link stalled ms=5000", "link recovered after ms=10000"]
+        );
+    }
+    #[test]
+    fn audio_anchor_survives_revisions_and_resets_for_a_new_session() {
+        let now = Instant::now();
+        let mut clock = VideoClock {
+            audio_offset: Some(-8_000_000_000),
+            written_at: Some(now),
+            live_frame_at: Some(now),
+        };
+        let mut gate = VideoSwitch::default();
+        for _ in 0..3 {
+            gate.play(true);
+            clock.revision(false);
+            assert_eq!(clock.audio_offset, Some(-8_000_000_000));
+            assert_eq!(clock.live_frame_at, Some(now));
+            assert_eq!(8_000_020_000 + clock.audio_offset.unwrap(), 20_000);
+        }
+        clock.revision(true);
+        assert!(clock.audio_offset.is_none());
+        assert!(clock.live_frame_at.is_none());
+    }
+    #[test]
+    fn first_live_video_reanchors_only_beyond_500_ms_of_transport_pts() {
+        let input = 8_000_000_000;
+        let transport = 1_000_000;
+        for (lead, expected) in [
+            (499_999, 499_999),
+            (500_000, 500_000),
+            (500_001, 1),
+            (9_000_000, 1),
+        ] {
+            let offset = reanchor_video(input, transport + lead - input, transport - 1, transport);
+            assert_eq!(input + offset - transport, expected);
+        }
+        // An audio clock already ahead of video is also a floor for the first live frame.
+        let offset = reanchor_video(input, -input, 900_000, transport);
+        assert_eq!(
+            (900_001i64).max(transport + 1).max(input + offset),
+            transport + 1
+        );
+    }
     #[test]
     fn keyframe_requests_are_deferred_coalesced_and_reset_with_session() {
         let now = Instant::now();
@@ -1040,6 +1226,10 @@ mod audio_tests {
         assert!(!requests.poll(false, now + Duration::from_secs(2)));
         requests = KeyframeRequests::default();
         assert!(requests.poll(true, now + Duration::from_millis(1100)));
+        requests.defer(true);
+        assert!(!requests.poll(false, now + Duration::from_millis(1200)));
+        assert!(requests.poll(false, now + Duration::from_millis(2100)));
+        assert!(!requests.poll(false, now + Duration::from_secs(4)));
     }
     #[test]
     fn static_video_releases_audio_against_running_clock() {
@@ -1048,6 +1238,7 @@ mod audio_tests {
         let clock = VideoClock {
             written_at: Some(now),
             live_frame_at: Some(now),
+            ..Default::default()
         };
         let mut h = run.handoff.lock().unwrap();
         h.audio.push_back(AudioPacket {

@@ -30,7 +30,9 @@ pub struct ClinkConnection {
     pub head_unit_id: String,
     pub local_ipv4: Ipv4Addr,
     pub transport: Arc<dyn ClinkTransport>,
+    /// PIN supplied by a wired transport instead of an interactive provider.
     pub wired_pin: Option<String>,
+    /// The transport has already obtained the user's consent to pair.
     pub auto_confirm: bool,
 }
 impl From<ClinkAddresses> for ClinkConnection {
@@ -65,6 +67,8 @@ pub trait PinProvider: Send + Sync {
     fn confirm_pairing(&self, _: &str) -> bool {
         false
     }
+    /// A supplied PIN was rejected; the shell may prompt again for a new session.
+    fn pin_incorrect(&self, _: &str) {}
 }
 pub trait TrustStore: Send + Sync {
     fn load_identity(&self) -> Result<Option<AuthIdentity>>;
