@@ -81,7 +81,7 @@ class RustClinkLoopbackTest {
             input.send(1) // A delta frame cannot replace the placeholder.
             first.await("placeholder continues after a delta frame") { first.accessUnits.size >= before + 2 }
             assertTrue(first.accessUnits.all { it.size == 1280 to 720 })
-            // Linux uses the WFD mode for touch; check it while the placeholder is playing.
+            // Touch follows the picture sent: 1280x720 for the placeholder, then the live video's own size.
             input.events.clear()
             first.requestKeyframe()
             assertEquals(request.origin, input.next<ControlEvent.KeyFrameRequest>().origin)
@@ -124,6 +124,12 @@ class RustClinkLoopbackTest {
             // A following PES start completes the final zero-length video PES in the capture.
             input.send(0, clip.frames.size)
             first.await("all clip access units") { first.accessUnits.count { it.size == 640 to 360 } >= clip.frames.size }
+            // Like the car, the simulated head unit maps its 1280x720 view onto the 640x360 picture it
+            // decodes, so the view's centre arrives as (320, 180); dividing by the WFD mode would give 0.25.
+            first.touch(0, listOf(PixelContact(41, 640, 360)))
+            assertContacts(listOf(TouchContact(0, 0.5, 0.5, true)), input.next<ControlEvent.Touch>().contacts)
+            first.touch(1, listOf(PixelContact(41, 640, 360)))
+            assertContacts(listOf(TouchContact(0, 0.5, 0.5, false)), input.next<ControlEvent.Touch>().contacts)
             val received = first.accessUnits.filter { it.size == 640 to 360 }.take(clip.frames.size)
             assertEquals(60, received.size)
             assertTrue(received.first().keyFrame)
