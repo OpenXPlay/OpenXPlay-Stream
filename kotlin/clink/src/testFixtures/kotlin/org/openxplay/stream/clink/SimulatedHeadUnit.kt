@@ -127,9 +127,13 @@ public class SimulatedHeadUnit(
     public fun assertHealthy(): Unit {
         failures.firstOrNull()?.let { throw AssertionError("Simulated head unit worker failed", it) }
     }
-    /** Pixel coordinates are already in the negotiated source-video space. */
-    public fun touch(action: Int, contacts: List<PixelContact>, width: Int = 1280, height: Int = 720): Unit {
-        val points = contacts.mapIndexed { n, p -> "\"trackID$n\":${p.trackId},\"x$n\":${p.x},\"y$n\":${p.y}" }
+    /** Maps view pixels to the most recently decoded picture, as the car does. */
+    public fun touch(action: Int, contacts: List<PixelContact>, width: Int = display.widthPx, height: Int = display.heightPx): Unit {
+        require(width > 0 && height > 0)
+        val (streamWidth, streamHeight) = checkNotNull(capture.units.lastOrNull()) { "No decoded picture" }.size
+        val points = contacts.mapIndexed { n, p ->
+            "\"trackID$n\":${p.trackId},\"x$n\":${p.x.toLong() * streamWidth / width},\"y$n\":${p.y.toLong() * streamHeight / height}"
+        }
         input("{\"type\":1,\"action\":$action,\"count\":${contacts.size},\"width\":$width,\"height\":$height" +
             (if (points.isEmpty()) "" else "," + points.joinToString(",")) + "}")
     }

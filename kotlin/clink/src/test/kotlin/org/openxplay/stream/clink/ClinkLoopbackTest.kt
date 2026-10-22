@@ -84,9 +84,10 @@ class ClinkLoopbackTest {
             assertEquals(0.5, center.contacts.single().y, 0.0001)
             assertTrue(center.contacts.single().pressed)
             val trace = traces.first { it.kind == "touch_down" }
-            assertEquals(listOf(640L to 360L), trace.rawCoordinates)
+            assertEquals(listOf(320L to 180L), trace.rawCoordinates)
             assertEquals(listOf(0.5 to 0.5), trace.coordinates)
             assertEquals(640 to 360, trace.streamSize)
+            assertEquals(1280 to 720, trace.viewSize)
             first.touch(1, listOf(PixelContact(41, 640, 360)))
             assertFalse(input.next<ControlEvent.Touch>().contacts.single().pressed)
 

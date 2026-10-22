@@ -81,6 +81,40 @@ class RustClinkLoopbackTest {
             input.send(1) // A delta frame cannot replace the placeholder.
             first.await("placeholder continues after a delta frame") { first.accessUnits.size >= before + 2 }
             assertTrue(first.accessUnits.all { it.size == 1280 to 720 })
+            // Linux uses the WFD mode for touch; check it while the placeholder is playing.
+            input.events.clear()
+            first.requestKeyframe()
+            assertEquals(request.origin, input.next<ControlEvent.KeyFrameRequest>().origin)
+            first.touch(0, listOf(PixelContact(41, 640, 360)))
+            val center = input.next<ControlEvent.Touch>()
+            assertEquals(request.origin, center.origin)
+            assertEquals(ScreenId.MAIN, center.screen)
+            assertEquals(1, center.contacts.size)
+            assertEquals(0.5, center.contacts.single().x, 0.0001)
+            assertEquals(0.5, center.contacts.single().y, 0.0001)
+            assertTrue(center.contacts.single().pressed)
+            first.touch(1, listOf(PixelContact(41, 640, 360)))
+            assertFalse(input.next<ControlEvent.Touch>().contacts.single().pressed)
+
+            val a = PixelContact(91, 320, 180); val b = PixelContact(12, 960, 540)
+            first.touch(0, listOf(a))
+            val down = input.next<ControlEvent.Touch>()
+            first.touch(5 or (1 shl 8), listOf(a, b)) // ACTION_POINTER_DOWN, index 1.
+            val two = input.next<ControlEvent.Touch>()
+            assertContacts(listOf(TouchContact(0, 0.25, 0.25, true)), down.contacts)
+            assertContacts(listOf(TouchContact(0, 0.25, 0.25, true), TouchContact(1, 0.75, 0.75, true)), two.contacts)
+            first.touch(2, listOf(b.copy(x = 640), a.copy(x = 640))) // Wire order changes; slots stay stable.
+            assertContacts(listOf(TouchContact(0, 0.5, 0.25, true), TouchContact(1, 0.5, 0.75, true)),
+                input.next<ControlEvent.Touch>().contacts)
+            first.touch(6 or (1 shl 8), listOf(b, a)) // Lift index 1, leaving track 12 pressed.
+            assertContacts(listOf(TouchContact(0, 0.25, 0.25, false), TouchContact(1, 0.75, 0.75, true)),
+                input.next<ControlEvent.Touch>().contacts)
+            first.touch(1, listOf(b))
+            assertContacts(listOf(TouchContact(1, 0.75, 0.75, false)), input.next<ControlEvent.Touch>().contacts)
+            first.key(66, 0); first.key(66, 1)
+            assertEquals(ControlEvent.Key(KeyCode.SELECT, true, request.origin), input.next<ControlEvent.Key>())
+            assertEquals(ControlEvent.Key(KeyCode.SELECT, false, request.origin), input.next<ControlEvent.Key>())
+
             input.send(0); input.send(1)
             first.await("live IDR") { first.accessUnits.any { it.size == 640 to 360 } }
             for (index in 2 until clip.frames.size) {
@@ -138,39 +172,6 @@ class RustClinkLoopbackTest {
             first.awakenVoiceAssistant(true)
             assertEquals(ControlEvent.Key(KeyCode.VOICE, true, request.origin), input.next<ControlEvent.Key>())
             assertEquals(ControlEvent.Key(KeyCode.VOICE, false, request.origin), input.next<ControlEvent.Key>())
-
-            input.events.clear()
-            first.requestKeyframe()
-            assertEquals(request.origin, input.next<ControlEvent.KeyFrameRequest>().origin)
-            first.touch(0, listOf(PixelContact(41, 640, 360)))
-            val center = input.next<ControlEvent.Touch>()
-            assertEquals(request.origin, center.origin)
-            assertEquals(ScreenId.MAIN, center.screen)
-            assertEquals(1, center.contacts.size)
-            assertEquals(0.5, center.contacts.single().x, 0.0001)
-            assertEquals(0.5, center.contacts.single().y, 0.0001)
-            assertTrue(center.contacts.single().pressed)
-            first.touch(1, listOf(PixelContact(41, 640, 360)))
-            assertFalse(input.next<ControlEvent.Touch>().contacts.single().pressed)
-
-            val a = PixelContact(91, 320, 180); val b = PixelContact(12, 960, 540)
-            first.touch(0, listOf(a))
-            val down = input.next<ControlEvent.Touch>()
-            first.touch(5 or (1 shl 8), listOf(a, b)) // ACTION_POINTER_DOWN, index 1.
-            val two = input.next<ControlEvent.Touch>()
-            assertContacts(listOf(TouchContact(0, 0.25, 0.25, true)), down.contacts)
-            assertContacts(listOf(TouchContact(0, 0.25, 0.25, true), TouchContact(1, 0.75, 0.75, true)), two.contacts)
-            first.touch(2, listOf(b.copy(x = 640), a.copy(x = 640))) // Wire order changes; slots stay stable.
-            assertContacts(listOf(TouchContact(0, 0.5, 0.25, true), TouchContact(1, 0.5, 0.75, true)),
-                input.next<ControlEvent.Touch>().contacts)
-            first.touch(6 or (1 shl 8), listOf(b, a)) // Lift index 1, leaving track 12 pressed.
-            assertContacts(listOf(TouchContact(0, 0.25, 0.25, false), TouchContact(1, 0.75, 0.75, true)),
-                input.next<ControlEvent.Touch>().contacts)
-            first.touch(1, listOf(b))
-            assertContacts(listOf(TouchContact(1, 0.75, 0.75, false)), input.next<ControlEvent.Touch>().contacts)
-            first.key(66, 0); first.key(66, 1)
-            assertEquals(ControlEvent.Key(KeyCode.SELECT, true, request.origin), input.next<ControlEvent.Key>())
-            assertEquals(ControlEvent.Key(KeyCode.SELECT, false, request.origin), input.next<ControlEvent.Key>())
 
             first.assertHealthy(); first.disconnect()
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)

@@ -5,8 +5,11 @@
 package org.openxplay.stream.clink
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
+import org.openxplay.stream.clink.trace.*
 import org.openxplay.stream.core.*
 import kotlin.test.*
 
@@ -18,13 +21,16 @@ class ClinkDisplayTest {
             val ports = freePorts()
             val reported = CopyOnWriteArrayList<DisplayInfo>()
             val errors = CopyOnWriteArrayList<Throwable>()
+            val touches = LinkedBlockingQueue<ControlEvent.Touch>()
+            val traces = CopyOnWriteArrayList<ClinkTraceEvent.Input>()
             SimulatedHeadUnit(ports, display = display).use { peer ->
                 val output = ClinkOutput(StaticClinkLink(ClinkAddresses("127.0.0.1", "127.0.0.1", ports.auth)),
                     PinProvider { "012345" }, MemoryTrustStore(), ports = ports, pictureSize = pictureSize,
+                    trace = ClinkTrace { if (it is ClinkTraceEvent.Input) traces += it },
                     listener = object : ClinkListener { override fun error(error: Throwable) { errors += error } })
                 output.open(object : OutputHost {
                     override fun capabilities(capabilities: OutputCapabilities) { reported += capabilities.displays.getValue(ScreenId.MAIN) }
-                    override fun control(event: ControlEvent) {}
+                    override fun control(event: ControlEvent) { if (event is ControlEvent.Touch) touches.add(event) }
                     override fun stats(stats: OutputStats) {}
                 })
                 try {
@@ -35,6 +41,12 @@ class ClinkDisplayTest {
                         frameSize = if (pictureSize == ClinkPictureSize.MODE) Viewport(1280, 720) else null)
                     assertEquals(expected, reported.last())
                     assertEquals(1280 to 720, peer.accessUnits.first().size)
+                    peer.touch(0, listOf(PixelContact(1, 766, 507)))
+                    assertEquals(listOf(TouchContact(0, 0.5, 0.5, true)), touches.poll(3, TimeUnit.SECONDS)?.contacts)
+                    val trace = traces.single()
+                    assertEquals(listOf(640L to 360L), trace.rawCoordinates)
+                    assertEquals(1280 to 720, trace.streamSize)
+                    assertEquals(1532 to 1013, trace.viewSize)
                     assertTrue(errors.isEmpty(), errors.joinToString())
                     peer.assertHealthy()
                 } finally { peer.expectRelayClose(); output.close() }

@@ -483,7 +483,7 @@ public class ClinkSession(
             check(!stopped)
             val a = checkNotNull(addresses)
             val local = ipv4(a.localIpv4); val peer = ipv4(a.headUnitIpv4)
-            touch = UibcDecoder(Origin(outputId, a.headUnitId), { videoSize }, trace, traceSession, { streamSize })
+            touch = UibcDecoder(Origin(outputId, a.headUnitId), { streamSize }, trace, traceSession)
             wfd = WfdSource(a.localIpv4, ports, hevc) { display }
             // Bind before AuthConfirm; reverse connections can arrive immediately.
             listOf(ports.control, ports.cert, ports.media, ports.rtsp, ports.uibc).forEach { listen(it, local, peer) }

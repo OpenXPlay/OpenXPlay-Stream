@@ -9,9 +9,8 @@ import org.openxplay.stream.clink.trace.*
 import org.openxplay.stream.core.*
 
 /** Stateful Android pointer mapper. Wire track IDs are assigned stable core slots 0 and 1. */
-public class UibcDecoder(private val origin: Origin, private val videoSize: () -> Pair<Int, Int>,
-    private val trace: ClinkTrace = ClinkTrace.NONE, private val session: Long = 0,
-    private val streamSize: () -> Pair<Int, Int> = videoSize) {
+public class UibcDecoder(private val origin: Origin, private val streamSize: () -> Pair<Int, Int>,
+    private val trace: ClinkTrace = ClinkTrace.NONE, private val session: Long = 0) {
     public constructor(origin: Origin, videoSize: () -> Pair<Int, Int>) : this(origin, videoSize, ClinkTrace.NONE, 0)
     private data class Point(val x: Double, val y: Double)
     private val active = linkedMapOf<Long, Pair<Int, Point>>()
@@ -29,12 +28,17 @@ public class UibcDecoder(private val origin: Origin, private val videoSize: () -
             require(!value.isString)
             return value.longOrNull ?: error("invalid_$key")
         }
+        fun viewSize(): Pair<Int, Int>? {
+            fun dimension(key: String): Int? = (obj[key] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull?.takeIf { it > 0 }
+            return (dimension("width") ?: return null) to (dimension("height") ?: return null)
+        }
         when (number("type")) {
             2L -> {
                 val action = number("action", 0); val meta = number("metaState", 0)
                 val code = number("keycode"); require(code in 0..65535 && action in 0..2 && meta in 0..0xffffffffL)
                 if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Input(System.nanoTime(), session,
-                    when (action) { 0L -> "key_down"; 1L -> "key_up"; else -> "key_multiple" }, emptyList(), streamSize = streamSize()))
+                    when (action) { 0L -> "key_down"; 1L -> "key_up"; else -> "key_multiple" }, emptyList(),
+                    streamSize = streamSize(), viewSize = viewSize()))
                 return key(code.toInt(), action.toInt(), origin)
             }
             1L -> Unit
@@ -45,11 +49,12 @@ public class UibcDecoder(private val origin: Origin, private val videoSize: () -
         require(count in 0..16 && action in 0..65535)
         val masked = (action and 255).toInt(); val index = ((action shr 8) and 255).toInt()
         if (masked == 3) {
-            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Input(System.nanoTime(), session, "touch_cancel", emptyList(), streamSize = streamSize()))
+            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Input(System.nanoTime(), session, "touch_cancel", emptyList(),
+                streamSize = streamSize(), viewSize = viewSize()))
             return release()
         }
         require(count > 0 && index < count && masked in listOf(0, 1, 2, 5, 6))
-        val (width, height) = videoSize(); require(width > 0 && height > 0)
+        val size = streamSize(); val (width, height) = size; require(width > 0 && height > 0)
         val points = linkedMapOf<Long, Point>()
         val raw = mutableListOf<Pair<Long, Long>>()
         repeat(count) { n ->
@@ -76,7 +81,7 @@ public class UibcDecoder(private val origin: Origin, private val videoSize: () -
         }
         if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Input(System.nanoTime(), session,
             when (masked) { 0 -> "touch_down"; 1 -> "touch_up"; 2 -> "touch_move"; 5 -> "pointer_down"; else -> "pointer_up" },
-            points.values.map { it.x to it.y }, raw, streamSize()))
+            points.values.map { it.x to it.y }, raw, size, viewSize()))
         return ControlEvent.Touch(ScreenId.MAIN, contacts, origin)
     }
     public companion object {

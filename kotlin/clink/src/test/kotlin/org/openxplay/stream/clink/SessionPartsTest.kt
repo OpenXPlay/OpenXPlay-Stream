@@ -142,15 +142,27 @@ class SessionPartsTest {
         }
         assertContentEquals(ts.take(7).reduce { a, b -> a + b }, packets[0].copyOfRange(12, packets[0].size))
     }
+    @Test fun `touch follows the current stream picture size`() {
+        var stream = 1450 to 960
+        val decoder = UibcDecoder(origin) { stream }
+        fun touch(action: Int, x: Int, y: Int) = (decoder.decode(
+            """{"type":1,"action":$action,"count":1,"trackID0":7,"x0":$x,"y0":$y}""".toByteArray()) as ControlEvent.Touch).contacts.single()
+        assertEquals(TouchContact(0, 0.5, 0.5, true), touch(0, 725, 480))
+        assertEquals(TouchContact(0, 1449.0 / 1450, 959.0 / 960, true), touch(2, 1449, 959))
+        assertEquals(893.0 / 960, touch(2, 725, 893).y)
+        stream = 1280 to 720
+        assertEquals(TouchContact(0, 0.5, 0.5, true), touch(2, 640, 360))
+        assertEquals(TouchContact(0, 0.0, 1.0, true), touch(2, -1, 721))
+    }
     @Test fun `touch uses source pixels and preserves two contacts through pointer index up`() {
         val decoder = UibcDecoder(origin) { 1280 to 720 }
         fun touch(json: String) = decoder.decode(json.toByteArray()) as ControlEvent.Touch
         val down = touch("""{"type":1,"action":0,"count":1,"width":1072,"height":2320,"trackID0":100,"x0":640,"y0":360}""")
         assertEquals(listOf(TouchContact(0, .5, .5, true)), down.contacts)
         val second = touch("""{"type":1,"action":261,"count":2,"trackID0":100,"x0":640,"y0":360,"trackID1":200,"x1":1280,"y1":720}""")
-        assertEquals(listOf(0, 1), second.contacts.map { it.id }); assertTrue(second.contacts.all { it.pressed })
+        assertEquals(listOf(TouchContact(0, .5, .5, true), TouchContact(1, 1.0, 1.0, true)), second.contacts)
         val up = touch("""{"type":1,"action":262,"count":2,"trackID0":100,"x0":640,"y0":360,"trackID1":200,"x1":1280,"y1":720}""")
-        assertEquals(listOf(true, false), up.contacts.map { it.pressed })
+        assertEquals(listOf(TouchContact(0, .5, .5, true), TouchContact(1, 1.0, 1.0, false)), up.contacts)
         assertTrue(touch("""{"type":1,"action":3,"count":0}""").contacts.isEmpty())
     }
     @Test fun `keys map Android codes and unknown keys are ignored`() {
@@ -158,7 +170,7 @@ class SessionPartsTest {
         val expected = listOf(KeyCode.HOME, KeyCode.BACK, KeyCode.SELECT, KeyCode.SELECT,
             KeyCode.KNOB_UP, KeyCode.KNOB_DOWN, KeyCode.KNOB_LEFT, KeyCode.KNOB_RIGHT,
             KeyCode.PLAY_PAUSE, KeyCode.NEXT, KeyCode.PREVIOUS, KeyCode.VOICE)
-        val decoder = UibcDecoder(origin) { 1280 to 720 }
+        val decoder = UibcDecoder(origin = origin, videoSize = { 1280 to 720 })
         codes.zip(expected).forEach { (code, key) ->
             assertEquals(ControlEvent.Key(key, true, origin), decoder.decode("""{"type":2,"keycode":$code,"action":0,"metaState":0}""".toByteArray()))
             assertEquals(ControlEvent.Key(key, false, origin), UibcDecoder.key(code, 1, origin))

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.openxplay.stream.clink.protocol.*
 import org.openxplay.stream.clink.trace.*
+import org.openxplay.stream.clink.uibc.UibcDecoder
 import org.openxplay.stream.core.*
 import kotlin.test.*
 
@@ -25,21 +26,58 @@ class ClinkTraceTest {
         assertTrue(ClinkTraceFields.decode("control", byteArrayOf(-1)).isEmpty())
         ClinkTrace.NONE.record(ClinkTraceEvent.Error(1, 1, "test", "Test", "test"))
     }
-    @Test fun rawInputAndCurrentStreamSizeDoNotChangeWfdNormalization() {
-        val traces = mutableListOf<ClinkTraceEvent>()
-        var stream = 1156 to 764
-        val decoder = org.openxplay.stream.clink.uibc.UibcDecoder(Origin("clink", "car"), { 1280 to 720 },
-            ClinkTrace { traces += it }, 42, { stream })
-        val payload = """{"type":1,"action":0,"count":1,"trackID0":7,"x0":640,"y0":360}""".toByteArray()
+    @Test fun rawInputUsesTheCurrentStreamAndRecordsTheCarView() {
+        val traces = mutableListOf<ClinkTraceEvent.Input>()
+        var stream = 1450 to 960
+        val decoder = UibcDecoder(Origin("clink", "car"), { stream }, ClinkTrace { if (it is ClinkTraceEvent.Input) traces += it }, 42)
+        val payload = """{"type":1,"action":0,"count":1,"width":1532,"height":1013,"trackID0":7,"x0":725,"y0":480}""".toByteArray()
         val touch = decoder.decode(payload) as ControlEvent.Touch
         assertEquals(listOf(TouchContact(0, 0.5, 0.5, true)), touch.contacts)
-        val first = traces.single() as ClinkTraceEvent.Input
-        assertEquals(listOf(640L to 360L), first.rawCoordinates)
+        val first = traces.single()
+        assertEquals(42L, first.session)
+        assertEquals(listOf(725L to 480L), first.rawCoordinates)
         assertEquals(listOf(0.5 to 0.5), first.coordinates)
-        assertEquals(1156 to 764, first.streamSize)
+        assertEquals(1450 to 960, first.streamSize)
+        assertEquals(1532 to 1013, first.viewSize)
         stream = 1280 to 720
+        val move = decoder.decode("""{"type":1,"action":2,"count":1,"trackID0":7,"x0":640,"y0":360}""".toByteArray()) as ControlEvent.Touch
+        assertEquals(listOf(TouchContact(0, 0.5, 0.5, true)), move.contacts)
+        assertEquals(stream, traces.last().streamSize)
+        assertEquals(listOf(640L to 360L), traces.last().rawCoordinates)
+        assertNull(traces.last().viewSize)
         decoder.decode("""{"type":1,"action":3,"count":0}""".toByteArray())
-        assertEquals(stream, (traces.last() as ClinkTraceEvent.Input).streamSize)
+        assertEquals("touch_cancel", traces.last().kind)
+        assertEquals(stream, traces.last().streamSize)
+        assertNull(traces.last().viewSize)
+        decoder.decode("""{"type":2,"keycode":4,"action":1,"width":1532,"height":1013}""".toByteArray())
+        assertEquals("key_up", traces.last().kind)
+        assertTrue(traces.last().rawCoordinates.isEmpty())
+        assertEquals(stream, traces.last().streamSize)
+        assertEquals(1532 to 1013, traces.last().viewSize)
+    }
+    @Test fun inputTraceUsesTheNormalizationSizeSnapshot() {
+        val traces = mutableListOf<ClinkTraceEvent.Input>()
+        var reads = 0
+        val decoder = UibcDecoder(Origin("clink", "car"), { if (reads++ == 0) 1450 to 960 else 1280 to 720 },
+            ClinkTrace { if (it is ClinkTraceEvent.Input) traces += it })
+        val touch = decoder.decode("""{"type":1,"action":0,"count":1,"trackID0":7,"x0":725,"y0":480}""".toByteArray()) as ControlEvent.Touch
+        assertEquals(listOf(TouchContact(0, 0.5, 0.5, true)), touch.contacts)
+        assertEquals(1, reads)
+        assertEquals(1450 to 960, traces.single().streamSize)
+        assertEquals(listOf(0.5 to 0.5), traces.single().coordinates)
+    }
+    @Test fun absentOrInvalidViewSizeIsNullWithoutRejectingTouch() {
+        val traces = mutableListOf<ClinkTraceEvent.Input>()
+        val decoder = UibcDecoder(Origin("clink", "car"), { 1450 to 960 }, ClinkTrace { if (it is ClinkTraceEvent.Input) traces += it })
+        for (view in listOf("", ""","width":1532""", ""","height":1013""",
+            ""","width":0,"height":1013""", ""","width":1532,"height":-1""",
+            ""","width":"1532","height":1013""", ""","width":1532,"height":1.5""",
+            ""","width":2147483648,"height":1013""", ""","width":null,"height":1013""",
+            ""","width":1532,"height":true""", ""","width":[],"height":1013""", ""","width":1532,"height":{}""")) {
+            val touch = decoder.decode("""{"type":1,"action":0,"count":1,"trackID0":7,"x0":725,"y0":480$view}""".toByteArray()) as ControlEvent.Touch
+            assertEquals(listOf(TouchContact(0, 0.5, 0.5, true)), touch.contacts)
+            assertNull(traces.last().viewSize, view)
+        }
     }
     @Test fun loopbackRecordsTimelineWithoutAuthenticationPayloads() {
         val events = CopyOnWriteArrayList<ClinkTraceEvent>()
