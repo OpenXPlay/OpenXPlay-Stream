@@ -664,6 +664,12 @@ mod media_output {
             Self::with_hevc_mode(ClinkHevcMode::default())
         }
         fn with_hevc_mode(hevc: ClinkHevcMode) -> Self {
+            Self::with_trace(hevc, None)
+        }
+        fn with_trace(
+            hevc: ClinkHevcMode,
+            trace: Option<Arc<dyn oxp_clink::trace::ClinkTrace>>,
+        ) -> Self {
             let transport = Arc::new(MemoryTransport {
                 streams: Mutex::new(BTreeMap::new()),
                 offers: Mutex::new(Vec::new()),
@@ -678,6 +684,7 @@ mod media_output {
             .unwrap()
             .with_options(SessionOptions {
                 hevc,
+                trace,
                 ..Default::default()
             })
             .unwrap()
@@ -1162,5 +1169,76 @@ mod media_output {
             assert!(test.probe.errors.lock().unwrap().is_empty());
             test.close();
         }
+    }
+    #[test]
+    fn trace_covers_authenticated_session_media_and_input() {
+        use oxp_clink::trace::{ClinkTrace, ClinkTraceEvent};
+        #[derive(Default)]
+        struct Trace(Mutex<Vec<serde_json::Value>>);
+        impl ClinkTrace for Trace {
+            fn record(&self, event: ClinkTraceEvent) {
+                self.0.lock().unwrap().push(event.to_json());
+            }
+        }
+        let trace = Arc::new(Trace::default());
+        let test = Output::with_trace(ClinkHevcMode::default(), Some(trace.clone()));
+        let (peers, key) = test.connect();
+        let (format, data) = live_clip();
+        test.output.on_session(&SessionState {
+            id: 1,
+            phase: SessionPhase::Active,
+            reason: None,
+        });
+        test.output.on_video_format(0, Some(format));
+        test.frame(data.clone(), 0, true);
+        test.stats(|s| s.live_frames >= 1);
+        test.touch(&peers, &key, (1532, 1013), (320, 180));
+        // Wait for a later interval so cumulative packet and frame counters can be compared.
+        await_condition("trace media progression", || {
+            let events = trace.0.lock().unwrap();
+            let media: Vec<_> = events.iter().filter(|e| e["type"] == "Media").collect();
+            media.len() >= 2
+                && media.last().unwrap()["rtpPackets"].as_u64().unwrap()
+                    > media[0]["rtpPackets"].as_u64().unwrap()
+        });
+        test.close();
+        let events = trace.0.lock().unwrap();
+        for kind in [
+            "Socket",
+            "Rtsp",
+            "Negotiation",
+            "Frame",
+            "Link",
+            "Video",
+            "Media",
+            "Input",
+        ] {
+            assert!(events.iter().any(|e| e["type"] == kind), "missing {kind}");
+        }
+        for direction in ["RX", "TX"] {
+            assert!(events
+                .iter()
+                .any(|e| e["type"] == "Rtsp" && e["direction"] == direction));
+            assert!(events.iter().any(|e| e["type"] == "Frame"
+                && e["direction"] == direction
+                && e["fields"].as_object().is_some_and(|f| !f.is_empty())));
+        }
+        assert!(events.iter().any(|e| e["type"] == "Link"
+            && e["stage"] == "head_unit_certificate"
+            && e["fields"]["short_name"] == "car"));
+        assert!(events.iter().any(|e| e["type"] == "Video"
+            && e["event"] == "format"
+            && !e["sps"].as_array().unwrap().is_empty()));
+        assert!(events.iter().any(|e| e["type"] == "Input"
+            && e["kind"] == "touch_move"
+            && e["rawCoordinates"] == serde_json::json!([[320, 180]])
+            && e["viewSize"] == serde_json::json!([1532, 1013])));
+        for event in events.iter().filter(|e| {
+            e["type"] == "Frame" && ["auth", "cert"].contains(&e["service"].as_str().unwrap())
+        }) {
+            assert_eq!(event["fields"], serde_json::json!({}));
+        }
+        let session = events.iter().find(|e| e["type"] == "Frame").unwrap()["session"].clone();
+        assert!(events.iter().all(|e| e["session"] == session));
     }
 }

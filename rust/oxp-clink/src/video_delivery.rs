@@ -75,6 +75,10 @@ impl VideoQueue {
         self.reset();
     }
     pub fn offer(&mut self, f: VideoFrame) -> bool {
+        self.offer_observed(f, || {})
+    }
+    /// Observes overflow only; waiting for an IDR also requests a keyframe.
+    pub(crate) fn offer_observed(&mut self, f: VideoFrame, overflowed: impl FnOnce()) -> bool {
         if self.stalled {
             self.dropped += 1;
             return false;
@@ -90,6 +94,7 @@ impl VideoQueue {
                 .front()
                 .is_some_and(|first| f.pts_us.wrapping_sub(first.pts_us) > self.max_duration_us);
         if overflow {
+            overflowed();
             self.reset();
         }
         if f.data.len() > self.max_bytes || (self.waiting && !f.key_frame) {

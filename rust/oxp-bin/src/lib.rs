@@ -3,7 +3,9 @@
 // Created by riko chen on 2026-10-14
 
 #![forbid(unsafe_code)]
+pub mod clink_control;
 pub mod clink_support;
+pub mod clink_trace;
 pub mod event_log;
 pub mod replay_audio;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -34,7 +36,7 @@ impl Args {
         while let Some(k) = a.next() {
             if k == "--help"
                 || k == "--stdio"
-                || (["--no-tls", "--pairing"].contains(&k.as_str())
+                || (["--no-tls", "--pairing", "--control-stdin"].contains(&k.as_str())
                     && allowed.contains(&k.as_str()))
             {
                 if map.insert(k, "true".into()).is_some() {

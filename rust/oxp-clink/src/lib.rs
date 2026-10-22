@@ -11,6 +11,7 @@ pub mod output;
 pub mod placeholder;
 pub mod protocol;
 pub mod session;
+pub mod trace;
 pub mod transport;
 pub use transport::{ClinkStream, ClinkTransport, TcpTransport};
 pub mod uibc;

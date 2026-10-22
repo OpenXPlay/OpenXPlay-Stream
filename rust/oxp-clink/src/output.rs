@@ -9,6 +9,7 @@ use crate::{
     placeholder::{BundledHevcPlaceholderVideo, BundledPlaceholderVideo, PlaceholderVideo},
     require,
     session::{ClinkSession, SessionCallbacks, SessionOptions},
+    trace::{next_session, now_nanos, ClinkMediaTap, ClinkTrace, ClinkTraceEvent},
     video_delivery::{VideoQueue, VideoSwitch},
     voice_delivery::voice_role,
     Result,
@@ -24,7 +25,7 @@ use std::{
     collections::{BTreeSet, VecDeque},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
     thread,
@@ -53,7 +54,40 @@ impl Handoff {
         }
     }
 }
+struct RunTrace {
+    sink: Arc<dyn ClinkTrace>,
+    session: u64,
+    rtp_packets: AtomicU64,
+    rtp_bytes: AtomicU64,
+    queue_overflows: AtomicU64,
+}
+impl RunTrace {
+    fn video(&self, event: &str, source: &str) {
+        self.sink.record(ClinkTraceEvent::Video {
+            at_nanos: now_nanos(),
+            session: self.session,
+            event: event.into(),
+            source: source.into(),
+            codec: None,
+            width: None,
+            height: None,
+            sps: Vec::new(),
+            pps: Vec::new(),
+        });
+    }
+    fn error(&self, error: &dyn std::fmt::Display) {
+        // Rust has no exception class; use stable, bounded error display text.
+        self.sink.record(ClinkTraceEvent::Error {
+            at_nanos: now_nanos(),
+            session: self.session,
+            code: "output_failed".into(),
+            exception_class: error.to_string().chars().take(120).collect(),
+            location: "ClinkOutput".into(),
+        });
+    }
+}
 struct Run {
+    trace: Option<Arc<RunTrace>>,
     active: AtomicBool,
     sink: Arc<dyn OutputSink>,
     handoff: Mutex<Handoff>,
@@ -64,6 +98,7 @@ struct Run {
 impl Run {
     fn new(sink: Arc<dyn OutputSink>) -> Self {
         Self {
+            trace: None,
             active: AtomicBool::new(true),
             sink,
             handoff: Mutex::new(Handoff {
@@ -177,6 +212,14 @@ impl ClinkOutput {
         self.listener = listener;
         self
     }
+    pub fn with_trace(mut self, trace: Arc<dyn ClinkTrace>) -> Self {
+        self.options.trace = Some(trace);
+        self
+    }
+    pub fn with_media_tap(mut self, tap: Arc<dyn ClinkMediaTap>) -> Self {
+        self.options.media_tap = Some(tap);
+        self
+    }
     pub fn with_placeholder(mut self, placeholder: Arc<dyn PlaceholderVideo>) -> Self {
         self.placeholder = placeholder;
         self
@@ -188,7 +231,34 @@ impl ClinkOutput {
                 .is_ok(),
             "output_already_open",
         )?;
-        let run = Arc::new(Run::new(sink));
+        let mut run = Run::new(sink);
+        let mut options = self.options.clone();
+        if let Some(sink) = &options.trace {
+            let session = next_session();
+            options.trace_session = Some(session);
+            sink.record(ClinkTraceEvent::Link {
+                at_nanos: now_nanos(),
+                session,
+                stage: "hevc_mode".into(),
+                fields: [(
+                    "mode".into(),
+                    match options.hevc {
+                        ClinkHevcMode::Auto => "AUTO",
+                        ClinkHevcMode::Off => "OFF",
+                    }
+                    .into(),
+                )]
+                .into(),
+            });
+            run.trace = Some(Arc::new(RunTrace {
+                sink: sink.clone(),
+                session,
+                rtp_packets: AtomicU64::new(0),
+                rtp_bytes: AtomicU64::new(0),
+                queue_overflows: AtomicU64::new(0),
+            }));
+        }
+        let run = Arc::new(run);
         *self.current.lock().unwrap() = Some(run.clone());
         let session = match ClinkSession::new(
             self.link.clone(),
@@ -198,7 +268,7 @@ impl ClinkOutput {
             Arc::new(Callbacks {
                 run: Arc::downgrade(&run),
             }),
-            self.options.clone(),
+            options,
         ) {
             Ok(s) => Arc::new(s),
             Err(e) => {
@@ -223,6 +293,9 @@ impl ClinkOutput {
                     |p| voice_run.handoff.lock().unwrap().input_session == Some(p.session),
                 );
                 if let Err(e) = result {
+                    if let Some(t) = &voice_run.trace {
+                        t.error(e.as_ref());
+                    }
                     if voice_run.active.load(Ordering::Acquire) {
                         voice_listener.error(&e.to_string());
                     }
@@ -263,6 +336,9 @@ impl ClinkOutput {
                 if let Err(e) =
                     media_worker(&media_run, placeholder.as_ref(), listener.as_ref(), &id)
                 {
+                    if let Some(t) = &media_run.trace {
+                        t.error(e.as_ref());
+                    }
                     if media_run.active.load(Ordering::Acquire) {
                         listener.error(&e.to_string());
                     }
@@ -319,6 +395,9 @@ impl ClinkOutput {
                 } else {
                     Some(state.id)
                 };
+                if let Some(t) = &run.trace {
+                    t.video("reset", "input_session");
+                }
                 h.queue.reset();
                 h.audio.clear();
                 h.audio_bytes = 0;
@@ -344,6 +423,32 @@ impl ClinkOutput {
         if let Some(run) = run {
             let mut h = run.handoff.lock().unwrap();
             if !same_format(&h.format, &format) {
+                if let Some(t) = &run.trace {
+                    let config = format
+                        .as_ref()
+                        .filter(|f| f.codec == VideoCodec::H264)
+                        .and_then(|f| AvcConfig::parse(&f.config).ok());
+                    let hex = |bytes: &Vec<u8>| {
+                        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    };
+                    t.sink.record(ClinkTraceEvent::Video {
+                        at_nanos: now_nanos(),
+                        session: t.session,
+                        event: "format".into(),
+                        source: String::new(),
+                        codec: format.as_ref().map(|f| f.codec_string.clone()),
+                        width: format.as_ref().map(|f| f.width),
+                        height: format.as_ref().map(|f| f.height),
+                        sps: config
+                            .as_ref()
+                            .map(|c| c.sps.iter().map(hex).collect())
+                            .unwrap_or_default(),
+                        pps: config
+                            .as_ref()
+                            .map(|c| c.pps.iter().map(hex).collect())
+                            .unwrap_or_default(),
+                    });
+                }
                 h.format = format;
                 h.queue.reset();
                 h.revision = h.revision.wrapping_add(1);
@@ -366,7 +471,14 @@ impl ClinkOutput {
                 return;
             }
             h.clock_mix.video(frame.pts_us, Instant::now());
-            if h.queue.offer(frame) {
+            let request = if let Some(t) = &run.trace {
+                h.queue.offer_observed(frame, || {
+                    t.queue_overflows.fetch_add(1, Ordering::Relaxed);
+                })
+            } else {
+                h.queue.offer(frame)
+            };
+            if request {
                 h.request_keyframe = true;
             }
         }
@@ -565,6 +677,7 @@ fn media_worker(
     let mut late_live = false;
     let mut adts = Vec::new();
     let mut muxer = None;
+    let mut trace_stats = run.trace.as_ref().map(|_| TraceMedia::default());
     while run.active.load(Ordering::Acquire) {
         let session = run.session.lock().unwrap().clone();
         // While a late write is in flight, media stays in the bounded queues (video drops to the next
@@ -593,6 +706,16 @@ fn media_worker(
                 _ => true,
             };
             if revision != Some(h.revision) || changed {
+                if let Some(t) = &run.trace {
+                    t.video(
+                        if video_clock.live_frame_at.is_some() {
+                            "freeze"
+                        } else {
+                            "reset"
+                        },
+                        "revision",
+                    );
+                }
                 gate.play(h.playing);
                 video_clock.revision(changed);
                 if changed {
@@ -614,6 +737,13 @@ fn media_worker(
                 }
             }
             if h.queue.take_gap() {
+                if let Some(t) = &run.trace {
+                    t.video("reset", "gap");
+                    if gate.live {
+                        t.video("freeze", "gap");
+                    }
+                    trace_stats.as_mut().unwrap().keyframe_source = "gap";
+                }
                 gate.reset();
                 placeholder_index = 0;
                 next_placeholder = Instant::now();
@@ -656,6 +786,20 @@ fn media_worker(
             VideoConfig::Avc(&placeholder_config)
         };
         let muxer = muxer.get_or_insert_with(|| {
+            if let Some(t) = &run.trace {
+                let codec = codec_name(session_codec);
+                t.sink.record(ClinkTraceEvent::Video {
+                    at_nanos: now_nanos(),
+                    session: t.session,
+                    event: "muxer_codec".into(),
+                    source: format!("initial->{codec} pmtVersion=0"),
+                    codec: Some(codec.into()),
+                    width: None,
+                    height: None,
+                    sps: Vec::new(),
+                    pps: Vec::new(),
+                });
+            }
             TsMuxer::with_options(
                 path.sink(),
                 oxp_media::ts::TsOptions {
@@ -673,7 +817,18 @@ fn media_worker(
             .is_some_and(|(s, _)| Arc::ptr_eq(s, &session))
         {
             let target = session.clone();
-            let to_session: RtpWrite = Arc::new(move |p: &[u8]| target.send_rtp(p));
+            let trace = run.trace.clone();
+            let to_session: RtpWrite = Arc::new(move |p: &[u8]| {
+                let sent = target.send_rtp(p)?;
+                if sent {
+                    if let Some(t) = &trace {
+                        t.rtp_packets.fetch_add(1, Ordering::Relaxed);
+                        t.rtp_bytes
+                            .fetch_add((p.len() - 2) as u64, Ordering::Relaxed);
+                    }
+                }
+                Ok(sent)
+            });
             write = Some((session.clone(), to_session));
         }
         let write = &write.as_ref().unwrap().1;
@@ -690,6 +845,11 @@ fn media_worker(
         if !writable {
             keyframes.defer(request);
         } else if keyframes.poll(request, Instant::now()) {
+            if let Some(t) = &run.trace {
+                let stats = trace_stats.as_mut().unwrap();
+                t.video("keyframe_request", stats.keyframe_source);
+                stats.keyframe_source = "internal";
+            }
             with_sink(run, |sink| {
                 sink.control(ControlEvent::KeyFrameRequest {
                     screen: 0,
@@ -746,8 +906,30 @@ fn media_worker(
                             .max(0)
                             .max(frame.pts_us + video_clock.audio_offset.unwrap_or(-frame.pts_us))
                             - frame.pts_us;
+                        let previous = live_offset;
                         live_offset =
                             reanchor_video(frame.pts_us, live_offset, output_pts, transport_pts);
+                        if let Some(t) = &run.trace {
+                            let lead = (output_pts + 1)
+                                .max(transport_pts + 1)
+                                .max(frame.pts_us + previous)
+                                - transport_pts;
+                            let input = frame.pts_us;
+                            let audio_offset = video_clock.audio_offset.unwrap_or(-1);
+                            let detail = format!(
+                                concat!(
+                                    "in={input} out={output_pts} tr={transport_pts} ",
+                                    "off={live_offset} aoff={audio_offset} lead={lead}"
+                                ),
+                                input = input,
+                                output_pts = output_pts,
+                                transport_pts = transport_pts,
+                                live_offset = live_offset,
+                                audio_offset = audio_offset,
+                                lead = lead,
+                            );
+                            t.video(if lead > 500_000 { "reanchor" } else { "live" }, &detail);
+                        }
                     }
                     let pts = (output_pts + 1)
                         .max(transport_pts + 1)
@@ -757,7 +939,20 @@ fn media_worker(
                     })?;
                     output_pts = pts;
                     transport_pts = pts;
+                    if let Some(stats) = &mut trace_stats {
+                        if result == Emit::Dropped {
+                            stats.failed_video += 1;
+                        }
+                        if result != Emit::Dropped {
+                            stats.video_bytes += frame.data.len() as u64;
+                            stats.keyframes += u64::from(frame.key_frame);
+                        }
+                    }
                     if !statistics.video(result, Some(f), frame.data.len()) {
+                        if let Some(t) = &run.trace {
+                            t.video("freeze", "unit_dropped");
+                            trace_stats.as_mut().unwrap().keyframe_source = "gap";
+                        }
                         gate.reset();
                         keyframes.defer(true);
                     } else {
@@ -773,6 +968,27 @@ fn media_worker(
                     }
                 }
             } else {
+                if let Some(t) = &run.trace {
+                    t.sink.record(ClinkTraceEvent::Video {
+                        at_nanos: now_nanos(),
+                        session: t.session,
+                        event: "codec_mismatch".into(),
+                        source: format!(
+                            "expected={} actual={}",
+                            codec_name(session_codec),
+                            format
+                                .as_ref()
+                                .map(|f| codec_name(f.codec))
+                                .unwrap_or("null")
+                        ),
+                        codec: format.as_ref().map(|f| f.codec_string.clone()),
+                        width: None,
+                        height: None,
+                        sps: Vec::new(),
+                        pps: Vec::new(),
+                    });
+                    trace_stats.as_mut().unwrap().keyframe_source = "codec_mismatch";
+                }
                 statistics.total.dropped_frames += 1;
                 gate.reset();
                 keyframes.defer(true);
@@ -801,6 +1017,15 @@ fn media_worker(
             })?;
             output_pts = pts;
             transport_pts = pts;
+            if let Some(stats) = &mut trace_stats {
+                if result == Emit::Dropped {
+                    stats.failed_video += 1;
+                }
+                if result != Emit::Dropped {
+                    stats.video_bytes += data.len() as u64;
+                    stats.keyframes += u64::from(key);
+                }
+            }
             if !statistics.video(result, None, data.len()) {
                 placeholder_index = 0;
             } else {
@@ -851,6 +1076,12 @@ fn media_worker(
                         let result = path.emit(&run.sender, write, listener, pts, || {
                             muxer.write_audio(&adts, pts)
                         })?;
+                        if let Some(stats) = &mut trace_stats {
+                            stats.last_audio_pts = pts;
+                            if result != Emit::Dropped {
+                                stats.audio_frames += 1;
+                            }
+                        }
                         transport_pts = pts;
                         if result == Emit::Late {
                             writable = false;
@@ -864,6 +1095,36 @@ fn media_worker(
         }
         if reported_at.is_none_or(|t: Instant| now.duration_since(t) >= Duration::from_secs(1)) {
             let dropped = run.handoff.lock().unwrap().queue.dropped;
+            if let Some(t) = &run.trace {
+                let stats = trace_stats.as_mut().unwrap();
+                if stats
+                    .clock_at
+                    .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(2))
+                {
+                    stats.clock_at = Some(now);
+                    t.video(
+                        "clock",
+                        &format!(
+                            "v={output_pts} a={} t={transport_pts} off={live_offset}",
+                            stats.last_audio_pts
+                        ),
+                    );
+                }
+                t.sink.record(ClinkTraceEvent::Media {
+                    at_nanos: now_nanos(),
+                    session: t.session,
+                    live_frames: statistics.total.live_frames,
+                    placeholder_frames: statistics.total.placeholder_frames,
+                    dropped_frames: dropped + stats.failed_video,
+                    keyframes: stats.keyframes,
+                    video_bytes: stats.video_bytes,
+                    rtp_packets: t.rtp_packets.load(Ordering::Relaxed),
+                    rtp_bytes: t.rtp_bytes.load(Ordering::Relaxed),
+                    send_stalls: path.send_stalls,
+                    audio_frames: stats.audio_frames,
+                    queue_overflows: t.queue_overflows.load(Ordering::Relaxed),
+                });
+            }
             listener.statistics(statistics.snapshot(dropped, path.send_stalls));
             with_sink(run, |sink| {
                 sink.stats(OutputStats {
@@ -887,6 +1148,34 @@ fn media_worker(
     Ok(())
 }
 
+fn codec_name(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => "H264",
+        VideoCodec::H265 => "H265",
+    }
+}
+struct TraceMedia {
+    keyframes: u64,
+    failed_video: u64,
+    video_bytes: u64,
+    audio_frames: u64,
+    last_audio_pts: i64,
+    clock_at: Option<Instant>,
+    keyframe_source: &'static str,
+}
+impl Default for TraceMedia {
+    fn default() -> Self {
+        Self {
+            failed_video: 0,
+            keyframes: 0,
+            video_bytes: 0,
+            audio_frames: 0,
+            last_audio_pts: -1,
+            clock_at: None,
+            keyframe_source: "internal",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Emit {
     Sent,
@@ -1175,6 +1464,63 @@ mod audio_tests {
         let run = Arc::new(Run::new(Arc::new(Host)));
         *output.current.lock().unwrap() = Some(run.clone());
         (output, run)
+    }
+    #[derive(Default)]
+    struct Trace(Mutex<Vec<ClinkTraceEvent>>);
+    impl ClinkTrace for Trace {
+        fn record(&self, event: ClinkTraceEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+    #[test]
+    fn traced_format_decodes_parameter_sets_once_and_reset_keeps_run_session() {
+        let (output, old) = test_output();
+        let trace = Arc::new(Trace::default());
+        let mut run = Run::new(Arc::new(Host));
+        run.trace = Some(Arc::new(RunTrace {
+            sink: trace.clone(),
+            session: 77,
+            rtp_packets: AtomicU64::new(0),
+            rtp_bytes: AtomicU64::new(0),
+            queue_overflows: AtomicU64::new(0),
+        }));
+        *output.current.lock().unwrap() = Some(Arc::new(run));
+        let format = Arc::new(output.placeholder.format().clone());
+        output.on_video_format(0, Some(format.clone()));
+        output.on_video_format(0, Some(Arc::new(format.as_ref().clone())));
+        output.on_video_format(0, None);
+        let events = trace.0.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let value = events[0].to_json();
+        assert_eq!(value["session"], 77);
+        assert_eq!(value["event"], "format");
+        assert_eq!(value["codec"], format.codec_string);
+        assert!(!value["sps"].as_array().unwrap().is_empty());
+        assert!(!value["pps"].as_array().unwrap().is_empty());
+        let reset = events[1].to_json();
+        assert_eq!(reset["codec"], serde_json::Value::Null);
+        assert_eq!(reset["sps"], serde_json::json!([]));
+        assert!(old.trace.is_none());
+    }
+    #[test]
+    fn traced_queue_distinguishes_waiting_drops_from_overflows() {
+        let mut queue = VideoQueue::new(2, 600_000, 2).unwrap();
+        let mut overflows = 0;
+        for key_frame in [false, true, false] {
+            queue.offer_observed(
+                VideoFrame {
+                    screen: 0,
+                    session: 1,
+                    data: Arc::from([0, 0]),
+                    pts_us: 0,
+                    key_frame,
+                    received_at_nanos: 0,
+                },
+                || overflows += 1,
+            );
+        }
+        assert_eq!(overflows, 1);
+        assert_eq!(queue.dropped, 3);
     }
     #[test]
     fn only_voice_and_telephony_are_delivered_to_the_voice_channel() {

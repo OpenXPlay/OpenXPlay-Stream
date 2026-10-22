@@ -7,6 +7,7 @@ use crate::{
     model::*,
     protocol::{certificate, control, *},
     require,
+    trace::{decode_fields, next_session, now_nanos, ClinkMediaTap, ClinkTrace, ClinkTraceEvent},
     uibc::{key as decode_key, UibcDecoder},
     wfd::*,
     ClinkStream, Result,
@@ -32,6 +33,9 @@ pub trait SessionCallbacks: Send + Sync {
 pub struct SessionOptions {
     pub ports: ClinkPorts,
     pub hevc: ClinkHevcMode,
+    pub trace: Option<Arc<dyn ClinkTrace>>,
+    pub trace_session: Option<u64>,
+    pub media_tap: Option<Arc<dyn ClinkMediaTap>>,
     pub output_id: String,
     pub device_id: String,
     pub device_name: String,
@@ -43,6 +47,9 @@ impl Default for SessionOptions {
         Self {
             ports: Default::default(),
             hevc: Default::default(),
+            trace: None,
+            trace_session: None,
+            media_tap: None,
             output_id: "clink".into(),
             device_id: "openxplay-stream".into(),
             device_name: "OpenXPlay".into(),
@@ -145,6 +152,7 @@ pub struct ClinkSession {
     options: SessionOptions,
     shared: Arc<Shared>,
     started: AtomicBool,
+    trace_endpoints: Option<Mutex<BTreeSet<u16>>>,
 }
 enum Event {
     Accepted(u16, Arc<dyn ClinkStream>),
@@ -159,9 +167,12 @@ impl ClinkSession {
         trust: Arc<dyn TrustStore>,
         listener: Arc<dyn ClinkListener>,
         callbacks: Arc<dyn SessionCallbacks>,
-        options: SessionOptions,
+        mut options: SessionOptions,
     ) -> Result<Self> {
         options.ports.validate()?;
+        if options.trace.is_some() && options.trace_session.is_none() {
+            options.trace_session = Some(next_session());
+        }
         let snapshot = SessionSnapshot {
             rtp_port: options.ports.rtp,
             ..Default::default()
@@ -172,6 +183,7 @@ impl ClinkSession {
             trust,
             listener,
             callbacks,
+            trace_endpoints: options.trace.as_ref().map(|_| Mutex::new(BTreeSet::new())),
             options,
             started: AtomicBool::new(false),
             shared: Arc::new(Shared {
@@ -191,6 +203,90 @@ impl ClinkSession {
                 connection: Mutex::new(None),
             }),
         })
+    }
+    fn service(&self, port: u16) -> &'static str {
+        let p = self.options.ports;
+        if port == p.auth {
+            "auth"
+        } else if port == p.control {
+            "control"
+        } else if port == p.cert {
+            "cert"
+        } else if port == p.media {
+            "media"
+        } else if port == p.rtsp {
+            "rtsp"
+        } else if port == p.uibc {
+            "uibc"
+        } else {
+            "rtp"
+        }
+    }
+    fn socket_event(
+        &self,
+        port: u16,
+        event: &str,
+        remote_address: Option<String>,
+        error_class: Option<String>,
+    ) {
+        if let Some(trace) = &self.options.trace {
+            trace.record(ClinkTraceEvent::Socket {
+                at_nanos: now_nanos(),
+                session: self.trace_session(),
+                service: self.service(port).into(),
+                event: event.into(),
+                remote_address,
+                port,
+                error_class,
+            });
+        }
+    }
+    fn trace_session(&self) -> u64 {
+        self.options.trace_session.unwrap_or(0)
+    }
+    fn frame_event(&self, direction: &str, port: u16, frame: &Frame, body: &[u8], decrypted: bool) {
+        if let Some(trace) = &self.options.trace {
+            trace.record(ClinkTraceEvent::Frame {
+                at_nanos: now_nanos(),
+                session: self.trace_session(),
+                direction: direction.into(),
+                port,
+                service: self.service(port).into(),
+                category: frame.category,
+                method: frame.method,
+                kind: frame.kind,
+                sequence: frame.sequence as u64,
+                body_size: body.len(),
+                fields: decode_fields(self.service(port), body, decrypted),
+            });
+        }
+    }
+    fn rtsp_event(&self, direction: &str, message: &RtspMessage) {
+        if let Some(trace) = &self.options.trace {
+            trace.record(ClinkTraceEvent::Rtsp {
+                at_nanos: now_nanos(),
+                session: self.trace_session(),
+                direction: direction.into(),
+                start_line: message.line.clone(),
+                headers: message.headers.clone(),
+                body: message.body.clone(),
+            });
+        }
+    }
+    fn video_event(&self, event: &str, source: &str) {
+        if let Some(trace) = &self.options.trace {
+            trace.record(ClinkTraceEvent::Video {
+                at_nanos: now_nanos(),
+                session: self.trace_session(),
+                event: event.into(),
+                source: source.into(),
+                codec: None,
+                width: None,
+                height: None,
+                sps: Vec::new(),
+                pps: Vec::new(),
+            });
+        }
     }
     pub fn stop(&self) {
         let _ = self.microphone(None);
@@ -275,6 +371,7 @@ impl ClinkSession {
                 method,
                 body: SecureRecord::new(&key)?.seal(body)?,
             };
+            self.frame_event("TX", service, &frame, body, true);
             write(&self.shared, &socket, &frame.encode()?)?;
             if sync {
                 let deadline = Instant::now() + Duration::from_secs(2);
@@ -330,8 +427,24 @@ impl ClinkSession {
             .unwrap()
             .clone()
             .ok_or("missing_connection")?;
-        let socket = a.transport.open(port, Duration::from_secs(12))?;
+        if self.options.trace.is_some() {
+            self.socket_event(port, "DIAL", None, None);
+        }
+        let socket = a
+            .transport
+            .open(port, Duration::from_secs(12))
+            .inspect_err(|e| {
+                if self.options.trace.is_some() {
+                    self.socket_event(port, "ERROR", None, Some(error_class(e.as_ref())));
+                }
+            })?;
+        if self.options.trace.is_some() {
+            self.socket_event(port, "CONNECTED", None, None);
+        }
         self.shared.resources.lock().unwrap().push(socket.clone());
+        if let Some(endpoints) = &self.trace_endpoints {
+            endpoints.lock().unwrap().insert(port);
+        }
         require(!stopped(&self.shared), "session_stopped")?;
         Ok(socket)
     }
@@ -364,8 +477,9 @@ impl ClinkSession {
         let destination = self.destination_port();
         let mut video = self.shared.video.lock().unwrap();
         if video.as_ref().is_some_and(|(p, _)| *p != destination) {
-            if let Some((_, s)) = video.take() {
+            if let Some((previous_port, s)) = video.take() {
                 let _ = s.shutdown();
+                self.socket_event(previous_port, "CLOSED", None, None);
             }
         }
         let result = (|| {
@@ -375,7 +489,20 @@ impl ClinkSession {
             write(&self.shared, &video.as_ref().unwrap().1, packet)
         })();
         match result {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                if let Some(tap) = &self.options.media_tap {
+                    let mut remaining = packet;
+                    while remaining.len() >= 2 {
+                        let size = u16::from_be_bytes([remaining[0], remaining[1]]) as usize;
+                        if size > remaining.len() - 2 {
+                            break;
+                        }
+                        tap.rtp(&remaining[2..size + 2]);
+                        remaining = &remaining[size + 2..];
+                    }
+                }
+                Ok(true)
+            }
             Err(_) if !self.is_playing() => Ok(false),
             Err(e) => Err(e),
         }
@@ -384,7 +511,19 @@ impl ClinkSession {
         self.shared.snapshot.lock().unwrap().rtp_port
     }
     fn listen(&self, service: u16, a: &ClinkConnection, tx: SyncSender<Event>) -> Result<()> {
-        a.transport.offer(service)?;
+        a.transport.offer(service).inspect_err(|e| {
+            if self.options.trace.is_some() {
+                self.socket_event(service, "ERROR", None, Some(error_class(e.as_ref())));
+            }
+        })?;
+        if let Some(endpoints) = &self.trace_endpoints {
+            endpoints.lock().unwrap().insert(service);
+        }
+        self.socket_event(service, "LISTEN", None, None);
+        let trace = self.options.trace.clone();
+        let trace_session = self.trace_session();
+        let name = self.service(service);
+        let remote: Option<String> = None;
         let transport = a.transport.clone();
         let shared = self.shared.clone();
         spawn(format!("clink-accept-{service}"), move || {
@@ -405,6 +544,17 @@ impl ClinkSession {
                         continue
                     }
                     Err(e) => {
+                        if let Some(trace) = &trace {
+                            trace.record(ClinkTraceEvent::Socket {
+                                at_nanos: now_nanos(),
+                                session: trace_session,
+                                service: name.into(),
+                                event: "ERROR".into(),
+                                remote_address: remote.clone(),
+                                port: service,
+                                error_class: Some(error_class(e.as_ref())),
+                            });
+                        }
                         enqueue(&shared, &tx, Event::Lost(e.to_string()));
                         return;
                     }
@@ -416,6 +566,17 @@ impl ClinkSession {
                 return;
             }
             drop(transport);
+            if let Some(trace) = &trace {
+                trace.record(ClinkTraceEvent::Socket {
+                    at_nanos: now_nanos(),
+                    session: trace_session,
+                    service: name.into(),
+                    event: "ACCEPTED".into(),
+                    remote_address: remote.clone(),
+                    port: service,
+                    error_class: None,
+                });
+            }
             enqueue(&shared, &tx, Event::Accepted(service, socket.clone()));
             let mut buffer = [0; 65536];
             let mut cause = None;
@@ -428,6 +589,17 @@ impl ClinkSession {
                         break;
                     }
                 }
+            }
+            if let Some(trace) = &trace {
+                trace.record(ClinkTraceEvent::Socket {
+                    at_nanos: now_nanos(),
+                    session: trace_session,
+                    service: name.into(),
+                    event: if cause.is_some() { "ERROR" } else { "CLOSED" }.into(),
+                    remote_address: remote,
+                    port: service,
+                    error_class: cause.as_ref().map(|s| s.chars().take(120).collect()),
+                });
             }
             enqueue(&shared, &tx, Event::Closed(service, cause));
         });
@@ -469,6 +641,7 @@ impl ClinkSession {
                 return Err(c.into());
             }
             for f in &attempt.frames {
+                self.frame_event("TX", self.options.ports.auth, f, &f.body, false);
                 write(&self.shared, socket, &f.encode()?)?;
             }
             if let Some(k) = attempt.session_key {
@@ -504,6 +677,7 @@ impl ClinkSession {
                 continue;
             }
             for frame in decoder.feed(&buffer[..n])? {
+                self.frame_event("RX", self.options.ports.auth, &frame, &frame.body, false);
                 attempt = auth.receive(&frame, now())?;
                 let failed = attempt.events.iter().find_map(|e| match e {
                     AuthEvent::Failed(reason) => Some(reason.clone()),
@@ -611,9 +785,19 @@ impl ClinkSession {
                     let _ = socket.shutdown();
                 }
             })?;
+        self.video_event("reset", "session");
         let origin = Mutex::new(None);
         let result = self.run_inner(&origin);
         if let Err(e) = &result {
+            if let Some(trace) = &self.options.trace {
+                trace.record(ClinkTraceEvent::Error {
+                    at_nanos: now_nanos(),
+                    session: self.trace_session(),
+                    code: "session_failed".into(),
+                    exception_class: error_class(e.as_ref()),
+                    location: "ClinkSession.run".into(),
+                });
+            }
             if !stopped(&self.shared) && !self.shared.stop_requested.load(Ordering::Acquire) {
                 self.listener.error(&e.to_string());
             }
@@ -622,6 +806,11 @@ impl ClinkSession {
         self.shared.acknowledgements.lock().unwrap().clear();
         self.shared.snapshot.lock().unwrap().playing = false;
         let _ = watchdog.join();
+        if let Some(endpoints) = &self.trace_endpoints {
+            for port in endpoints.lock().unwrap().iter() {
+                self.socket_event(*port, "CLOSED", None, None);
+            }
+        }
         self.shared.connection.lock().unwrap().take();
         self.callbacks.play(false);
         let origin = origin.lock().unwrap().take();
@@ -658,6 +847,9 @@ impl ClinkSession {
         let listener = self.listener.clone();
         let mut touch = UibcDecoder::new(origin.clone())
             .with_view_size(move |width, height| listener.view_size(width, height));
+        if let Some(trace) = &self.options.trace {
+            touch = touch.with_trace(trace.clone(), self.trace_session());
+        }
         let mut wfd = WfdSource::with_hevc_mode(a.local_ipv4.to_string(), ports, self.options.hevc);
         for service in [
             ports.control,
@@ -678,8 +870,16 @@ impl ClinkSession {
         };
         self.listener.state(ClinkState::Authenticating);
         let auth = self.dial(ports.auth)?;
-        let (key, peer_key) = self.authenticate(&auth, identity, &lost)?;
+        let (key, peer_key) = self.authenticate(&auth, identity, &lost).inspect_err(|e| {
+            if self.options.trace.is_some() {
+                self.socket_event(ports.auth, "ERROR", None, Some(error_class(e.as_ref())));
+            }
+        })?;
         let _ = auth.shutdown();
+        if let Some(endpoints) = &self.trace_endpoints {
+            endpoints.lock().unwrap().remove(&ports.auth);
+        }
+        self.socket_event(ports.auth, "CLOSED", None, None);
         a.transport.authenticated()?;
         self.listener.state(ClinkState::Negotiating);
         *self.shared.audio.lock().unwrap() = Some(AudioTransport {
@@ -734,13 +934,38 @@ impl ClinkSession {
                             .encode()?;
                         owner.send(service, 1, 9, &zeros, 0, None, 1)?;
                     } else if service == ports.rtsp {
-                        write(&self.shared, &socket, &wfd.start().encode()?)?;
+                        let message = wfd.start();
+                        self.rtsp_event("TX", &message);
+                        write(&self.shared, &socket, &message.encode()?)?;
                     }
                 }
                 Some(Event::Bytes(service, bytes)) if service == ports.rtsp => {
                     for message in rtsp.feed(&bytes)? {
+                        self.rtsp_event("RX", &message);
                         let responses = wfd.handle(&message, &owner.display)?;
                         for response in &responses {
+                            if let Some(trace) = &self.options.trace {
+                                if response.line.starts_with("SET_PARAMETER")
+                                    && response.body.contains("wfd_video_formats:")
+                                {
+                                    trace.record(ClinkTraceEvent::Link {
+                                        at_nanos: now_nanos(),
+                                        session: self.trace_session(),
+                                        stage: "hevc_m4".into(),
+                                        fields: BTreeMap::from([
+                                            ("mode".into(), hevc_name(self.options.hevc).into()),
+                                            (
+                                                "peer".into(),
+                                                wfd.iccoa_support_hevc
+                                                    .clone()
+                                                    .unwrap_or_else(|| "absent".into()),
+                                            ),
+                                            ("variant".into(), "unchanged".into()),
+                                        ]),
+                                    });
+                                }
+                            }
+                            self.rtsp_event("TX", response);
                             write(
                                 &self.shared,
                                 owner.sockets.get(&ports.rtsp).ok_or("missing_rtsp")?,
@@ -757,7 +982,47 @@ impl ClinkSession {
                         }
                         owner.report(&wfd);
                         owner.update_play(&wfd);
+                        if let Some(trace) = &self.options.trace {
+                            if message.body.contains("wfd_video_formats:")
+                                || message.line.starts_with("SETUP ")
+                            {
+                                let mode = &wfd.mode;
+                                let mode = format!(
+                                    concat!(
+                                        "WfdMode(width={}, height={}, fps={}, ",
+                                        "cea={}, profile={}, level={})"
+                                    ),
+                                    mode.width,
+                                    mode.height,
+                                    mode.fps,
+                                    mode.cea,
+                                    mode.profile,
+                                    mode.level,
+                                );
+                                trace.record(ClinkTraceEvent::Negotiation {
+                                    at_nanos: now_nanos(),
+                                    session: self.trace_session(),
+                                    mode,
+                                    decoders: wfd
+                                        .decoders
+                                        .iter()
+                                        .map(|d| d.codec_string.clone())
+                                        .collect(),
+                                    audio: wfd.audio,
+                                    rtp_port: wfd.rtp_port,
+                                    display: display_trace(&owner.display),
+                                });
+                            }
+                        }
                         if wfd.take_keyframe() {
+                            self.video_event(
+                                "keyframe_request",
+                                if message.body.contains("wfd_idr_request") {
+                                    "head_unit_rtsp"
+                                } else {
+                                    "internal"
+                                },
+                            );
                             self.callbacks.keyframe();
                         }
                         if message.line.starts_with("TEARDOWN ")
@@ -974,6 +1239,7 @@ impl Owner<'_> {
             method,
             body: SecureRecord::new(&self.key)?.seal(body)?,
         };
+        self.session.frame_event("TX", service, &frame, body, true);
         write(&self.session.shared, socket, &frame.encode()?)?;
         Ok(number)
     }
@@ -1028,6 +1294,8 @@ impl Owner<'_> {
         )?;
         // Some cars acknowledge with an empty plaintext record, including voice_state.
         if frame.category == 7 && frame.kind == 2 && frame.body.is_empty() {
+            self.session
+                .frame_event("RX", service, frame, &frame.body, true);
             self.acknowledge(service, frame.sequence);
             return Ok(());
         }
@@ -1035,6 +1303,8 @@ impl Owner<'_> {
         let body = match cipher.open(&frame.body) {
             Ok(body) => body,
             Err(e) => {
+                self.session
+                    .frame_event("RX", service, frame, &frame.body, false);
                 // Log only record headers; authentication and replay failures still count.
                 let record = &frame.body;
                 let number = |at| {
@@ -1064,6 +1334,7 @@ impl Owner<'_> {
                 return Ok(());
             }
         };
+        self.session.frame_event("RX", service, frame, &body, true);
         if frame.category == 7 {
             require(
                 frame.format == 0 && frame.kind == 2 && body.is_empty(),
@@ -1147,7 +1418,15 @@ impl Owner<'_> {
                     self.configured = true;
                     self.report(wfd);
                 }
-                4 | 5 => self.session.callbacks.keyframe(),
+                4 | 5 => {
+                    if self.session.options.trace.is_some() {
+                        self.session.video_event(
+                            "keyframe_request",
+                            &format!("head_unit_m{}", frame.method),
+                        );
+                    }
+                    self.session.callbacks.keyframe();
+                }
                 23 => {
                     self.session.stop();
                     return Ok(());
@@ -1173,6 +1452,14 @@ impl Owner<'_> {
                 "invalid_certificate_message",
             )?;
             let identity = certificate::check(&body)?;
+            if let Some(trace) = &self.session.options.trace {
+                trace.record(ClinkTraceEvent::Link {
+                    at_nanos: now_nanos(),
+                    session: self.session.trace_session(),
+                    stage: "head_unit_certificate".into(),
+                    fields: identity.clone(),
+                });
+            }
             self.session.listener.diagnostic(&format!(
                 "head_unit_certificate {}",
                 serde_json::to_string(&identity)?,
@@ -2316,4 +2603,48 @@ mod audio_tests {
             data
         );
     }
+}
+
+// Rust errors have no runtime class name; use their stable Display code, capped at 120 characters.
+fn error_class(error: &(dyn std::error::Error + Send + Sync)) -> String {
+    error.to_string().chars().take(120).collect()
+}
+fn hevc_name(mode: ClinkHevcMode) -> &'static str {
+    match mode {
+        ClinkHevcMode::Auto => "AUTO",
+        ClinkHevcMode::Off => "OFF",
+    }
+}
+
+fn display_trace(d: &DisplayInfo) -> String {
+    let viewport = d
+        .viewport
+        .as_ref()
+        .map(|v| format!("Viewport(width={}, height={})", v.width_px, v.height_px))
+        .unwrap_or_else(|| "null".into());
+    let boolean = |v: Option<bool>| v.map(|b| b.to_string()).unwrap_or_else(|| "null".into());
+    let sustained = d
+        .sustained_fps
+        .map(|f| format!("{f:?}"))
+        .unwrap_or_else(|| "null".into());
+    format!(
+        concat!(
+            "DisplayInfo(widthPx={}, heightPx={}, densityDpi={}, refreshHz={:?}, ",
+            "safeArea=SafeArea(left={}, top={}, right={}, bottom={}), frameRate={}, ",
+            "sustainedFps={}, viewport={}, fullscreen={}, fullscreenPreferred={}, frameSize=null)"
+        ),
+        d.width_px,
+        d.height_px,
+        d.density_dpi,
+        d.refresh_hz,
+        d.safe_area.left,
+        d.safe_area.top,
+        d.safe_area.right,
+        d.safe_area.bottom,
+        d.frame_rate.wire_name(),
+        sustained,
+        viewport,
+        boolean(d.fullscreen),
+        boolean(d.fullscreen_preferred),
+    )
 }

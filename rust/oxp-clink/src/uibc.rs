@@ -2,10 +2,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-14
 
-use crate::{model::*, protocol::json_object, require, Result};
+use crate::{
+    model::*,
+    protocol::json_object,
+    require,
+    trace::{now_nanos, ClinkTrace, ClinkTraceEvent},
+    Result,
+};
+use std::{collections::BTreeMap, sync::Arc};
 /// Android track IDs retain stable slots 0 and 1; insertion order is significant.
 pub struct UibcDecoder {
     origin: Origin,
+    trace: Option<Arc<dyn ClinkTrace>>,
+    session: u64,
     active: Vec<(u32, u8, (f64, f64))>,
     last_view_size: Option<(u32, u32)>,
     on_view_size: Option<Box<dyn Fn(u32, u32) + Send + Sync>>,
@@ -14,9 +23,36 @@ impl UibcDecoder {
     pub fn new(origin: Origin) -> Self {
         Self {
             origin,
+            trace: None,
+            session: 0,
             active: Vec::new(),
             last_view_size: None,
             on_view_size: None,
+        }
+    }
+    pub fn with_trace(mut self, trace: Arc<dyn ClinkTrace>, session: u64) -> Self {
+        self.trace = Some(trace);
+        self.session = session;
+        self
+    }
+    fn input(
+        &self,
+        kind: &str,
+        coordinates: Vec<(f64, f64)>,
+        raw_coordinates: Vec<(i64, i64)>,
+        stream_size: (u32, u32),
+        view_size: Option<(u32, u32)>,
+    ) {
+        if let Some(trace) = &self.trace {
+            trace.record(ClinkTraceEvent::Input {
+                at_nanos: now_nanos(),
+                session: self.session,
+                kind: kind.into(),
+                coordinates,
+                raw_coordinates,
+                stream_size: Some(stream_size),
+                view_size,
+            });
         }
     }
     pub fn with_view_size(
@@ -31,6 +67,18 @@ impl UibcDecoder {
             return;
         }
         self.last_view_size = size;
+        if let Some(trace) = &self.trace {
+            let (w, h) = size.unwrap();
+            trace.record(ClinkTraceEvent::Link {
+                at_nanos: now_nanos(),
+                session: self.session,
+                stage: "view_size".into(),
+                fields: BTreeMap::from([
+                    ("width".into(), w.to_string()),
+                    ("height".into(), h.to_string()),
+                ]),
+            });
+        }
         if let Some(report) = &self.on_view_size {
             let (width, height) = size.unwrap();
             report(width, height);
@@ -69,6 +117,25 @@ impl UibcDecoder {
                         && (0..=0xffffffff).contains(&meta),
                     "invalid_uibc",
                 )?;
+                if self.trace.is_some() {
+                    let dimension = |key: &str| {
+                        obj.get(key)?
+                            .as_i64()
+                            .filter(|n| (1..=i32::MAX as i64).contains(n))
+                            .map(|n| n as u32)
+                    };
+                    self.input(
+                        match action {
+                            0 => "key_down",
+                            1 => "key_up",
+                            _ => "key_multiple",
+                        },
+                        Vec::new(),
+                        Vec::new(),
+                        stream_size,
+                        dimension("width").zip(dimension("height")),
+                    );
+                }
                 return key(code as u16, action as u8, self.origin.clone());
             }
             1 => {}
@@ -91,6 +158,15 @@ impl UibcDecoder {
         let index = ((action >> 8) & 255) as usize;
         if masked == 3 {
             self.report_view_size(view_size);
+            if self.trace.is_some() {
+                self.input(
+                    "touch_cancel",
+                    Vec::new(),
+                    Vec::new(),
+                    stream_size,
+                    view_size,
+                );
+            }
             return Ok(Some(self.release()));
         }
         require(
@@ -111,6 +187,21 @@ impl UibcDecoder {
             let y = (number(&format!("y{n}"), None)? as f64 / h as f64).clamp(0.0, 1.0);
             points.push((track as u32, (x, y)));
         }
+        let trace_points = if self.trace.is_some() {
+            Some((
+                points.iter().map(|(_, p)| *p).collect(),
+                (0..count)
+                    .map(|n| {
+                        Ok((
+                            number(&format!("x{n}"), None)?,
+                            number(&format!("y{n}"), None)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ))
+        } else {
+            None
+        };
         let lifted = if masked == 1 || masked == 6 {
             Some(points[index].0)
         } else {
@@ -141,6 +232,21 @@ impl UibcDecoder {
             }
         }
         self.report_view_size(view_size);
+        if let Some((points, raw)) = trace_points {
+            self.input(
+                match masked {
+                    0 => "touch_down",
+                    1 => "touch_up",
+                    2 => "touch_move",
+                    5 => "pointer_down",
+                    _ => "pointer_up",
+                },
+                points,
+                raw,
+                stream_size,
+                view_size,
+            );
+        }
         Ok(Some(ControlEvent::Touch {
             screen: 0,
             contacts,
