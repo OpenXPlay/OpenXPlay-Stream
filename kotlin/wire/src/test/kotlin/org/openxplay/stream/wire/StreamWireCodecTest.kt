@@ -25,7 +25,7 @@ class StreamWireCodecTest {
         }
     }
     @Test fun everyJsonVectorRoundTrips() {
-        listOf("capabilities-viewport", "display-settings-auto", "display-settings-native", "display-settings-1080p", "display-settings-720p", "display-settings-screen", "view-area", "view-area-clear", "hello", "capabilities", "capabilities-preferences", "capabilities-h264", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "input-capabilities", "audio-format", "mic").forEach { name ->
+        listOf("capabilities-frame-size", "capabilities-viewport", "display-settings-auto", "display-settings-native", "display-settings-1080p", "display-settings-720p", "display-settings-screen", "view-area", "view-area-clear", "hello", "capabilities", "capabilities-preferences", "capabilities-h264", "capabilities-auto", "capabilities-fps-30", "capabilities-fps-35", "capabilities-fps-40", "capabilities-fps-45", "capabilities-fps-50", "capabilities-fps-55", "capabilities-fps-60", "restart", "client", "input-capabilities", "audio-format", "mic").forEach { name ->
             val text = resource("wire/$name.json").trim()
             val message = StreamWireCodec.decode(text.toByteArray())
             assertEquals(Json.parseToJsonElement(text),
@@ -53,6 +53,28 @@ class StreamWireCodecTest {
         for ((key, bad) in listOf("viewport" to JsonNull, "fullscreen" to JsonPrimitive(1), "fullscreenPreferred" to JsonNull,
             "viewport" to buildJsonObject { put("widthPx", 0); put("heightPx", 100) })) {
             val invalid = JsonObject(caps + ("displays" to buildJsonObject { put("0", JsonObject(display + (key to bad))) }))
+            assertFailsWith<WireFormatException> { StreamWireCodec.decode(invalid.toString().toByteArray()) }
+        }
+    }
+
+    @Test fun frameSizeRoundTripsAndOlderDisplaysOmitIt() {
+        val message = StreamWireCodec.decode(resource("wire/capabilities-frame-size.json").toByteArray()) as WireMessage.Capabilities
+        val display = message.value.displays.getValue(ScreenId.MAIN)
+        assertEquals(Viewport(1280, 720), display.frameSize)
+        assertEquals(Viewport(1532, 1013), display.viewport)
+        val encoded = StreamWireCodec.encode(message)
+        assertEquals(message, StreamWireCodec.decode(encoded))
+        val older = StreamWireCodec.decode(resource("wire/capabilities.json").toByteArray()) as WireMessage.Capabilities
+        assertNull(older.value.displays.getValue(ScreenId.MAIN).frameSize)
+        val absent = WireMessage.Capabilities(message.value.copy(displays = mapOf(ScreenId.MAIN to display.copy(frameSize = null))))
+        val tree = Json.parseToJsonElement(StreamWireCodec.encode(absent).toString(Charsets.UTF_8)).jsonObject
+        val d = tree.getValue("displays").jsonObject.getValue("0").jsonObject
+        assertFalse("frameSize" in d)
+        assertNull((StreamWireCodec.decode(StreamWireCodec.encode(absent)) as WireMessage.Capabilities).value.displays.getValue(ScreenId.MAIN).frameSize)
+        for (bad in listOf(JsonNull, JsonPrimitive(1280), buildJsonObject { put("widthPx", 0); put("heightPx", 720) },
+            buildJsonObject { put("widthPx", 1280); put("heightPx", -1) },
+            buildJsonObject { put("widthPx", 1280); put("heightPx", 720); put("extra", true) })) {
+            val invalid = JsonObject(tree + ("displays" to buildJsonObject { put("0", JsonObject(d + ("frameSize" to bad))) }))
             assertFailsWith<WireFormatException> { StreamWireCodec.decode(invalid.toString().toByteArray()) }
         }
     }

@@ -301,3 +301,45 @@ fn codec_preference_is_optional_and_boolean() {
         assert!(validate_json(&caps).is_err());
     }
 }
+
+#[test]
+fn frame_size_is_optional_and_round_trips() {
+    let original: Value = serde_json::from_str(include_str!(
+        "../../../spec/vectors/wire/capabilities-frame-size.json"
+    ))
+    .unwrap();
+    let message = Message::json(original.clone()).unwrap();
+    assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
+    assert_eq!(
+        original["displays"]["0"]["frameSize"],
+        serde_json::json!({"widthPx":1280,"heightPx":720})
+    );
+    let mut absent = original.clone();
+    absent["displays"]["0"]
+        .as_object_mut()
+        .unwrap()
+        .remove("frameSize");
+    let Message::Json(round_trip) =
+        decode(&encode(&Message::json(absent.clone()).unwrap()).unwrap()).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(absent, round_trip);
+    assert!(round_trip["displays"]["0"].get("frameSize").is_none());
+    let older = include_str!("../../../spec/vectors/wire/capabilities.json");
+    let Message::Json(older) = decode(older.as_bytes()).unwrap() else {
+        panic!()
+    };
+    assert!(older["displays"]["0"].get("frameSize").is_none());
+    for bad in [
+        Value::Null,
+        serde_json::json!(1280),
+        serde_json::json!({"widthPx":0,"heightPx":720}),
+        serde_json::json!({"widthPx":1280,"heightPx":-1}),
+        serde_json::json!({"widthPx":1280,"heightPx":720,"extra":true}),
+    ] {
+        let mut invalid = original.clone();
+        invalid["displays"]["0"]["frameSize"] = bad;
+        assert!(Message::json(invalid).is_err());
+    }
+}

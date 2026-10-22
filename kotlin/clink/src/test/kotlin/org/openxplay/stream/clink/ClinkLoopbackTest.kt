@@ -9,6 +9,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
+import org.openxplay.stream.clink.trace.*
 import org.openxplay.stream.clink.protocol.AuthIdentity
 import org.openxplay.stream.core.*
 import org.openxplay.stream.core.codec.Nal
@@ -25,8 +26,9 @@ class ClinkLoopbackTest {
         val input = ClipInput(clip)
         val errors = CopyOnWriteArrayList<Throwable>()
         val states = LinkedBlockingQueue<ClinkState>()
+        val traces = CopyOnWriteArrayList<ClinkTraceEvent.Input>()
         val output = ClinkOutput(StaticClinkLink(ClinkAddresses("127.0.0.1", "127.0.0.1", ports.auth, "loopback")),
-            PinProvider { "012345" }, trust, ports = ports, listener = object : ClinkListener {
+            PinProvider { "012345" }, trust, ports = ports, trace = ClinkTrace { if (it is ClinkTraceEvent.Input) traces += it }, listener = object : ClinkListener {
                 override fun state(state: ClinkState) { states.add(state) }
                 override fun error(error: Throwable) { errors += error }
             })
@@ -81,6 +83,10 @@ class ClinkLoopbackTest {
             assertEquals(0.5, center.contacts.single().x, 0.0001)
             assertEquals(0.5, center.contacts.single().y, 0.0001)
             assertTrue(center.contacts.single().pressed)
+            val trace = traces.first { it.kind == "touch_down" }
+            assertEquals(listOf(640L to 360L), trace.rawCoordinates)
+            assertEquals(listOf(0.5 to 0.5), trace.coordinates)
+            assertEquals(640 to 360, trace.streamSize)
             first.touch(1, listOf(PixelContact(41, 640, 360)))
             assertFalse(input.next<ControlEvent.Touch>().contacts.single().pressed)
 

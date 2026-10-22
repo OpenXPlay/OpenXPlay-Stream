@@ -25,6 +25,22 @@ class ClinkTraceTest {
         assertTrue(ClinkTraceFields.decode("control", byteArrayOf(-1)).isEmpty())
         ClinkTrace.NONE.record(ClinkTraceEvent.Error(1, 1, "test", "Test", "test"))
     }
+    @Test fun rawInputAndCurrentStreamSizeDoNotChangeWfdNormalization() {
+        val traces = mutableListOf<ClinkTraceEvent>()
+        var stream = 1156 to 764
+        val decoder = org.openxplay.stream.clink.uibc.UibcDecoder(Origin("clink", "car"), { 1280 to 720 },
+            ClinkTrace { traces += it }, 42, { stream })
+        val payload = """{"type":1,"action":0,"count":1,"trackID0":7,"x0":640,"y0":360}""".toByteArray()
+        val touch = decoder.decode(payload) as ControlEvent.Touch
+        assertEquals(listOf(TouchContact(0, 0.5, 0.5, true)), touch.contacts)
+        val first = traces.single() as ClinkTraceEvent.Input
+        assertEquals(listOf(640L to 360L), first.rawCoordinates)
+        assertEquals(listOf(0.5 to 0.5), first.coordinates)
+        assertEquals(1156 to 764, first.streamSize)
+        stream = 1280 to 720
+        decoder.decode("""{"type":1,"action":3,"count":0}""".toByteArray())
+        assertEquals(stream, (traces.last() as ClinkTraceEvent.Input).streamSize)
+    }
     @Test fun loopbackRecordsTimelineWithoutAuthenticationPayloads() {
         val events = CopyOnWriteArrayList<ClinkTraceEvent>()
         val packets = CopyOnWriteArrayList<ByteArray>()

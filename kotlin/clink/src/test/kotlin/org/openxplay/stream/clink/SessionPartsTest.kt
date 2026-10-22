@@ -223,13 +223,13 @@ class SessionPartsTest {
 }
 
 class CanvasTest {
-    @org.junit.jupiter.api.Test fun canvasMatchesTheNegotiatedModeExactly() {
-        // Real car 2026-10-16: control channel reported 1156x764, WFD mode 1280x720.
-        val fitted = canvas(DisplayInfo(1156, 764, 160, 30.0, SafeArea(0, 40, 0, 0)), 1280, 720)
-        kotlin.test.assertEquals(1280 to 720, fitted.widthPx to fitted.heightPx)
-        kotlin.test.assertEquals(37, fitted.safeArea.top)
-        val same = DisplayInfo(1280, 720, 160, 30.0)
-        kotlin.test.assertSame(same, canvas(same, 1280, 720))
-        kotlin.test.assertEquals(1280 to 720, canvas(DisplayInfo(1024, 600, 160, 30.0), 1280, 720).let { it.widthPx to it.heightPx })
+    @org.junit.jupiter.api.Test fun windowIsTheDisplayInBothPictureModes() {
+        val screen = DisplayInfo(1532, 1013, 240, 30.0, SafeArea(12, 40, 8, 20))
+        val window = canvas(screen, 1280, 720)
+        assertEquals(screen.copy(viewport = Viewport(1532, 1013), fullscreen = true), window)
+        assertNull(window.frameSize)
+        val mode = canvas(screen, 1280, 720, ClinkPictureSize.MODE)
+        assertEquals(window.copy(frameSize = Viewport(1280, 720)), mode)
+        assertNull(mode.fullscreenPreferred)
     }
 }

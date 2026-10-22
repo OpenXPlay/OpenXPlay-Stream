@@ -38,6 +38,7 @@ public class SimulatedHeadUnit(
     private val sensorAttempts: Int = 100,
     private val sensorRetryMillis: Long = 110,
     private val sendVehicleSamples: Boolean = true,
+    private val display: DisplayInfo = DisplayInfo(1280, 720, 160, 30.0),
 ) : Closeable {
     private val monitor = Object()
     private val resources = CopyOnWriteArrayList<Closeable>()
@@ -232,7 +233,7 @@ public class SimulatedHeadUnit(
         // Retain CERT until cleanup: control and UIBC must only follow its acceptance.
         uibc = dial(ports.uibc)
         rtsp = dial(ports.rtsp)
-        send(command, 1, 24, Control.displayBody(DisplayInfo(1280, 720, 160, 30.0)), 1, 700)
+        send(command, 1, 24, Control.displayBody(display), 1, 700)
         send(command, 1, 2, Fields(mapOf(1 to FieldValue.Varint(3uL))).encode(), 1, 701)
         send(command, 1, 2, Fields(mapOf(1 to FieldValue.Varint(2uL))).encode(), 1, 702)
         worker("control") { control(command) }
@@ -315,7 +316,7 @@ public class SimulatedHeadUnit(
                     }
                 }
                 1 -> { Fields.decode(body); send(socket, 1, 1, body); heartbeats++ }
-                24 -> send(socket, 1, 25, Control.displayBody(DisplayInfo(1280, 720, 160, 30.0)), 2, frame.sequence)
+                24 -> send(socket, 1, 25, Control.displayBody(display), 2, frame.sequence)
                 25 -> { require(frame.kind == 2 && frame.sequence == 700L); configurationAnswered = true }
                 3 -> {
                     val f = Fields.decode(body)

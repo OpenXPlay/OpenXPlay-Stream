@@ -189,6 +189,8 @@ public data class DisplayInfo(
     public val viewport: Viewport? = null,
     public val fullscreen: Boolean? = null,
     public val fullscreenPreferred: Boolean? = null,
+    /** Exact coded picture size, stretched over the display by the receiver. */
+    public val frameSize: Viewport? = null,
 )
 
 public data class InputCapabilities(

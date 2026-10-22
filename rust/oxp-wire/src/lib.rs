@@ -579,6 +579,7 @@ pub fn validate_json(v: &Value) -> Result<()> {
                         "frameRate",
                         "sustainedFps",
                         "viewport",
+                        "frameSize",
                         "fullscreen",
                         "fullscreenPreferred",
                     ],
@@ -587,7 +588,10 @@ pub fn validate_json(v: &Value) -> Result<()> {
                     require(integer(&d[k], i32::MAX as u64)? > 0, "Invalid display")?;
                 }
                 number(&d["refreshHz"], true)?;
-                if let Some(viewport) = d.get("viewport") {
+                for viewport in [d.get("viewport"), d.get("frameSize")]
+                    .into_iter()
+                    .flatten()
+                {
                     fields(viewport, &["widthPx", "heightPx"], &[])?;
                     positive_int(&viewport["widthPx"])?;
                     positive_int(&viewport["heightPx"])?;

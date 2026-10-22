@@ -30,7 +30,8 @@ public sealed interface ClinkTraceEvent {
         val source: String = "", val codec: String? = null, val width: Int? = null, val height: Int? = null,
         val sps: List<String> = emptyList(), val pps: List<String> = emptyList()) : ClinkTraceEvent
     public data class Input(override val atNanos: Long, override val session: Long, val kind: String,
-        val coordinates: List<Pair<Double, Double>>) : ClinkTraceEvent
+        val coordinates: List<Pair<Double, Double>>, val rawCoordinates: List<Pair<Long, Long>> = emptyList(),
+        val streamSize: Pair<Int, Int>? = null) : ClinkTraceEvent
     public data class Error(override val atNanos: Long, override val session: Long, val code: String,
         val exceptionClass: String, val location: String) : ClinkTraceEvent
     public data class Link(override val atNanos: Long, override val session: Long, val stage: String,

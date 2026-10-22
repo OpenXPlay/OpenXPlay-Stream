@@ -164,6 +164,7 @@ public object StreamWireCodec {
                         if (d.frameRate != FrameRatePreference.AUTO) put("frameRate", d.frameRate.name)
                         d.sustainedFps?.let { put("sustainedFps", it) }
                         d.viewport?.let { put("viewport", buildJsonObject { put("widthPx", it.width); put("heightPx", it.height) }) }
+                        d.frameSize?.let { put("frameSize", buildJsonObject { put("widthPx", it.width); put("heightPx", it.height) }) }
                         d.fullscreen?.let { put("fullscreen", it) }
                         d.fullscreenPreferred?.let { put("fullscreenPreferred", it) }
                     })
@@ -289,7 +290,7 @@ public object StreamWireCodec {
                 val screen = key.toInt(); check(screen in 0..255 && key == screen.toString(), "Invalid screen")
                 val d = value.jsonObject
                 d.fields("widthPx", "heightPx", "densityDpi", "refreshHz", "safeArea",
-                    optional = setOf("frameRate", "sustainedFps", "viewport", "fullscreen", "fullscreenPreferred"), type = false)
+                    optional = setOf("frameRate", "sustainedFps", "viewport", "fullscreen", "fullscreenPreferred", "frameSize"), type = false)
                 val a = d.getValue("safeArea").jsonObject
                 a.fields("left", "top", "right", "bottom", type = false)
                 ScreenId(screen) to DisplayInfo(d.int("widthPx", 1), d.int("heightPx", 1), d.int("densityDpi", 1),
@@ -298,7 +299,10 @@ public object StreamWireCodec {
                     d["sustainedFps"]?.let { d.number("sustainedFps", true) },
                     d["viewport"]?.let { it.jsonObject.let { v ->
                         v.fields("widthPx", "heightPx", type = false); Viewport(v.int("widthPx", 1), v.int("heightPx", 1))
-                    } }, d["fullscreen"]?.let { d.bool("fullscreen") }, d["fullscreenPreferred"]?.let { d.bool("fullscreenPreferred") })
+                    } }, d["fullscreen"]?.let { d.bool("fullscreen") }, d["fullscreenPreferred"]?.let { d.bool("fullscreenPreferred") },
+                    d["frameSize"]?.let { it.jsonObject.let { v ->
+                        v.fields("widthPx", "heightPx", type = false); Viewport(v.int("widthPx", 1), v.int("heightPx", 1))
+                    } })
             }.toMap()
             val decoders = o.getValue("decoders").jsonArray.map { e -> e.jsonObject.let {
                 it.fields("codecString", "hardware", type = false)

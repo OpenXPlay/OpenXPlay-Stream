@@ -45,6 +45,7 @@ public class ClinkSession(
     private val trace: ClinkTrace = ClinkTrace.NONE,
     sessionNumber: Long? = null,
     private val hevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
+    private val pictureSize: ClinkPictureSize = ClinkPictureSize.WINDOW,
 ) {
     internal val traceSession: Long = sessionNumber ?: nextTraceSession()
     internal companion object {
@@ -202,6 +203,7 @@ public class ClinkSession(
     @Volatile private var decoderSnapshot: List<DecoderSupport> = emptyList()
     public val isPlaying: Boolean get() = playing && ready && !stopped && !stopRequested
     public val videoSize: Pair<Int, Int> get() = mode.width to mode.height
+    @Volatile internal var streamSize: Pair<Int, Int> = 1280 to 720
     public fun stop() { microphone(null); stopRequested = true }
     private fun worker(name: String, action: () -> Unit) {
         threads.newThread { action() }.apply { this.name = "clink-$name"; start() }
@@ -344,7 +346,7 @@ public class ClinkSession(
     private fun reportCapabilities() {
         decoderSnapshot = wfd.decoders
         onCapabilities(OutputCapabilities(LatencyClass.INTERACTIVE, decoderSnapshot,
-            mapOf(ScreenId.MAIN to canvas(display, mode.width, mode.height)), 2, UibcDecoder.keys,
+            mapOf(ScreenId.MAIN to canvas(display, mode.width, mode.height, pictureSize)), 2, UibcDecoder.keys,
             setOf(AudioCodec.AAC_LC, AudioCodec.PCM_S16LE), true))
     }
     private fun updatePlay() {
@@ -481,7 +483,7 @@ public class ClinkSession(
             check(!stopped)
             val a = checkNotNull(addresses)
             val local = ipv4(a.localIpv4); val peer = ipv4(a.headUnitIpv4)
-            touch = UibcDecoder(Origin(outputId, a.headUnitId), { videoSize }, trace, traceSession)
+            touch = UibcDecoder(Origin(outputId, a.headUnitId), { videoSize }, trace, traceSession, { streamSize })
             wfd = WfdSource(a.localIpv4, ports, hevc) { display }
             // Bind before AuthConfirm; reverse connections can arrive immediately.
             listOf(ports.control, ports.cert, ports.media, ports.rtsp, ports.uibc).forEach { listen(it, local, peer) }
@@ -626,16 +628,8 @@ public class ClinkSession(
     }
 }
 
-/**
- * The head unit's decoder is set up for the negotiated WFD mode and starts on the mode-sized
- * placeholder, while its control channel reports the screen area. A real car (screen 1156x764, mode
- * 1280x720) stayed black with any other stream size, so CarPlay renders exactly at the mode and the
- * head unit scales it onto its screen.
- */
-internal fun canvas(screen: DisplayInfo, modeWidth: Int, modeHeight: Int): DisplayInfo {
-    if (modeWidth <= 0 || modeHeight <= 0 || (screen.widthPx == modeWidth && screen.heightPx == modeHeight)) return screen
-    val a = screen.safeArea
-    fun x(value: Int) = (value.toLong() * modeWidth / screen.widthPx).toInt()
-    fun y(value: Int) = (value.toLong() * modeHeight / screen.heightPx).toInt()
-    return screen.copy(widthPx = modeWidth, heightPx = modeHeight, safeArea = SafeArea(x(a.left), y(a.top), x(a.right), y(a.bottom)))
-}
+internal fun canvas(screen: DisplayInfo, modeWidth: Int, modeHeight: Int,
+    pictureSize: ClinkPictureSize = ClinkPictureSize.WINDOW): DisplayInfo = screen.copy(
+    viewport = Viewport(screen.widthPx, screen.heightPx), fullscreen = true, fullscreenPreferred = null,
+    frameSize = if (pictureSize == ClinkPictureSize.MODE) Viewport(modeWidth, modeHeight) else null,
+)

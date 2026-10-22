@@ -43,6 +43,7 @@ public class ClinkOutput(
     private val trace: ClinkTrace = ClinkTrace.NONE,
     private val mediaTap: ClinkMediaTap? = null,
     private val hevc: ClinkHevcMode = ClinkHevcMode.STREAM_ONLY,
+    private val pictureSize: ClinkPictureSize = ClinkPictureSize.WINDOW,
 ) : ProjectionOutput {
     private class Run(val host: OutputHost) {
         val traceSession = ClinkSession.nextTraceSession()
@@ -121,7 +122,7 @@ public class ClinkOutput(
                             { stalled -> synchronized(run.lock) {
                                 run.queue.setStalled(stalled); run.revision++
                                 run.audio.clear(); run.audioBytes = 0
-                            } }, trace, run.traceSession, hevc)
+                            } }, trace, run.traceSession, hevc, pictureSize)
                         run.session = session
                         synchronized(run.lock) { session.microphone(run.microphone) }
                         if (!run.active.get()) session.stop()
@@ -457,6 +458,7 @@ public class ClinkOutput(
                             if (trace !== ClinkTrace.NONE) { trace.emit(ClinkTraceEvent.Video(System.nanoTime(), session.traceSession, "freeze", "unit_dropped")) }
                             gate.reset(); keyframePending = true; keyframeSource = "gap"
                         } else {
+                            session.streamSize = checkNotNull(format).let { it.width to it.height }
                             liveFrames++; liveBytes += f.data.size; videoBytes += f.data.size; statsFormat = format
                             if (trace !== ClinkTrace.NONE && f.keyFrame) keyframes++
                             sent++
@@ -477,6 +479,7 @@ public class ClinkOutput(
                     }
                     outputPts = pts; transportPts = pts
                     if (result == Emit.DROPPED) { failedVideo++; placeholderIndex = 0 } else {
+                        session.streamSize = clip.format.width to clip.format.height
                         placeholderFrames++; videoBytes += data.size
                         if (trace !== ClinkTrace.NONE && placeholderIndex == 0) keyframes++
                         sent++; videoWrittenAt = System.nanoTime()
