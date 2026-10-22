@@ -21,7 +21,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -59,6 +59,7 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--relay-version",
             "--tls-cert",
             "--tls-key",
+            "--tls-name",
             "--tls-self-signed",
             "--no-tls",
             "--clink-head-unit",
@@ -193,6 +194,63 @@ fn clink_link(args: &Args) -> Result<Option<Arc<dyn ClinkLink>>> {
             .map_err(|_| "--clink-address must be a Bluetooth MAC address")?;
     }
     Ok(Some(Arc::new(link)))
+}
+
+fn tls_from_args(args: &Args, sans: Vec<String>) -> Result<Tls> {
+    let cert = args.get("--tls-cert");
+    let key = args.get("--tls-key");
+    let state_dir = args.get("--tls-self-signed");
+    let no_tls = args.get("--no-tls").is_some();
+    if cert.is_some() != key.is_some() {
+        return Err("TLS requires --tls-cert and --tls-key".into());
+    }
+    if let Some(name) = args.get("--tls-name") {
+        if !oxp_web::tls::valid_dns_name(name) {
+            return Err(
+                "--tls-name must be a DNS name with LDH labels, at most 253 characters".into(),
+            );
+        }
+        if let (Some(cert), Some(key), Some(state_dir), false) = (cert, key, state_dir, no_tls) {
+            return Ok(Tls::Sni {
+                name: name.into(),
+                cert: cert.into(),
+                key: key.into(),
+                state_dir: state_dir.into(),
+                sans,
+            });
+        }
+        return Err(
+            "--tls-name requires --tls-cert, --tls-key and --tls-self-signed, without --no-tls"
+                .into(),
+        );
+    }
+    if cert.is_some() && state_dir.is_some() {
+        return Err("Combining PEM and --tls-self-signed requires --tls-name".into());
+    }
+    if [cert.is_some(), state_dir.is_some(), no_tls]
+        .into_iter()
+        .filter(|v| *v)
+        .count()
+        != 1
+    {
+        return Err("Choose PEM TLS, self-signed TLS, or --no-tls".into());
+    }
+    if !sans.is_empty() && state_dir.is_none() {
+        return Err("--tls-san requires --tls-self-signed".into());
+    }
+    if let (Some(cert), Some(key)) = (cert, key) {
+        Ok(Tls::Pem {
+            cert: cert.into(),
+            key: key.into(),
+        })
+    } else if let Some(state_dir) = state_dir {
+        Ok(Tls::SelfSigned {
+            state_dir: state_dir.into(),
+            sans,
+        })
+    } else {
+        Ok(Tls::Disabled)
+    }
 }
 
 fn pairing_from_args(args: &Args) -> Result<Pairing> {
@@ -399,6 +457,7 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
                 "--source-url",
                 "--tls-cert",
                 "--tls-key",
+                "--tls-name",
                 "--tls-self-signed",
                 "--no-tls",
             ]
@@ -411,39 +470,7 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
     let mut web_output = None;
     let mut pairing = None;
     if web {
-        let cert = args.get("--tls-cert");
-        let key = args.get("--tls-key");
-        if cert.is_some() != key.is_some() {
-            return Err("TLS requires --tls-cert and --tls-key".into());
-        }
-        if [
-            cert.is_some(),
-            args.get("--tls-self-signed").is_some(),
-            args.get("--no-tls").is_some(),
-        ]
-        .into_iter()
-        .filter(|v| *v)
-        .count()
-            != 1
-        {
-            return Err("Choose PEM TLS, self-signed TLS, or --no-tls".into());
-        }
-        if !sans.is_empty() && args.get("--tls-self-signed").is_none() {
-            return Err("--tls-san requires --tls-self-signed".into());
-        }
-        let tls = if let (Some(cert), Some(key)) = (cert, key) {
-            Tls::Pem {
-                cert: cert.into(),
-                key: key.into(),
-            }
-        } else if let Some(dir) = args.get("--tls-self-signed") {
-            Tls::SelfSigned {
-                state_dir: dir.into(),
-                sans,
-            }
-        } else {
-            Tls::Disabled
-        };
+        let tls = tls_from_args(&args, sans)?;
         let web_pairing = pairing_from_args(&args)?;
         // A relay serves head units on the LAN; plain HTTP is only for local testing.
         let default_bind = if matches!(tls, Tls::Disabled) {
@@ -734,6 +761,182 @@ fn lan_choice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tls(values: &[&str]) -> Result<Tls> {
+        let (args, sans) = parse_arguments(values.iter().map(|v| (*v).to_owned()))?;
+        tls_from_args(&args, sans)
+    }
+
+    #[test]
+    fn tls_argument_validation_matrix() {
+        assert!(matches!(
+            tls(&["--tls-cert", "cert", "--tls-key", "key"]).unwrap(),
+            Tls::Pem { .. }
+        ));
+        let self_signed = tls(&[
+            "--tls-self-signed",
+            "state",
+            "--tls-san",
+            "relay.local",
+            "--tls-san",
+            "192.168.55.1",
+        ])
+        .unwrap();
+        assert!(
+            matches!(self_signed, Tls::SelfSigned { sans, .. } if sans == ["relay.local", "192.168.55.1"])
+        );
+        let sni = tls(&[
+            "--tls-cert",
+            "cert",
+            "--tls-key",
+            "key",
+            "--tls-self-signed",
+            "state",
+            "--tls-name",
+            "RELAY.test.",
+            "--tls-san",
+            "relay.local",
+        ])
+        .unwrap();
+        assert!(
+            matches!(sni, Tls::Sni { name, sans, .. } if name == "RELAY.test." && sans == ["relay.local"])
+        );
+        assert!(matches!(tls(&["--no-tls"]).unwrap(), Tls::Disabled));
+        let missing_name = [
+            "--tls-cert",
+            "cert",
+            "--tls-key",
+            "key",
+            "--tls-self-signed",
+            "state",
+        ];
+        assert!(tls(&missing_name)
+            .unwrap_err()
+            .to_string()
+            .contains("requires --tls-name"));
+        for values in [
+            vec![],
+            vec!["--tls-cert", "cert"],
+            vec!["--tls-key", "key"],
+            vec!["--tls-name", "relay.test"],
+            vec!["--tls-self-signed", "state", "--tls-name", "relay.test"],
+            vec![
+                "--tls-cert",
+                "cert",
+                "--tls-key",
+                "key",
+                "--tls-name",
+                "relay.test",
+            ],
+            vec![
+                "--tls-cert",
+                "cert",
+                "--tls-self-signed",
+                "state",
+                "--tls-name",
+                "relay.test",
+            ],
+            vec!["--tls-cert", "cert", "--tls-key", "key", "--no-tls"],
+            vec!["--tls-self-signed", "state", "--no-tls"],
+            vec![
+                "--tls-cert",
+                "cert",
+                "--tls-key",
+                "key",
+                "--tls-self-signed",
+                "state",
+                "--tls-name",
+                "relay.test",
+                "--no-tls",
+            ],
+            vec![
+                "--tls-cert",
+                "cert",
+                "--tls-key",
+                "key",
+                "--tls-san",
+                "relay.local",
+            ],
+            vec!["--no-tls", "--tls-san", "relay.local"],
+            vec!["--tls-self-signed", "state", "--tls-san"],
+            vec!["--tls-name"],
+            vec!["--tls-name", "relay.test", "--tls-name", "other.test"],
+        ] {
+            assert!(tls(&values).is_err(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn tls_name_accepts_only_bounded_dns_ldh_labels() {
+        let longest = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        for name in [
+            "relay.duckdns.org",
+            "RELAY.test.",
+            "a-b.test",
+            "localhost",
+            "1relay.test",
+            "xn--relay.test",
+            &longest,
+        ] {
+            assert!(
+                tls(&[
+                    "--tls-cert",
+                    "cert",
+                    "--tls-key",
+                    "key",
+                    "--tls-self-signed",
+                    "state",
+                    "--tls-name",
+                    name
+                ])
+                .is_ok(),
+                "{name}"
+            );
+        }
+        let long_label = format!("{}.test", "a".repeat(64));
+        let too_long = format!("{longest}d");
+        for name in [
+            "",
+            ".",
+            "-relay.test",
+            "relay-.test",
+            "relay..test",
+            "relay.test..",
+            "relay_.test",
+            "*.test",
+            "relay test",
+            "https://relay.test",
+            "relay.test:443",
+            "127.0.0.1",
+            "::1",
+            "rélais.test",
+            &long_label,
+            &too_long,
+        ] {
+            assert!(
+                tls(&[
+                    "--tls-cert",
+                    "cert",
+                    "--tls-key",
+                    "key",
+                    "--tls-self-signed",
+                    "state",
+                    "--tls-name",
+                    name
+                ])
+                .unwrap_err()
+                .to_string()
+                .contains("--tls-name"),
+                "{name}"
+            );
+        }
+    }
 
     struct FakeLink(Arc<std::sync::atomic::AtomicUsize>);
     impl ClinkLink for FakeLink {

@@ -391,10 +391,7 @@ impl ProjectionOutput for WebOutput {
             let result = (|| -> Result<()> {
                 let identity = tls::load(&config.tls)?;
                 if let Some(i) = &identity {
-                    eprintln!(
-                        "{}",
-                        json!({"type":"tls-fingerprint","algorithm":"SHA-256","fingerprint":i.fingerprint})
-                    );
+                    eprintln!("{}", i.fingerprint_event());
                 }
                 let listener = TcpListener::bind(config.bind)?;
                 listener.set_nonblocking(true)?;
