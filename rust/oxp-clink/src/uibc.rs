@@ -7,12 +7,33 @@ use crate::{model::*, protocol::json_object, require, Result};
 pub struct UibcDecoder {
     origin: Origin,
     active: Vec<(u32, u8, (f64, f64))>,
+    last_view_size: Option<(u32, u32)>,
+    on_view_size: Option<Box<dyn Fn(u32, u32) + Send + Sync>>,
 }
 impl UibcDecoder {
     pub fn new(origin: Origin) -> Self {
         Self {
             origin,
             active: Vec::new(),
+            last_view_size: None,
+            on_view_size: None,
+        }
+    }
+    pub fn with_view_size(
+        mut self,
+        on_view_size: impl Fn(u32, u32) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_view_size = Some(Box::new(on_view_size));
+        self
+    }
+    fn report_view_size(&mut self, size: Option<(u32, u32)>) {
+        if size.is_none() || size == self.last_view_size {
+            return;
+        }
+        self.last_view_size = size;
+        if let Some(report) = &self.on_view_size {
+            let (width, height) = size.unwrap();
+            report(width, height);
         }
     }
     pub fn release(&mut self) -> ControlEvent {
@@ -23,7 +44,11 @@ impl UibcDecoder {
             origin: self.origin.clone(),
         }
     }
-    pub fn decode(&mut self, bytes: &[u8], video_size: (u32, u32)) -> Result<Option<ControlEvent>> {
+    pub fn decode(
+        &mut self,
+        bytes: &[u8],
+        stream_size: (u32, u32),
+    ) -> Result<Option<ControlEvent>> {
         require(bytes.len() <= 65536, "invalid_uibc")?;
         let obj = json_object(bytes)?;
         require(obj.len() <= 128, "invalid_uibc")?;
@@ -49,6 +74,13 @@ impl UibcDecoder {
             1 => {}
             _ => return Ok(None),
         }
+        let dimension = |key: &str| {
+            obj.get(key)?
+                .as_i64()
+                .filter(|n| (1..=i32::MAX as i64).contains(n))
+                .map(|n| n as u32)
+        };
+        let view_size = dimension("width").zip(dimension("height"));
         let count = number("count", None)?;
         let action = number("action", None)?;
         require(
@@ -58,13 +90,14 @@ impl UibcDecoder {
         let masked = action & 255;
         let index = ((action >> 8) & 255) as usize;
         if masked == 3 {
+            self.report_view_size(view_size);
             return Ok(Some(self.release()));
         }
         require(
             count > 0 && index < count as usize && [0, 1, 2, 5, 6].contains(&masked),
             "invalid_uibc",
         )?;
-        let (w, h) = video_size;
+        let (w, h) = stream_size;
         require(w > 0 && h > 0, "invalid_video_size")?;
         let mut points = Vec::new();
         for n in 0..count {
@@ -107,6 +140,7 @@ impl UibcDecoder {
                 }
             }
         }
+        self.report_view_size(view_size);
         Ok(Some(ControlEvent::Touch {
             screen: 0,
             contacts,

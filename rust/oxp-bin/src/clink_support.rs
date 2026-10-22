@@ -111,6 +111,24 @@ pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
     }
 }
 pub struct Listener;
+fn view_size_event(width: u32, height: u32) -> serde_json::Value {
+    json!({"type":"clink-view-size","width":width,"height":height})
+}
+fn media_stats_event(stats: ClinkStatistics) -> serde_json::Value {
+    json!({
+        "type":"media-stats",
+        "sent":stats.live_frames + stats.placeholder_frames,
+        "dropped":stats.dropped_frames,
+        "liveFrames":stats.live_frames,
+        "placeholderFrames":stats.placeholder_frames,
+        "droppedFrames":stats.dropped_frames,
+        "liveBytes":stats.live_bytes,
+        "sendStalls":stats.send_stalls,
+        "codec":stats.codec.map(|codec| match codec { VideoCodec::H264 => "H264", VideoCodec::H265 => "H265" }),
+        "width":stats.width,
+        "height":stats.height,
+    })
+}
 impl ClinkListener for Listener {
     fn state(&self, s: ClinkState) {
         if s == ClinkState::Ended {
@@ -125,8 +143,11 @@ impl ClinkListener for Listener {
     fn diagnostic(&self, message: &str) {
         event(json!({"type":"diagnostic","message":message}));
     }
-    fn statistics(&self, sent: u64, dropped: u64) {
-        event(json!({"type":"media-stats","sent":sent,"dropped":dropped}));
+    fn view_size(&self, width: u32, height: u32) {
+        event(view_size_event(width, height));
+    }
+    fn statistics(&self, stats: ClinkStatistics) {
+        event(media_stats_event(stats));
     }
     fn profile_mismatch(&self, input: &str, decoders: &[String]) {
         event(json!({"type":"profile-mismatch","input":input,"decoders":decoders}));
@@ -330,6 +351,43 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+    #[test]
+    fn view_size_json_uses_the_relay_event_contract() {
+        assert_eq!(
+            view_size_event(1532, 1013),
+            json!({"type":"clink-view-size","width":1532,"height":1013})
+        );
+    }
+    #[test]
+    fn media_stats_json_keeps_old_fields_and_adds_session_counters_and_format() {
+        assert_eq!(
+            media_stats_event(ClinkStatistics::default()),
+            json!({
+                "type":"media-stats","sent":0,"dropped":0,"liveFrames":0,
+                "placeholderFrames":0,"droppedFrames":0,"liveBytes":0,"sendStalls":0,
+                "codec":null,"width":0,"height":0,
+            })
+        );
+        for (codec, name) in [(VideoCodec::H264, "H264"), (VideoCodec::H265, "H265")] {
+            assert_eq!(
+                media_stats_event(ClinkStatistics {
+                    live_frames: 2,
+                    placeholder_frames: 3,
+                    dropped_frames: 4,
+                    live_bytes: 5678,
+                    send_stalls: 6,
+                    codec: Some(codec),
+                    width: 1450,
+                    height: 960,
+                }),
+                json!({
+                    "type":"media-stats","sent":5,"dropped":4,"liveFrames":2,
+                    "placeholderFrames":3,"droppedFrames":4,"liveBytes":5678,"sendStalls":6,
+                    "codec":name,"width":1450,"height":960,
+                })
+            );
+        }
+    }
     #[test]
     fn wire_sink_preserves_preferences_and_orders_capabilities_before_restart() {
         let (tx, rx) = std::sync::mpsc::sync_channel(8);

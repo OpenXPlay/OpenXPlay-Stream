@@ -599,3 +599,383 @@ fn wired_pin_and_auto_confirm_use_the_connections_existing_consent() {
     running.peers[&ClinkPorts::default().control].message();
     assert!(pairing.events.lock().unwrap().is_empty());
 }
+
+mod media_output {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use oxp_clink::{placeholder::*, wfd::*};
+    use oxp_media::{nal, AvcConfig};
+    use std::time::Instant;
+
+    #[derive(Default)]
+    struct Probe {
+        displays: Mutex<Vec<DisplayInfo>>,
+        touches: Mutex<Vec<Vec<TouchContact>>>,
+        views: Mutex<Vec<(u32, u32)>>,
+        reports: Mutex<Vec<ClinkStatistics>>,
+        errors: Mutex<Vec<String>>,
+    }
+    impl ClinkListener for Probe {
+        fn view_size(&self, width: u32, height: u32) {
+            self.views.lock().unwrap().push((width, height));
+        }
+        fn statistics(&self, stats: ClinkStatistics) {
+            self.reports.lock().unwrap().push(stats);
+        }
+        fn error(&self, error: &str) {
+            self.errors.lock().unwrap().push(error.into());
+        }
+    }
+    impl OutputHost for Probe {
+        fn capabilities(&self, caps: OutputCapabilities) {
+            self.displays
+                .lock()
+                .unwrap()
+                .push(caps.displays[&0].clone());
+        }
+        fn control(&self, event: ControlEvent) {
+            if let ControlEvent::Touch { contacts, .. } = event {
+                self.touches.lock().unwrap().push(contacts);
+            }
+        }
+        fn stats(&self, _: OutputStats) {}
+    }
+    fn await_condition(label: &str, condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out: {label}");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    struct Output {
+        output: ClinkOutput,
+        transport: Arc<MemoryTransport>,
+        probe: Arc<Probe>,
+    }
+    impl Output {
+        fn new() -> Self {
+            let transport = Arc::new(MemoryTransport {
+                streams: Mutex::new(BTreeMap::new()),
+                offers: Mutex::new(Vec::new()),
+                authenticated: AtomicBool::new(false),
+            });
+            let probe = Arc::new(Probe::default());
+            let output = ClinkOutput::new(
+                Arc::new(Link(transport.clone(), AtomicBool::new(false), None, false)),
+                Arc::new(Pin),
+                Arc::new(Trust),
+            )
+            .unwrap()
+            .with_listener(probe.clone());
+            Self {
+                output,
+                transport,
+                probe,
+            }
+        }
+        fn connect(&self) -> (BTreeMap<u16, Arc<MemoryStream>>, [u8; 16]) {
+            let ports = ClinkPorts::default();
+            let mut peers = BTreeMap::new();
+            for service in [
+                ports.auth,
+                ports.control,
+                ports.cert,
+                ports.media,
+                ports.rtsp,
+                ports.uibc,
+                ports.rtp,
+            ] {
+                let (stream, peer) = MemoryStream::pair();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .unwrap();
+                self.transport
+                    .streams
+                    .lock()
+                    .unwrap()
+                    .insert(service, stream);
+                peers.insert(service, peer);
+            }
+            self.probe.reports.lock().unwrap().clear();
+            self.output.open(self.probe.clone()).unwrap();
+            let key = authenticate(&peers[&ports.auth]);
+            let config = Frame::decode(&peers[&ports.control].message()).unwrap();
+            assert_eq!(config.method, 24);
+            let display = DisplayInfo {
+                width_px: 1532,
+                height_px: 1013,
+                density_dpi: 240,
+                refresh_hz: 30.0,
+                ..Default::default()
+            };
+            let send = |service, sequence, kind, category, method, body: &[u8]| {
+                peers[&service]
+                    .write_all(
+                        &Frame {
+                            sequence,
+                            unix_seconds: 0,
+                            source: 0,
+                            format: 1,
+                            kind,
+                            category,
+                            method,
+                            body: SecureRecord::new(&key).unwrap().seal(body).unwrap(),
+                        }
+                        .encode()
+                        .unwrap(),
+                    )
+                    .unwrap();
+            };
+            send(
+                ports.control,
+                config.sequence,
+                2,
+                1,
+                25,
+                &control::display_body(&display).unwrap(),
+            );
+            let metadata = br#"{"short_name":"car","product_name":"model","vendor_name":"vendor","vendor_id":"v1","product_id":"p1"}"#;
+            let envelope = serde_json::json!({"content":metadata.iter().map(|b|*b as i8).collect::<Vec<_>>(),
+                "signature":vec![0;256],"version":1,"signAlgorithm":"SHA256withRSA","cryptoConfigIndex":"v1"});
+            let cert = Fields(BTreeMap::from([(
+                1,
+                FieldValue::Bytes(STANDARD.encode(envelope.to_string()).into_bytes()),
+            )]))
+            .encode()
+            .unwrap();
+            send(ports.cert, 80, 3, 6, 1, &cert);
+            let rtsp = &peers[&ports.rtsp];
+            for _ in 0..4 {
+                let request = RtspReader::default()
+                    .feed(&rtsp.message())
+                    .unwrap()
+                    .remove(0);
+                let body = if request.line.starts_with("GET_PARAMETER ") {
+                    include_str!("../../../kotlin/clink/src/test/resources/head-unit-wfd.txt")
+                } else {
+                    ""
+                };
+                rtsp.write_all(
+                    &RtspMessage {
+                        line: "RTSP/1.0 200 OK".into(),
+                        headers: BTreeMap::from([("cseq".into(), request.headers["cseq"].clone())]),
+                        body: body.into(),
+                    }
+                    .encode()
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            rtsp.write_all(
+                &RtspMessage {
+                    line: "SETUP * RTSP/1.0".into(),
+                    headers: BTreeMap::from([
+                        ("cseq".into(), "101".into()),
+                        (
+                            "transport".into(),
+                            format!("RTP/AVP/TCP;unicast;client_port={}", ports.rtp),
+                        ),
+                    ]),
+                    body: String::new(),
+                }
+                .encode()
+                .unwrap(),
+            )
+            .unwrap();
+            let setup = RtspReader::default()
+                .feed(&rtsp.message())
+                .unwrap()
+                .remove(0);
+            assert_eq!(setup.line, "RTSP/1.0 200 OK");
+            rtsp.write_all(
+                &RtspMessage {
+                    line: "PLAY * RTSP/1.0".into(),
+                    headers: BTreeMap::from([
+                        ("cseq".into(), "102".into()),
+                        ("session".into(), setup.headers["session"].clone()),
+                    ]),
+                    body: String::new(),
+                }
+                .encode()
+                .unwrap(),
+            )
+            .unwrap();
+            let play = RtspReader::default()
+                .feed(&rtsp.message())
+                .unwrap()
+                .remove(0);
+            assert_eq!(play.line, "RTSP/1.0 200 OK");
+            self.stats(|stats| stats.placeholder_frames > 0);
+            (peers, key)
+        }
+        fn stats(&self, predicate: impl Fn(&ClinkStatistics) -> bool) -> ClinkStatistics {
+            await_condition("media statistics", || {
+                self.probe.reports.lock().unwrap().iter().any(&predicate)
+            });
+            *self
+                .probe
+                .reports
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|s| predicate(s))
+                .unwrap()
+        }
+        fn touch(
+            &self,
+            peers: &BTreeMap<u16, Arc<MemoryStream>>,
+            key: &[u8; 16],
+            view: (u32, u32),
+            point: (u32, u32),
+        ) -> Vec<TouchContact> {
+            let count = self.probe.touches.lock().unwrap().len();
+            let touch = serde_json::json!({"type":1,"action":2,"count":1,"trackID0":7,
+                "x0":point.0,"y0":point.1,"width":view.0,"height":view.1});
+            peers[&ClinkPorts::default().uibc]
+                .write_all(
+                    &SecureRecord::new(key)
+                        .unwrap()
+                        .seal(touch.to_string().as_bytes())
+                        .unwrap(),
+                )
+                .unwrap();
+            await_condition("touch", || self.probe.touches.lock().unwrap().len() > count);
+            self.probe.touches.lock().unwrap().last().unwrap().clone()
+        }
+        fn frame(&self, data: Arc<[u8]>, pts_us: i64, key_frame: bool) {
+            self.output.on_video_frame(VideoFrame {
+                screen: 0,
+                session: 1,
+                data,
+                pts_us,
+                key_frame,
+                received_at_nanos: 0,
+            });
+        }
+        fn close(&self) {
+            self.output.close();
+            assert!(self.output.await_closed(Duration::from_secs(3)));
+        }
+    }
+    impl Drop for Output {
+        fn drop(&mut self) {
+            self.output.close();
+            self.output.await_closed(Duration::from_secs(3));
+        }
+    }
+    fn live_clip() -> (Arc<VideoFormat>, Arc<[u8]>) {
+        let bytes =
+            include_bytes!("../../../kotlin/core/src/test/resources/media/baseline-640x360.h264");
+        let units = nal::units(bytes, nal::Format::AnnexB).unwrap();
+        let sps = units.iter().find(|n| n[0] & 31 == 7).unwrap();
+        let pps = units.iter().find(|n| n[0] & 31 == 8).unwrap();
+        let config = AvcConfig::from_parameter_sets(sps, pps).unwrap();
+        let format = VideoFormat::create(0, VideoCodec::H264, config.into(), None).unwrap();
+        let mut data = Vec::new();
+        for n in units {
+            let kind = n[0] & 31;
+            if kind == 9 && !data.is_empty() {
+                break;
+            }
+            if [1, 5, 6].contains(&kind) {
+                data.extend_from_slice(&(n.len() as u32).to_be_bytes());
+                data.extend_from_slice(n);
+            }
+        }
+        (Arc::new(format), data.into())
+    }
+    #[test]
+    fn output_tracks_emitted_sizes_views_and_statistics_across_reconnect() {
+        let test = Output::new();
+        let placeholder = BundledPlaceholderVideo::new().unwrap();
+        let (live, data) = live_clip();
+        assert_eq!((live.width, live.height), (640, 360));
+        let center = vec![TouchContact::new(0, 0.5, 0.5, true).unwrap()];
+        for generation in 0..2 {
+            let (peers, key) = test.connect();
+            let stats = test.stats(|s| s.placeholder_frames > 0);
+            assert_eq!(stats.live_frames, 0);
+            assert_eq!(stats.live_bytes, 0);
+            assert_eq!(stats.dropped_frames, 0);
+            assert_eq!(stats.send_stalls, 0);
+            assert_eq!((stats.codec, stats.width, stats.height), (None, 0, 0));
+            for view in [(1532, 1013), (1532, 1013), (1814, 1200), (1532, 1013)] {
+                assert_eq!(test.touch(&peers, &key, view, (640, 360)), center);
+            }
+            assert_eq!(
+                *test.probe.views.lock().unwrap(),
+                [(1532, 1013), (1814, 1200), (1532, 1013)].repeat(generation + 1)
+            );
+            assert_eq!(
+                test.probe.displays.lock().unwrap().last().unwrap(),
+                &DisplayInfo {
+                    width_px: 1532,
+                    height_px: 1013,
+                    density_dpi: 240,
+                    refresh_hz: 30.0,
+                    viewport: Some(Viewport {
+                        width_px: 1532,
+                        height_px: 1013
+                    }),
+                    fullscreen: Some(true),
+                    ..Default::default()
+                }
+            );
+            if generation == 1 {
+                test.close();
+                break;
+            }
+            test.output.on_session(&SessionState {
+                id: 1,
+                phase: SessionPhase::Active,
+                reason: None,
+            });
+            test.output.on_video_format(0, Some(live.clone()));
+            test.frame(data.clone(), 0, true);
+            let first = test.stats(|s| s.live_frames == 1);
+            assert_eq!(first.live_bytes, data.len() as u64);
+            assert_eq!(
+                (first.codec, first.width, first.height),
+                (Some(VideoCodec::H264), 640, 360)
+            );
+            assert_eq!(test.touch(&peers, &key, (1532, 1013), (320, 180)), center);
+            test.output
+                .on_video_format(0, Some(Arc::new(placeholder.format().clone())));
+            // Announcing a format cannot change touch scaling before any frame of it is sent.
+            assert_eq!(test.touch(&peers, &key, (1532, 1013), (320, 180)), center);
+            test.frame(placeholder.frames()[0].clone(), 33_333, true);
+            let second = test.stats(|s| s.live_frames == 2);
+            assert_eq!((second.width, second.height), (1280, 720));
+            assert_eq!(test.touch(&peers, &key, (1532, 1013), (640, 360)), center);
+            test.output.on_video_format(0, Some(live.clone()));
+            test.frame(data.clone(), 66_666, true);
+            let third = test.stats(|s| s.live_frames == 3);
+            assert_eq!((third.width, third.height), (640, 360));
+            assert_eq!(
+                third.live_bytes,
+                (2 * data.len() + placeholder.frames()[0].len()) as u64
+            );
+            test.output.on_video_format(0, None);
+            test.stats(|s| s.placeholder_frames > third.placeholder_frames);
+            assert_eq!(test.touch(&peers, &key, (1532, 1013), (640, 360)), center);
+            let mut unsupported = live.as_ref().clone();
+            unsupported.codec = VideoCodec::H265;
+            test.output.on_video_format(0, Some(Arc::new(unsupported)));
+            test.frame(data.clone(), 99_999, true);
+            test.frame(data.clone(), 133_332, true);
+            let skipped = test.stats(|s| s.dropped_frames >= third.dropped_frames + 2);
+            assert_eq!(skipped.dropped_frames, third.dropped_frames + 2);
+            assert_eq!(skipped.live_frames, third.live_frames);
+            assert_eq!(skipped.live_bytes, third.live_bytes);
+            assert_eq!(
+                (skipped.codec, skipped.width, skipped.height),
+                (Some(VideoCodec::H264), 640, 360)
+            );
+            assert_eq!(
+                *test.probe.errors.lock().unwrap(),
+                ["Carlink v0 requires H.264 input"]
+            );
+            test.close();
+        }
+    }
+}

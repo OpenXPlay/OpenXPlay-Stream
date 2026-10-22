@@ -414,6 +414,133 @@ fn touch_source_pixels_slots_pointer_order_up_cancel_and_keys() {
     );
 }
 #[test]
+fn touch_follows_live_and_placeholder_stream_sizes_instead_of_the_view_or_wfd_mode() {
+    let mut decoder = UibcDecoder::new(origin());
+    for (size, x, y, expected) in [
+        ((1450, 960), 725, 900, (0.5, 900.0 / 960.0)),
+        ((640, 360), 320, 180, (0.5, 0.5)),
+        ((1280, 720), 640, 360, (0.5, 0.5)),
+    ] {
+        let payload = serde_json::json!({"type":1,"action":2,"count":1,"trackID0":7,
+            "x0":x,"y0":y,"width":1532,"height":1013});
+        let Some(ControlEvent::Touch { contacts, .. }) = decoder
+            .decode(payload.to_string().as_bytes(), size)
+            .unwrap()
+        else {
+            panic!("expected touch")
+        };
+        assert_eq!(
+            contacts,
+            [TouchContact::new(0, expected.0, expected.1, true).unwrap()]
+        );
+    }
+}
+#[test]
+fn view_sizes_are_reported_on_first_touch_and_changes_including_cancel() {
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reported = reports.clone();
+    let mut decoder = UibcDecoder::new(origin())
+        .with_view_size(move |w, h| reported.lock().unwrap().push((w, h)));
+    let sizes = [
+        (1532, 1013),
+        (1814, 1200),
+        (1532, 1013),
+        (1533, 1013),
+        (1533, 1014),
+    ];
+    for (index, (w, h)) in sizes.iter().enumerate() {
+        for _ in 0..3 {
+            let payload = serde_json::json!({"type":1,"action":2,"count":1,"trackID0":7,
+                "x0":640,"y0":360,"width":w,"height":h});
+            decoder
+                .decode(payload.to_string().as_bytes(), (1280, 720))
+                .unwrap();
+            assert_eq!(*reports.lock().unwrap(), sizes[..=index]);
+        }
+    }
+    decoder
+        .decode(
+            br#"{"type":1,"action":3,"count":0,"width":1532,"height":1013}"#,
+            (0, 0),
+        )
+        .unwrap();
+    decoder.release();
+    decoder
+        .decode(
+            br#"{"type":1,"action":3,"count":0,"width":1532,"height":1013}"#,
+            (0, 0),
+        )
+        .unwrap();
+    assert_eq!(
+        *reports.lock().unwrap(),
+        [&sizes[..], &[(1532, 1013)]].concat()
+    );
+}
+#[test]
+fn invalid_views_and_non_touch_reports_do_not_announce_sizes_or_break_touches() {
+    use serde_json::{json, Value};
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reported = reports.clone();
+    let mut decoder = UibcDecoder::new(origin())
+        .with_view_size(move |w, h| reported.lock().unwrap().push((w, h)));
+    let touch = json!({"type":1,"action":0,"count":1,"trackID0":7,"x0":640,"y0":360});
+    let mut valid = touch.clone();
+    valid["width"] = json!(1532);
+    valid["height"] = json!(1013);
+    for initialized in [false, true] {
+        if initialized {
+            decoder
+                .decode(valid.to_string().as_bytes(), (1280, 720))
+                .unwrap();
+        }
+        for key in ["width", "height"] {
+            for invalid in [
+                None,
+                Some(json!(0)),
+                Some(json!(-1)),
+                Some(json!("1532")),
+                Some(json!(1.5)),
+                Some(json!(2147483648u64)),
+                Some(Value::Null),
+                Some(json!(true)),
+                Some(json!([])),
+                Some(json!({})),
+            ] {
+                let mut payload = valid.clone();
+                if let Some(value) = invalid {
+                    payload[key] = value;
+                } else {
+                    payload.as_object_mut().unwrap().remove(key);
+                }
+                let Some(ControlEvent::Touch { contacts, .. }) = decoder
+                    .decode(payload.to_string().as_bytes(), (1280, 720))
+                    .unwrap()
+                else {
+                    panic!("expected touch")
+                };
+                assert_eq!(contacts, [TouchContact::new(0, 0.5, 0.5, true).unwrap()]);
+                assert_eq!(reports.lock().unwrap().len(), usize::from(initialized));
+            }
+        }
+    }
+    for kind in [2, 99] {
+        let payload = json!({"type":kind,"keycode":4,"width":1814,"height":1200});
+        decoder
+            .decode(payload.to_string().as_bytes(), (1280, 720))
+            .unwrap();
+    }
+    let mut malformed = valid.clone();
+    malformed["count"] = json!(17);
+    malformed["width"] = json!(1814);
+    assert!(decoder
+        .decode(malformed.to_string().as_bytes(), (1280, 720))
+        .is_err());
+    decoder
+        .decode(valid.to_string().as_bytes(), (1280, 720))
+        .unwrap();
+    assert_eq!(*reports.lock().unwrap(), [(1532, 1013)]);
+}
+#[test]
 fn encrypted_uibc_fragmentation() {
     let key = [7; 16];
     let record = SecureRecord::new(&key)

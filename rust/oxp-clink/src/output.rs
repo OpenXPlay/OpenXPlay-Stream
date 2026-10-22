@@ -502,6 +502,9 @@ impl ClinkListener for SessionListener {
     fn diagnostic(&self, message: &str) {
         self.0.diagnostic(message);
     }
+    fn view_size(&self, width: u32, height: u32) {
+        self.0.view_size(width, height);
+    }
 }
 fn same_format(a: &Option<Arc<VideoFormat>>, b: &Option<Arc<VideoFormat>>) -> bool {
     match (a, b) {
@@ -549,7 +552,7 @@ fn media_worker(
     let mut keyframes = KeyframeRequests::default();
     let mut transport_pts = -1i64;
     let mut live_offset = 0i64;
-    let mut sent = 0;
+    let mut statistics = MediaStatistics::default();
     let mut reported_at = None;
     let mut mismatch_reported = None;
     let mut path = RtpPath::default();
@@ -590,6 +593,8 @@ fn media_worker(
                 gate.play(h.playing);
                 video_clock.revision(changed);
                 if changed {
+                    statistics.new_session(h.queue.dropped, path.send_stalls);
+                    reported_at = None;
                     muxer = None;
                     keyframes = KeyframeRequests::default();
                 }
@@ -711,11 +716,11 @@ fn media_worker(
                     })?;
                     output_pts = pts;
                     transport_pts = pts;
-                    if result == Emit::Dropped {
+                    if !statistics.video(result, Some(f), frame.data.len()) {
                         gate.reset();
                         keyframes.defer(true);
                     } else {
-                        sent += 1;
+                        session.set_stream_size((f.width, f.height));
                         let now = Instant::now();
                         video_clock.live_frame_at = Some(now);
                         video_clock.written_at = Some(now);
@@ -726,9 +731,14 @@ fn media_worker(
                         late_live = true;
                     }
                 }
-            } else if mismatch_reported.as_deref() != Some("unsupported_h265") {
-                mismatch_reported = Some("unsupported_h265".into());
-                listener.error("Carlink v0 requires H.264 input");
+            } else {
+                statistics.total.dropped_frames += 1;
+                gate.reset();
+                keyframes.defer(true);
+                if mismatch_reported.as_deref() != Some("unsupported_h265") {
+                    mismatch_reported = Some("unsupported_h265".into());
+                    listener.error("Carlink v0 requires H.264 input");
+                }
             }
         }
         let now = Instant::now();
@@ -747,10 +757,10 @@ fn media_worker(
             })?;
             output_pts = pts;
             transport_pts = pts;
-            if result == Emit::Dropped {
+            if !statistics.video(result, None, data.len()) {
                 placeholder_index = 0;
             } else {
-                sent += 1;
+                session.set_stream_size((placeholder.format().width, placeholder.format().height));
                 video_clock.written_at = Some(Instant::now());
                 placeholder_index = (placeholder_index + 1) % placeholder.frames().len();
             }
@@ -810,7 +820,7 @@ fn media_worker(
         }
         if reported_at.is_none_or(|t: Instant| now.duration_since(t) >= Duration::from_secs(1)) {
             let dropped = run.handoff.lock().unwrap().queue.dropped;
-            listener.statistics(sent, dropped);
+            listener.statistics(statistics.snapshot(dropped, path.send_stalls));
             with_sink(run, |sink| {
                 sink.stats(OutputStats {
                     origin,
@@ -841,18 +851,64 @@ enum Emit {
     /// Beyond [RtpUnit::MAX_BYTES]; nothing was sent.
     Dropped,
 }
+#[derive(Default)]
+struct MediaStatistics {
+    total: ClinkStatistics,
+    base: ClinkStatistics,
+    queue_drop_base: u64,
+    stall_base: u64,
+}
+impl MediaStatistics {
+    fn new_session(&mut self, queue_drops: u64, send_stalls: u64) {
+        self.base = self.total;
+        self.queue_drop_base = queue_drops;
+        self.stall_base = send_stalls;
+        self.total.codec = None;
+        self.total.width = 0;
+        self.total.height = 0;
+    }
+    fn video(&mut self, result: Emit, format: Option<&VideoFormat>, bytes: usize) -> bool {
+        if result == Emit::Dropped {
+            self.total.dropped_frames += 1;
+            return false;
+        }
+        if let Some(format) = format {
+            self.total.live_frames += 1;
+            self.total.live_bytes += bytes as u64;
+            self.total.codec = Some(format.codec);
+            self.total.width = format.width;
+            self.total.height = format.height;
+        } else {
+            self.total.placeholder_frames += 1;
+        }
+        true
+    }
+    fn snapshot(&self, queue_drops: u64, send_stalls: u64) -> ClinkStatistics {
+        ClinkStatistics {
+            live_frames: self.total.live_frames - self.base.live_frames,
+            placeholder_frames: self.total.placeholder_frames - self.base.placeholder_frames,
+            dropped_frames: queue_drops - self.queue_drop_base + self.total.dropped_frames
+                - self.base.dropped_frames,
+            live_bytes: self.total.live_bytes - self.base.live_bytes,
+            send_stalls: send_stalls - self.stall_base,
+            ..self.total
+        }
+    }
+}
 /// The media worker's side of the RTP path: the muxer streams TS packets straight into the one
 /// reusable unit, which [RtpSender] writes on its own thread; nothing is retained per packet.
 struct RtpPath {
     rtp: RtpPacketizer,
     /// None while the writer holds the unit.
     unit: Rc<RefCell<Option<RtpUnit>>>,
+    send_stalls: u64,
 }
 impl Default for RtpPath {
     fn default() -> Self {
         Self {
             rtp: RtpPacketizer::default(),
             unit: Rc::new(RefCell::new(Some(RtpUnit::default()))),
+            send_stalls: 0,
         }
     }
 }
@@ -902,6 +958,7 @@ impl RtpPath {
                 Ok(Emit::Sent)
             }
             None => {
+                self.send_stalls += 1;
                 listener.diagnostic(&format!(
                     "rtp send stalled ms={}",
                     sender.wait().as_millis()
@@ -1172,6 +1229,66 @@ mod audio_tests {
         assert_eq!(
             *listener.0.lock().unwrap(),
             ["link stalled ms=5000", "link recovered after ms=10000"]
+        );
+    }
+    #[test]
+    fn session_view_sizes_reach_the_output_listener() {
+        #[derive(Default)]
+        struct Listener(Mutex<Vec<(u32, u32)>>);
+        impl ClinkListener for Listener {
+            fn view_size(&self, width: u32, height: u32) {
+                self.0.lock().unwrap().push((width, height));
+            }
+        }
+        let listener = Arc::new(Listener::default());
+        let session_listener = SessionListener(listener.clone());
+        session_listener.view_size(1532, 1013);
+        session_listener.view_size(1814, 1200);
+        assert_eq!(*listener.0.lock().unwrap(), [(1532, 1013), (1814, 1200)]);
+    }
+    #[test]
+    fn media_statistics_count_emits_drops_and_stalls_with_per_session_bases() {
+        let clip = BundledPlaceholderVideo::new().unwrap();
+        let mut stats = MediaStatistics::default();
+        stats.new_session(7, 2);
+        assert_eq!(stats.snapshot(7, 2), ClinkStatistics::default());
+        assert!(stats.video(Emit::Sent, None, 100));
+        assert_eq!(
+            stats.snapshot(7, 2),
+            ClinkStatistics {
+                placeholder_frames: 1,
+                ..Default::default()
+            }
+        );
+        assert!(stats.video(Emit::Sent, Some(clip.format()), 200));
+        assert!(stats.video(Emit::Late, Some(clip.format()), 300));
+        assert!(!stats.video(Emit::Dropped, Some(clip.format()), 400));
+        assert!(!stats.video(Emit::Dropped, None, 500));
+        // Codec mismatch skips join failed emits; queue drops and stalls have separate bases.
+        stats.total.dropped_frames += 1;
+        let expected = ClinkStatistics {
+            live_frames: 2,
+            placeholder_frames: 1,
+            dropped_frames: 6,
+            live_bytes: 500,
+            send_stalls: 2,
+            codec: Some(VideoCodec::H264),
+            width: 1280,
+            height: 720,
+        };
+        assert_eq!(stats.snapshot(10, 4), expected);
+        assert_eq!(stats.snapshot(10, 4), expected, "reports are cumulative");
+        stats.new_session(10, 4);
+        assert_eq!(stats.snapshot(10, 4), ClinkStatistics::default());
+        assert!(stats.video(Emit::Late, None, 1000));
+        assert_eq!(
+            stats.snapshot(11, 5),
+            ClinkStatistics {
+                placeholder_frames: 1,
+                dropped_frames: 1,
+                send_stalls: 1,
+                ..Default::default()
+            }
         );
     }
     #[test]
@@ -1643,6 +1760,7 @@ mod audio_tests {
             assert_eq!(Emit::Sent, result);
         }
         assert!(late, "the socket never stalled");
+        assert_eq!(path.send_stalls, 1);
         // The media worker keeps running: polling never blocks, and video waiting meanwhile drops at
         // the queue's 600 ms bound.
         let mut queue = VideoQueue::default();
@@ -1673,6 +1791,7 @@ mod audio_tests {
             thread::sleep(Duration::from_millis(2));
         }
         assert!(sender.take_recovered().unwrap() >= sender.wait());
+        assert_eq!(path.send_stalls, 1, "recovery does not count another stall");
         active.store(false, Ordering::Release);
         writer.join().unwrap();
         drop(write);

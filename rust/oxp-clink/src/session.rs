@@ -126,6 +126,7 @@ struct Shared {
     microphone: Mutex<Microphone>,
     write_locks: Mutex<BTreeMap<usize, Arc<Mutex<()>>>>,
     snapshot: Mutex<SessionSnapshot>,
+    stream_size: Mutex<(u32, u32)>,
     resources: Mutex<Vec<Arc<dyn ClinkStream>>>,
     writes: Mutex<PendingWrites>,
     video: Mutex<Option<(u16, Arc<dyn ClinkStream>)>>,
@@ -179,6 +180,7 @@ impl ClinkSession {
                 microphone: Mutex::new(Microphone::default()),
                 write_locks: Mutex::new(BTreeMap::new()),
                 snapshot: Mutex::new(snapshot),
+                stream_size: Mutex::new((1280, 720)),
                 resources: Mutex::new(Vec::new()),
                 writes: Mutex::new(BTreeMap::new()),
                 video: Mutex::new(None),
@@ -189,6 +191,12 @@ impl ClinkSession {
     pub fn stop(&self) {
         let _ = self.microphone(None);
         self.shared.stop_requested.store(true, Ordering::Release);
+    }
+    pub(crate) fn stream_size(&self) -> (u32, u32) {
+        *self.shared.stream_size.lock().unwrap()
+    }
+    pub(crate) fn set_stream_size(&self, size: (u32, u32)) {
+        *self.shared.stream_size.lock().unwrap() = size;
     }
     pub fn microphone(&self, request: Option<MicRequest>) -> Result<()> {
         if let Some(r) = &request {
@@ -643,7 +651,9 @@ impl ClinkSession {
             client_id: a.head_unit_id.clone(),
         };
         *origin_slot.lock().unwrap() = Some(origin.clone());
-        let mut touch = UibcDecoder::new(origin.clone());
+        let listener = self.listener.clone();
+        let mut touch = UibcDecoder::new(origin.clone())
+            .with_view_size(move |width, height| listener.view_size(width, height));
         let mut wfd = WfdSource::new(a.local_ipv4.to_string(), ports);
         for service in [
             ports.control,
@@ -757,8 +767,7 @@ impl ClinkSession {
                 Some(Event::Bytes(service, bytes)) if service == ports.uibc => {
                     require(owner.certified, "certificate_required")?;
                     for plain in input_cipher.feed(&bytes)? {
-                        let mode = wfd.mode;
-                        if let Some(e) = touch.decode(&plain, (mode.width, mode.height))? {
+                        if let Some(e) = touch.decode(&plain, self.stream_size())? {
                             self.callbacks.control(e);
                         }
                     }
@@ -965,11 +974,20 @@ impl Owner<'_> {
     }
     fn report(&self, wfd: &WfdSource) {
         self.session.shared.snapshot.lock().unwrap().decoders = wfd.decoders.clone();
+        let display = DisplayInfo {
+            viewport: Some(Viewport {
+                width_px: self.display.width_px,
+                height_px: self.display.height_px,
+            }),
+            fullscreen: Some(true),
+            fullscreen_preferred: None,
+            ..self.display.clone()
+        };
         self.session.callbacks.capabilities(OutputCapabilities {
             prefers_h264: false,
             latency: LatencyClass::Interactive,
             decoders: wfd.decoders.clone(),
-            displays: BTreeMap::from([(0, self.display.clone())]),
+            displays: BTreeMap::from([(0, display)]),
             touch: 2,
             keys: KeyCode::all(),
             audio: BTreeSet::from([AudioCodec::AacLc, AudioCodec::PcmS16le]),
@@ -1327,6 +1345,7 @@ mod tests {
     #[derive(Default)]
     struct StallProbe {
         diagnostics: Mutex<Vec<String>>,
+        capabilities: Mutex<Vec<OutputCapabilities>>,
         queue: Mutex<crate::video_delivery::VideoQueue>,
         keyframes: AtomicU32,
         writes: AtomicU32,
@@ -1337,7 +1356,9 @@ mod tests {
         }
     }
     impl SessionCallbacks for StallProbe {
-        fn capabilities(&self, _: OutputCapabilities) {}
+        fn capabilities(&self, caps: OutputCapabilities) {
+            self.capabilities.lock().unwrap().push(caps);
+        }
         fn control(&self, _: ControlEvent) {}
         fn play(&self, _: bool) {}
         fn keyframe(&self) {
@@ -1402,6 +1423,42 @@ mod tests {
             output_id: "clink".into(),
             client_id: "hu".into(),
         }
+    }
+    #[test]
+    fn reported_display_uses_the_carlink_window_as_viewport_and_fullscreen() {
+        let probe = Arc::new(StallProbe::default());
+        let session = stall_session(probe.clone());
+        let mut owner = record_owner(&session);
+        owner.display = DisplayInfo {
+            width_px: 1532,
+            height_px: 1013,
+            density_dpi: 240,
+            refresh_hz: 30.0,
+            fullscreen: Some(false),
+            fullscreen_preferred: Some(true),
+            safe_area: SafeArea {
+                left: 3,
+                top: 5,
+                right: 7,
+                bottom: 9,
+            },
+            ..Default::default()
+        };
+        let wfd = WfdSource::new("127.0.0.1".into(), session.options.ports);
+        owner.report(&wfd);
+        let caps = probe.capabilities.lock().unwrap();
+        let expected = DisplayInfo {
+            viewport: Some(Viewport {
+                width_px: 1532,
+                height_px: 1013,
+            }),
+            fullscreen: Some(true),
+            fullscreen_preferred: None,
+            ..owner.display.clone()
+        };
+        assert_eq!(caps[0].displays[&0], expected);
+        assert_eq!((wfd.mode.width, wfd.mode.height), (1280, 720));
+        assert_eq!(session.stream_size(), (1280, 720));
     }
     #[test]
     fn empty_plaintext_and_sealed_acknowledgements_complete_only_the_matching_service() {

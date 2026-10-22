@@ -85,11 +85,25 @@ pub enum ClinkState {
     Playing,
     Ended,
 }
+/// Cumulative media counters for the current Carlink session, independent of tracing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClinkStatistics {
+    pub live_frames: u64,
+    pub placeholder_frames: u64,
+    pub dropped_frames: u64,
+    pub live_bytes: u64,
+    pub send_stalls: u64,
+    pub codec: Option<crate::model::VideoCodec>,
+    pub width: u32,
+    pub height: u32,
+}
 pub trait ClinkListener: Send + Sync {
     fn state(&self, _: ClinkState) {}
     fn error(&self, _: &str) {}
     fn diagnostic(&self, _: &str) {}
-    fn statistics(&self, _: u64, _: u64) {}
+    /// Head-unit view size on the first UIBC touch of a session and whenever it changes.
+    fn view_size(&self, _: u32, _: u32) {}
+    fn statistics(&self, _: ClinkStatistics) {}
     fn profile_mismatch(&self, _: &str, _: &[String]) {}
 }
 impl ClinkListener for () {}

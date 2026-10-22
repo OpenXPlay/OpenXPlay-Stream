@@ -4,7 +4,8 @@
 
 use oxp_bin::{clink_support::*, *};
 use oxp_clink::{
-    ClinkAddresses, ClinkLink, ClinkListener, ClinkOutput, ClinkState, StaticClinkLink,
+    ClinkAddresses, ClinkLink, ClinkListener, ClinkOutput, ClinkState, ClinkStatistics,
+    StaticClinkLink,
 };
 use oxp_core::{Hub, ProjectionOutput};
 use oxp_web::{Pairing, Tls, WebOutput, WebOutputConfig};
@@ -291,8 +292,11 @@ impl ClinkListener for RelayListener {
     fn diagnostic(&self, message: &str) {
         Listener.diagnostic(message);
     }
-    fn statistics(&self, sent: u64, dropped: u64) {
-        Listener.statistics(sent, dropped);
+    fn view_size(&self, width: u32, height: u32) {
+        Listener.view_size(width, height);
+    }
+    fn statistics(&self, stats: ClinkStatistics) {
+        Listener.statistics(stats);
     }
     fn profile_mismatch(&self, input: &str, decoders: &[String]) {
         Listener.profile_mismatch(input, decoders);
