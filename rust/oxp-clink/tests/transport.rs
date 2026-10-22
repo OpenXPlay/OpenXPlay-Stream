@@ -610,6 +610,8 @@ mod media_output {
     #[derive(Default)]
     struct Probe {
         displays: Mutex<Vec<DisplayInfo>>,
+        decoders: Mutex<Vec<Vec<DecoderSupport>>>,
+        keyframes: Mutex<Vec<Instant>>,
         touches: Mutex<Vec<Vec<TouchContact>>>,
         views: Mutex<Vec<(u32, u32)>>,
         reports: Mutex<Vec<ClinkStatistics>>,
@@ -628,14 +630,19 @@ mod media_output {
     }
     impl OutputHost for Probe {
         fn capabilities(&self, caps: OutputCapabilities) {
+            self.decoders.lock().unwrap().push(caps.decoders);
             self.displays
                 .lock()
                 .unwrap()
                 .push(caps.displays[&0].clone());
         }
         fn control(&self, event: ControlEvent) {
-            if let ControlEvent::Touch { contacts, .. } = event {
-                self.touches.lock().unwrap().push(contacts);
+            match event {
+                ControlEvent::Touch { contacts, .. } => self.touches.lock().unwrap().push(contacts),
+                ControlEvent::KeyFrameRequest { .. } => {
+                    self.keyframes.lock().unwrap().push(Instant::now())
+                }
+                _ => {}
             }
         }
         fn stats(&self, _: OutputStats) {}
@@ -654,6 +661,9 @@ mod media_output {
     }
     impl Output {
         fn new() -> Self {
+            Self::with_hevc_mode(ClinkHevcMode::default())
+        }
+        fn with_hevc_mode(hevc: ClinkHevcMode) -> Self {
             let transport = Arc::new(MemoryTransport {
                 streams: Mutex::new(BTreeMap::new()),
                 offers: Mutex::new(Vec::new()),
@@ -666,6 +676,11 @@ mod media_output {
                 Arc::new(Trust),
             )
             .unwrap()
+            .with_options(SessionOptions {
+                hevc,
+                ..Default::default()
+            })
+            .unwrap()
             .with_listener(probe.clone());
             Self {
                 output,
@@ -674,6 +689,12 @@ mod media_output {
             }
         }
         fn connect(&self) -> (BTreeMap<u16, Arc<MemoryStream>>, [u8; 16]) {
+            self.connect_with_hevc(false)
+        }
+        fn connect_with_hevc(
+            &self,
+            advertised: bool,
+        ) -> (BTreeMap<u16, Arc<MemoryStream>>, [u8; 16]) {
             let ports = ClinkPorts::default();
             let mut peers = BTreeMap::new();
             for service in [
@@ -697,6 +718,7 @@ mod media_output {
                 peers.insert(service, peer);
             }
             self.probe.reports.lock().unwrap().clear();
+            self.probe.keyframes.lock().unwrap().clear();
             self.output.open(self.probe.clone()).unwrap();
             let key = authenticate(&peers[&ports.auth]);
             let config = Frame::decode(&peers[&ports.control].message()).unwrap();
@@ -751,15 +773,23 @@ mod media_output {
                     .unwrap()
                     .remove(0);
                 let body = if request.line.starts_with("GET_PARAMETER ") {
-                    include_str!("../../../kotlin/clink/src/test/resources/head-unit-wfd.txt")
+                    format!(
+                        "{}\r\n{}",
+                        include_str!("../../../kotlin/clink/src/test/resources/head-unit-wfd.txt"),
+                        if advertised {
+                            "iccoa_support_hevc: supported\r\n"
+                        } else {
+                            ""
+                        }
+                    )
                 } else {
-                    ""
+                    String::new()
                 };
                 rtsp.write_all(
                     &RtspMessage {
                         line: "RTSP/1.0 200 OK".into(),
                         headers: BTreeMap::from([("cseq".into(), request.headers["cseq"].clone())]),
-                        body: body.into(),
+                        body,
                     }
                     .encode()
                     .unwrap(),
@@ -971,10 +1001,165 @@ mod media_output {
                 (skipped.codec, skipped.width, skipped.height),
                 (Some(VideoCodec::H264), 640, 360)
             );
+            assert!(test.probe.errors.lock().unwrap().is_empty());
+            test.close();
+        }
+    }
+
+    fn assert_transport_codec(peer: &MemoryStream, codec: VideoCodec) {
+        let messages = std::mem::take(&mut peer.input.state.lock().unwrap().0);
+        let mut access_units: Vec<Vec<u8>> = Vec::new();
+        let mut tables = 0;
+        for message in messages {
+            let mut rest = message.as_slice();
+            while !rest.is_empty() {
+                let length = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+                let rtp = &rest[2..2 + length];
+                rest = &rest[2 + length..];
+                assert_eq!(rtp[1], 33);
+                assert_eq!((rtp.len() - 12) % 188, 0);
+                for p in rtp[12..].as_chunks::<188>().0 {
+                    assert_eq!(p[0], 0x47);
+                    let pid = u16::from_be_bytes([p[1], p[2]]) & 0x1fff;
+                    let control = (p[3] >> 4) & 3;
+                    if control & 1 == 0 {
+                        continue;
+                    }
+                    let payload = &p[if control & 2 != 0 {
+                        5 + p[4] as usize
+                    } else {
+                        4
+                    }..];
+                    if pid == 0x100 {
+                        let pmt = &payload[1 + payload[0] as usize..];
+                        assert_eq!(
+                            pmt[12],
+                            if codec == VideoCodec::H265 {
+                                0x24
+                            } else {
+                                0x1b
+                            }
+                        );
+                        assert_eq!((pmt[5] >> 1) & 31, 0);
+                        tables += 1;
+                    } else if pid == 0x101 {
+                        if p[1] & 0x40 != 0 {
+                            access_units.push(Vec::new());
+                        }
+                        access_units.last_mut().unwrap().extend_from_slice(payload);
+                    }
+                }
+            }
+        }
+        assert!(tables > 0 && !access_units.is_empty());
+        for pes in access_units {
+            let units = nal::units(&pes[14..], nal::Format::AnnexB).unwrap();
+            let types: Vec<_> = units
+                .iter()
+                .map(|n| {
+                    if codec == VideoCodec::H265 {
+                        (n[0] >> 1) & 63
+                    } else {
+                        n[0] & 31
+                    }
+                })
+                .collect();
+            if codec == VideoCodec::H265 {
+                assert!(types.iter().all(|t| *t <= 34));
+                if nal::is_key_frame(&pes[14..], codec, nal::Format::AnnexB).unwrap() {
+                    assert_eq!(types[..3], [32, 33, 34]);
+                }
+            } else {
+                assert!(types.iter().all(|t| [1, 5, 6, 7, 8].contains(t)));
+            }
+        }
+    }
+
+    #[test]
+    fn session_codec_locks_placeholders_and_live_frames_and_requests_keyframes_on_mismatch() {
+        let avc = BundledPlaceholderVideo::new().unwrap();
+        let hevc = BundledHevcPlaceholderVideo::new().unwrap();
+        for (mode, advertised, codec) in [
+            (ClinkHevcMode::Auto, true, VideoCodec::H265),
+            (ClinkHevcMode::Auto, false, VideoCodec::H264),
+            (ClinkHevcMode::Off, true, VideoCodec::H264),
+        ] {
+            let test = Output::with_hevc_mode(mode);
+            let (peers, key) = test.connect_with_hevc(advertised);
+            let rtp = &peers[&ClinkPorts::default().rtp];
+            assert_transport_codec(rtp, codec);
+            let decoders = test.probe.decoders.lock().unwrap().last().unwrap().clone();
+            assert!(decoders.iter().any(|d| d.codec_string.starts_with("avc1.")));
             assert_eq!(
-                *test.probe.errors.lock().unwrap(),
-                ["Carlink v0 requires H.264 input"]
+                decoders
+                    .iter()
+                    .any(|d| d.codec_string == "hvc1.1.6.L123.B0"),
+                codec == VideoCodec::H265
             );
+            let (correct, other): (&dyn PlaceholderVideo, &dyn PlaceholderVideo) =
+                if codec == VideoCodec::H265 {
+                    (&hevc, &avc)
+                } else {
+                    (&avc, &hevc)
+                };
+            let state = |phase| SessionState {
+                id: 1,
+                phase,
+                reason: None,
+            };
+            test.output.on_session(&state(SessionPhase::Active));
+            let before_format = test.probe.keyframes.lock().unwrap().len();
+            test.output
+                .on_video_format(0, Some(Arc::new(other.format().clone())));
+            await_condition("format keyframe request", || {
+                test.probe.keyframes.lock().unwrap().len() > before_format
+            });
+            let before_frames = test.probe.keyframes.lock().unwrap().len();
+            test.frame(other.frames()[0].clone(), 0, true);
+            test.frame(other.frames()[0].clone(), 33_333, true);
+            let skipped = test.stats(|s| s.dropped_frames >= 2);
+            assert_eq!(
+                (
+                    skipped.live_frames,
+                    skipped.live_bytes,
+                    skipped.dropped_frames
+                ),
+                (0, 0, 2)
+            );
+            await_condition("mismatched frame keyframe request", || {
+                test.probe.keyframes.lock().unwrap().len() > before_frames
+            });
+            assert_transport_codec(rtp, codec);
+            for pair in test.probe.keyframes.lock().unwrap().windows(2) {
+                assert!(pair[1].duration_since(pair[0]) >= Duration::from_millis(900));
+            }
+            assert!(test.probe.errors.lock().unwrap().is_empty());
+            // An input session reset and new formats cannot change the Carlink session codec.
+            test.output.on_session(&state(SessionPhase::Ended));
+            test.output.on_session(&state(SessionPhase::Active));
+            test.output
+                .on_video_format(0, Some(Arc::new(correct.format().clone())));
+            test.frame(correct.frames()[0].clone(), 66_666, true);
+            let live = test.stats(|s| s.live_frames == 1);
+            assert_eq!(live.codec, Some(codec));
+            assert_eq!(live.live_bytes, correct.frames()[0].len() as u64);
+            assert_transport_codec(rtp, codec);
+            test.touch(&peers, &key, (1280, 720), (0, 0));
+            test.output.on_video_format(0, None);
+            test.stats(|s| s.placeholder_frames > live.placeholder_frames);
+            assert_transport_codec(rtp, codec);
+            assert!(test.probe.errors.lock().unwrap().is_empty());
+            test.close();
+        }
+    }
+
+    #[test]
+    fn reconnect_selects_a_new_codec_from_the_new_peers_capabilities() {
+        let test = Output::new();
+        for (advertised, codec) in [(true, VideoCodec::H265), (false, VideoCodec::H264)] {
+            let (peers, _) = test.connect_with_hevc(advertised);
+            assert_transport_codec(&peers[&ClinkPorts::default().rtp], codec);
+            assert!(test.probe.errors.lock().unwrap().is_empty());
             test.close();
         }
     }

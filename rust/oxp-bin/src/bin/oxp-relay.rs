@@ -21,7 +21,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -77,6 +77,7 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--state-dir",
             "--port",
             "--clink-transcode",
+            "--clink-hevc",
         ],
     )?;
     if args.get("--relay-name").is_some() != args.get("--relay-version").is_some()
@@ -122,6 +123,7 @@ fn clink_link(args: &Args) -> Result<Option<Arc<dyn ClinkLink>>> {
             "--state-dir",
             "--port",
             "--clink-transcode",
+            "--clink-hevc",
         ]
         .iter()
         .any(|k| args.get(k).is_some())
@@ -159,6 +161,7 @@ fn clink_link(args: &Args) -> Result<Option<Arc<dyn ClinkLink>>> {
     args.need("--state-dir")?;
     parse_ports(args.get("--port"))?;
     transcode_enabled(args.get("--clink-transcode"))?;
+    hevc_mode(args.get("--clink-hevc"))?;
     if mode == "static" {
         return Ok(Some(Arc::new(StaticClinkLink(ClinkAddresses::new(
             args.need("--clink-head-unit")?.parse()?,
@@ -548,6 +551,7 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
             )?
             .with_options(oxp_clink::session::SessionOptions {
                 ports: parse_ports(args.get("--port"))?,
+                hevc: hevc_mode(args.get("--clink-hevc"))?,
                 ..Default::default()
             })?
             .with_listener(Arc::new(RelayListener(shutdown.clone()))),
@@ -1074,6 +1078,43 @@ mod tests {
             .0
     }
 
+    #[test]
+    fn clink_hevc_argument_accepts_auto_or_off_and_requires_a_clink_link() {
+        for value in ["auto", "off"] {
+            let args = args(&[
+                "--clink-link",
+                "ble",
+                "--state-dir",
+                "/tmp/state",
+                "--clink-hevc",
+                value,
+            ]);
+            assert!(clink_link(&args).unwrap().is_some());
+            assert_eq!(args.get("--clink-hevc"), Some(value));
+        }
+        for value in ["", "on", "signal", "AUTO"] {
+            let args = args(&[
+                "--clink-link",
+                "ble",
+                "--state-dir",
+                "/tmp/state",
+                "--clink-hevc",
+                value,
+            ]);
+            assert_eq!(
+                clink_link(&args).err().unwrap().to_string(),
+                "--clink-hevc must be auto or off"
+            );
+        }
+        assert!(clink_link(&args(&["--clink-hevc", "off"])).is_err());
+        for values in [
+            vec!["--clink-hevc"],
+            vec!["--clink-hevc", "auto", "--clink-hevc", "off"],
+        ] {
+            assert!(parse_arguments(values.into_iter().map(str::to_owned)).is_err());
+        }
+        assert!(USAGE.contains("--clink-hevc auto|off"));
+    }
     #[test]
     fn clink_modes_and_option_combinations() {
         assert!(clink_link(&args(&[])).unwrap().is_none());

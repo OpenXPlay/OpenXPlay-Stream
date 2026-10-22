@@ -304,6 +304,13 @@ pub fn transcode_enabled(value: Option<&str>) -> Result<bool> {
         _ => Err("--clink-transcode must be auto or off".into()),
     }
 }
+pub fn hevc_mode(value: Option<&str>) -> Result<ClinkHevcMode> {
+    match value.unwrap_or("auto") {
+        "auto" => Ok(ClinkHevcMode::Auto),
+        "off" => Ok(ClinkHevcMode::Off),
+        _ => Err("--clink-hevc must be auto or off".into()),
+    }
+}
 /// Wraps an output so decisions and failures appear as relay diagnostics. The factory is probed
 /// here, at startup, and the devices it found are logged once.
 pub fn with_transcoding(
@@ -632,6 +639,18 @@ mod tests {
         assert!(pin.confirm_pairing("unit"));
         pin.stopped.store(true, Ordering::Release);
         assert!(!pin.confirm_pairing("unit"));
+    }
+    #[test]
+    fn hevc_defaults_to_auto_and_rejects_experimental_or_unknown_modes() {
+        assert_eq!(hevc_mode(None).unwrap(), ClinkHevcMode::Auto);
+        assert_eq!(hevc_mode(Some("auto")).unwrap(), ClinkHevcMode::Auto);
+        assert_eq!(hevc_mode(Some("off")).unwrap(), ClinkHevcMode::Off);
+        for value in ["", "on", "signal", "AUTO"] {
+            assert_eq!(
+                hevc_mode(Some(value)).unwrap_err().to_string(),
+                "--clink-hevc must be auto or off"
+            );
+        }
     }
     #[test]
     fn transcoding_defaults_to_auto_and_wraps_with_diagnostics() {

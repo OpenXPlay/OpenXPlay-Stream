@@ -2,8 +2,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-14
 
-use crate::{nal, AvcConfig, Result};
+use crate::{nal, AvcConfig, HevcConfig, Result, VideoCodec};
 const MAX_PCR_FILL_US: i64 = 2_000_000;
+#[derive(Clone, Copy, Debug)]
+pub enum VideoConfig<'a> {
+    Avc(&'a AvcConfig),
+    Hevc(&'a HevcConfig),
+}
+impl<'a> From<&'a AvcConfig> for VideoConfig<'a> {
+    fn from(config: &'a AvcConfig) -> Self {
+        Self::Avc(config)
+    }
+}
+impl<'a> From<&'a HevcConfig> for VideoConfig<'a> {
+    fn from(config: &'a HevcConfig) -> Self {
+        Self::Hevc(config)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct TsOptions {
     pub pmt_pid: u16,
@@ -13,6 +28,8 @@ pub struct TsOptions {
     pub audio_enabled: bool,
     pub insert_aud: bool,
     pub psi_interval_frames: u32,
+    pub video_codec: VideoCodec,
+    pub pmt_version: u8,
 }
 impl Default for TsOptions {
     fn default() -> Self {
@@ -24,6 +41,8 @@ impl Default for TsOptions {
             audio_enabled: false,
             insert_aud: true,
             psi_interval_frames: 15,
+            video_codec: VideoCodec::H264,
+            pmt_version: 0,
         }
     }
 }
@@ -52,6 +71,7 @@ impl<F: FnMut(&[u8; 188])> TsMuxer<F> {
             || pids[1] == pids[2]
             || o.program_number == 0
             || o.psi_interval_frames == 0
+            || o.pmt_version > 31
         {
             return Err("Invalid muxer options");
         }
@@ -75,14 +95,17 @@ impl<F: FnMut(&[u8; 188])> TsMuxer<F> {
             if o.audio_enabled { 23 } else { 18 },
             (o.program_number >> 8) as u8,
             o.program_number as u8,
-            0xc1,
+            0xc1 | (o.pmt_version << 1),
             0,
             0,
             0xe0 | (o.video_pid >> 8) as u8,
             o.video_pid as u8,
             0xf0,
             0,
-            0x1b,
+            match o.video_codec {
+                VideoCodec::H264 => 0x1b,
+                VideoCodec::H265 => 0x24,
+            },
             0xe0 | (o.video_pid >> 8) as u8,
             o.video_pid as u8,
             0xf0,
@@ -110,28 +133,65 @@ impl<F: FnMut(&[u8; 188])> TsMuxer<F> {
             pmt: section(pmt),
         })
     }
-    pub fn write_video(
+    pub fn write_video<'a>(
         &mut self,
         frame: &[u8],
-        config: &AvcConfig,
+        config: impl Into<VideoConfig<'a>>,
         pts_us: i64,
         key: bool,
     ) -> Result<()> {
         if pts_us < 0 || frame.is_empty() {
             return Err("Invalid video timestamp or empty access unit");
         }
-        let annex = nal::avcc_to_annex_b(frame)?;
         let mut payload = Vec::new();
-        if self.options.insert_aud {
-            payload.extend_from_slice(&[0, 0, 0, 1, 9, 0xf0]);
-        }
-        if key {
-            for n in config.sps.iter().chain(&config.pps) {
-                payload.extend_from_slice(&[0, 0, 0, 1]);
-                payload.extend_from_slice(n);
+        let key = match config.into() {
+            VideoConfig::Avc(config) => {
+                if self.options.video_codec != VideoCodec::H264 {
+                    return Err("Muxer codec mismatch");
+                }
+                let annex = nal::avcc_to_annex_b(frame)?;
+                if self.options.insert_aud {
+                    payload.extend_from_slice(&[0, 0, 0, 1, 9, 0xf0]);
+                }
+                if key {
+                    for n in config.sps.iter().chain(&config.pps) {
+                        payload.extend_from_slice(&[0, 0, 0, 1]);
+                        payload.extend_from_slice(n);
+                    }
+                }
+                payload.extend_from_slice(&annex);
+                key
             }
-        }
-        payload.extend_from_slice(&annex);
+            VideoConfig::Hevc(config) => {
+                if self.options.video_codec != VideoCodec::H265 {
+                    return Err("Muxer codec mismatch");
+                }
+                let units = nal::units(frame, nal::Format::Avcc)?;
+                if units.iter().any(|n| n.len() < 2) {
+                    return Err("Truncated HEVC NAL header");
+                }
+                let kind = |n: &[u8]| (n[0] >> 1) & 63;
+                let irap = units.iter().any(|n| (16..=21).contains(&kind(n)));
+                let mut append = |n: &[u8]| {
+                    payload.extend_from_slice(&[0, 0, 0, 1]);
+                    payload.extend_from_slice(n);
+                };
+                if irap {
+                    for n in config.vps.iter().chain(&config.sps).chain(&config.pps) {
+                        append(n);
+                    }
+                }
+                // Replace in-band parameter sets and omit prefix SEI on IRAPs so the slice follows
+                // VPS/SPS/PPS directly. Prefix SEI must not be moved behind the slice.
+                for n in units {
+                    let t = kind(n);
+                    if t != 35 && (!irap || (!(32..=34).contains(&t) && t != 39)) {
+                        append(n);
+                    }
+                }
+                irap || key
+            }
+        };
         if !self.tables_written || key || self.video_frames == 0 {
             self.tables();
         }

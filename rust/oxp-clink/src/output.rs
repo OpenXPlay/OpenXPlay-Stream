@@ -6,7 +6,7 @@ use crate::{
     interfaces::*,
     media::{RtpPacketizer, RtpSender, RtpUnit, RtpWrite},
     model::*,
-    placeholder::{BundledPlaceholderVideo, PlaceholderVideo},
+    placeholder::{BundledHevcPlaceholderVideo, BundledPlaceholderVideo, PlaceholderVideo},
     require,
     session::{ClinkSession, SessionCallbacks, SessionOptions},
     video_delivery::{VideoQueue, VideoSwitch},
@@ -16,7 +16,8 @@ use crate::{
 use oxp_media::{
     nal::{self, Format},
     transcode_policy::CodecProfile,
-    AvcConfig, TsMuxer,
+    ts::VideoConfig,
+    AvcConfig, HevcConfig, TsMuxer,
 };
 use std::{
     cell::RefCell,
@@ -91,9 +92,7 @@ struct Callbacks {
     run: Weak<Run>,
 }
 impl SessionCallbacks for Callbacks {
-    fn capabilities(&self, mut c: OutputCapabilities) {
-        // The transport stream writer only emits AVC.
-        c.decoders.retain(|d| d.codec_string.starts_with("avc1."));
+    fn capabilities(&self, c: OutputCapabilities) {
         if let Some(run) = self.run.upgrade() {
             with_sink(&run, |sink| sink.capabilities(c));
         }
@@ -539,12 +538,16 @@ fn media_worker(
             && nal::is_key_frame(&placeholder.frames()[0], VideoCodec::H264, Format::Avcc)?,
         "invalid_placeholder",
     )?;
+    let hevc_placeholder = BundledHevcPlaceholderVideo::new()?;
+    let hevc_placeholder_config = HevcConfig::parse(&hevc_placeholder.format().config)?;
     let audio_config = oxp_media::AudioSpecificConfig::new(2, 48000, 2)?;
     let mut gate = VideoSwitch::default();
     let mut revision = None;
     let mut generation: Option<Arc<ClinkSession>> = None;
     let mut format = None;
     let mut avc = None;
+    let mut hevc = None;
+    let mut session_codec = None;
     let mut placeholder_index = 0;
     let mut next_placeholder = Instant::now();
     let mut output_pts = -1i64;
@@ -596,6 +599,7 @@ fn media_worker(
                     statistics.new_session(h.queue.dropped, path.send_stalls);
                     reported_at = None;
                     muxer = None;
+                    session_codec = None;
                     keyframes = KeyframeRequests::default();
                 }
                 placeholder_index = 0;
@@ -605,6 +609,7 @@ fn media_worker(
                 if !same_format(&format, &h.format) {
                     format = h.format.clone();
                     avc = None;
+                    hevc = None;
                     mismatch_reported = None;
                 }
             }
@@ -634,6 +639,22 @@ fn media_worker(
             }
         };
         let snapshot = session.snapshot();
+        // The car keeps the decoder selected by the first TS stream type for this entire session.
+        let session_codec = *session_codec.get_or_insert(if snapshot.hevc_enabled {
+            VideoCodec::H265
+        } else {
+            VideoCodec::H264
+        });
+        let clip: &dyn PlaceholderVideo = if session_codec == VideoCodec::H265 {
+            &hevc_placeholder
+        } else {
+            placeholder
+        };
+        let clip_config = if session_codec == VideoCodec::H265 {
+            VideoConfig::Hevc(&hevc_placeholder_config)
+        } else {
+            VideoConfig::Avc(&placeholder_config)
+        };
         let muxer = muxer.get_or_insert_with(|| {
             TsMuxer::with_options(
                 path.sink(),
@@ -641,6 +662,7 @@ fn media_worker(
                     audio_enabled: snapshot.media_audio,
                     // The head unit identifies key frames from the first NAL.
                     insert_aud: false,
+                    video_codec: session_codec,
                     ..Default::default()
                 },
             )
@@ -657,7 +679,7 @@ fn media_worker(
         let write = &write.as_ref().unwrap().1;
         require(
             (snapshot.mode.width, snapshot.mode.height)
-                == (placeholder.format().width, placeholder.format().height),
+                == (clip.format().width, clip.format().height),
             "placeholder_timing_mismatch",
         )?;
         let origin = Origin {
@@ -677,13 +699,32 @@ fn media_worker(
         }
         let had_frame = frame.is_some();
         if let Some(frame) = frame {
-            if let Some(f) = format.as_ref().filter(|f| f.codec == VideoCodec::H264) {
-                if avc.is_none() {
-                    avc = Some(AvcConfig::parse(&f.config)?);
-                }
-                let config = avc.as_ref().unwrap();
+            if let Some(f) = format.as_ref().filter(|f| f.codec == session_codec) {
+                let config = match f.codec {
+                    VideoCodec::H264 => {
+                        if avc.is_none() {
+                            avc = Some(AvcConfig::parse(&f.config)?);
+                        }
+                        VideoConfig::Avc(avc.as_ref().unwrap())
+                    }
+                    VideoCodec::H265 => {
+                        if hevc.is_none() {
+                            hevc = Some(HevcConfig::parse(&f.config)?);
+                        }
+                        VideoConfig::Hevc(hevc.as_ref().unwrap())
+                    }
+                };
                 // The same acceptance rule the transcoding policy uses.
-                let source = CodecProfile::avc(config.profile, config.compatibility, config.level);
+                let source = match config {
+                    VideoConfig::Avc(c) => CodecProfile::avc(c.profile, c.compatibility, c.level),
+                    VideoConfig::Hevc(c) => CodecProfile {
+                        codec: VideoCodec::H265,
+                        profile: c.profile,
+                        constraints: 0,
+                        level: c.level,
+                        high_tier: c.high_tier,
+                    },
+                };
                 let supported = snapshot.decoders.iter().any(|d| {
                     CodecProfile::parse(&d.codec_string).is_some_and(|d| d.accepts(&source))
                 });
@@ -701,7 +742,7 @@ fn media_worker(
                 let was_live = gate.live;
                 if gate.accept(frame.key_frame) {
                     if !was_live {
-                        live_offset = (output_pts + 1_000_000 / placeholder.fps() as i64)
+                        live_offset = (output_pts + 1_000_000 / clip.fps() as i64)
                             .max(0)
                             .max(frame.pts_us + video_clock.audio_offset.unwrap_or(-frame.pts_us))
                             - frame.pts_us;
@@ -735,9 +776,12 @@ fn media_worker(
                 statistics.total.dropped_frames += 1;
                 gate.reset();
                 keyframes.defer(true);
-                if mismatch_reported.as_deref() != Some("unsupported_h265") {
-                    mismatch_reported = Some("unsupported_h265".into());
-                    listener.error("Carlink v0 requires H.264 input");
+                if mismatch_reported.as_deref() != Some("codec_mismatch") {
+                    mismatch_reported = Some("codec_mismatch".into());
+                    listener.diagnostic(&format!(
+                        "codec mismatch expected={session_codec:?} actual={:?}",
+                        format.as_ref().map(|f| f.codec)
+                    ));
                 }
             }
         }
@@ -747,28 +791,28 @@ fn media_worker(
             && now >= next_placeholder
             && video_clock.placeholder_due(now)
         {
-            let data = &placeholder.frames()[placeholder_index];
-            let pts = (output_pts + 1_000_000 / placeholder.fps() as i64)
+            let data = &clip.frames()[placeholder_index];
+            let pts = (output_pts + 1_000_000 / clip.fps() as i64)
                 .max(0)
                 .max(transport_pts + 1);
             let key = placeholder_index == 0;
             let result = path.emit(&run.sender, write, listener, pts, || {
-                muxer.write_video(data, &placeholder_config, pts, key)
+                muxer.write_video(data, clip_config, pts, key)
             })?;
             output_pts = pts;
             transport_pts = pts;
             if !statistics.video(result, None, data.len()) {
                 placeholder_index = 0;
             } else {
-                session.set_stream_size((placeholder.format().width, placeholder.format().height));
+                session.set_stream_size((clip.format().width, clip.format().height));
                 video_clock.written_at = Some(Instant::now());
-                placeholder_index = (placeholder_index + 1) % placeholder.frames().len();
+                placeholder_index = (placeholder_index + 1) % clip.frames().len();
             }
             if result == Emit::Late {
                 writable = false;
                 late_video = true;
             }
-            next_placeholder = now + Duration::from_nanos(1_000_000_000 / placeholder.fps() as u64);
+            next_placeholder = now + Duration::from_nanos(1_000_000_000 / clip.fps() as u64);
         }
         if snapshot.media_audio {
             for _ in 0..4 {

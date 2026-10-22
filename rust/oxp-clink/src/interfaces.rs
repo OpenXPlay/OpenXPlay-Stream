@@ -107,6 +107,12 @@ pub trait ClinkListener: Send + Sync {
     fn profile_mismatch(&self, _: &str, _: &[String]) {}
 }
 impl ClinkListener for () {}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClinkHevcMode {
+    #[default]
+    Auto,
+    Off,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct ClinkPorts {
     pub auth: u16,

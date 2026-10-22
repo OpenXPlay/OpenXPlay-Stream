@@ -31,6 +31,7 @@ pub trait SessionCallbacks: Send + Sync {
 #[derive(Clone)]
 pub struct SessionOptions {
     pub ports: ClinkPorts,
+    pub hevc: ClinkHevcMode,
     pub output_id: String,
     pub device_id: String,
     pub device_name: String,
@@ -41,6 +42,7 @@ impl Default for SessionOptions {
     fn default() -> Self {
         Self {
             ports: Default::default(),
+            hevc: Default::default(),
             output_id: "clink".into(),
             device_id: "openxplay-stream".into(),
             device_name: "OpenXPlay".into(),
@@ -56,6 +58,7 @@ pub struct SessionSnapshot {
     pub decoders: Vec<DecoderSupport>,
     pub rtp_port: u16,
     pub media_audio: bool,
+    pub hevc_enabled: bool,
 }
 impl Default for SessionSnapshot {
     fn default() -> Self {
@@ -66,6 +69,7 @@ impl Default for SessionSnapshot {
             decoders: Vec::new(),
             rtp_port: 15550,
             media_audio: false,
+            hevc_enabled: false,
         }
     }
 }
@@ -654,7 +658,7 @@ impl ClinkSession {
         let listener = self.listener.clone();
         let mut touch = UibcDecoder::new(origin.clone())
             .with_view_size(move |width, height| listener.view_size(width, height));
-        let mut wfd = WfdSource::new(a.local_ipv4.to_string(), ports);
+        let mut wfd = WfdSource::with_hevc_mode(a.local_ipv4.to_string(), ports, self.options.hevc);
         for service in [
             ports.control,
             ports.cert,
@@ -749,6 +753,7 @@ impl ClinkSession {
                             s.decoders = wfd.decoders.clone();
                             s.rtp_port = wfd.rtp_port;
                             s.media_audio = wfd.audio;
+                            s.hevc_enabled = wfd.hevc_enabled();
                         }
                         owner.report(&wfd);
                         owner.update_play(&wfd);
