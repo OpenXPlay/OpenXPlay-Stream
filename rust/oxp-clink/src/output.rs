@@ -6,23 +6,26 @@ use crate::{
     interfaces::*,
     media::{RtpPacketizer, RtpSender, RtpUnit, RtpWrite},
     model::*,
-    placeholder::{BundledPlaceholderVideo, PlaceholderVideo},
+    placeholder::{BundledHevcPlaceholderVideo, BundledPlaceholderVideo, PlaceholderVideo},
     require,
     session::{ClinkSession, SessionCallbacks, SessionOptions},
+    trace::{next_session, now_nanos, ClinkMediaTap, ClinkTrace, ClinkTraceEvent},
     video_delivery::{VideoQueue, VideoSwitch},
+    voice_delivery::voice_role,
     Result,
 };
 use oxp_media::{
     nal::{self, Format},
     transcode_policy::CodecProfile,
-    AvcConfig, TsMuxer,
+    ts::VideoConfig,
+    AvcConfig, HevcConfig, TsMuxer,
 };
 use std::{
     cell::RefCell,
     collections::{BTreeSet, VecDeque},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
     thread,
@@ -51,7 +54,40 @@ impl Handoff {
         }
     }
 }
+struct RunTrace {
+    sink: Arc<dyn ClinkTrace>,
+    session: u64,
+    rtp_packets: AtomicU64,
+    rtp_bytes: AtomicU64,
+    queue_overflows: AtomicU64,
+}
+impl RunTrace {
+    fn video(&self, event: &str, source: &str) {
+        self.sink.record(ClinkTraceEvent::Video {
+            at_nanos: now_nanos(),
+            session: self.session,
+            event: event.into(),
+            source: source.into(),
+            codec: None,
+            width: None,
+            height: None,
+            sps: Vec::new(),
+            pps: Vec::new(),
+        });
+    }
+    fn error(&self, error: &dyn std::fmt::Display) {
+        // Rust has no exception class; use stable, bounded error display text.
+        self.sink.record(ClinkTraceEvent::Error {
+            at_nanos: now_nanos(),
+            session: self.session,
+            code: "output_failed".into(),
+            exception_class: error.to_string().chars().take(120).collect(),
+            location: "ClinkOutput".into(),
+        });
+    }
+}
 struct Run {
+    trace: Option<Arc<RunTrace>>,
     active: AtomicBool,
     sink: Arc<dyn OutputSink>,
     handoff: Mutex<Handoff>,
@@ -62,6 +98,7 @@ struct Run {
 impl Run {
     fn new(sink: Arc<dyn OutputSink>) -> Self {
         Self {
+            trace: None,
             active: AtomicBool::new(true),
             sink,
             handoff: Mutex::new(Handoff {
@@ -90,9 +127,7 @@ struct Callbacks {
     run: Weak<Run>,
 }
 impl SessionCallbacks for Callbacks {
-    fn capabilities(&self, mut c: OutputCapabilities) {
-        // The transport stream writer only emits AVC.
-        c.decoders.retain(|d| d.codec_string.starts_with("avc1."));
+    fn capabilities(&self, c: OutputCapabilities) {
         if let Some(run) = self.run.upgrade() {
             with_sink(&run, |sink| sink.capabilities(c));
         }
@@ -177,6 +212,14 @@ impl ClinkOutput {
         self.listener = listener;
         self
     }
+    pub fn with_trace(mut self, trace: Arc<dyn ClinkTrace>) -> Self {
+        self.options.trace = Some(trace);
+        self
+    }
+    pub fn with_media_tap(mut self, tap: Arc<dyn ClinkMediaTap>) -> Self {
+        self.options.media_tap = Some(tap);
+        self
+    }
     pub fn with_placeholder(mut self, placeholder: Arc<dyn PlaceholderVideo>) -> Self {
         self.placeholder = placeholder;
         self
@@ -188,7 +231,34 @@ impl ClinkOutput {
                 .is_ok(),
             "output_already_open",
         )?;
-        let run = Arc::new(Run::new(sink));
+        let mut run = Run::new(sink);
+        let mut options = self.options.clone();
+        if let Some(sink) = &options.trace {
+            let session = next_session();
+            options.trace_session = Some(session);
+            sink.record(ClinkTraceEvent::Link {
+                at_nanos: now_nanos(),
+                session,
+                stage: "hevc_mode".into(),
+                fields: [(
+                    "mode".into(),
+                    match options.hevc {
+                        ClinkHevcMode::Auto => "AUTO",
+                        ClinkHevcMode::Off => "OFF",
+                    }
+                    .into(),
+                )]
+                .into(),
+            });
+            run.trace = Some(Arc::new(RunTrace {
+                sink: sink.clone(),
+                session,
+                rtp_packets: AtomicU64::new(0),
+                rtp_bytes: AtomicU64::new(0),
+                queue_overflows: AtomicU64::new(0),
+            }));
+        }
+        let run = Arc::new(run);
         *self.current.lock().unwrap() = Some(run.clone());
         let session = match ClinkSession::new(
             self.link.clone(),
@@ -198,7 +268,7 @@ impl ClinkOutput {
             Arc::new(Callbacks {
                 run: Arc::downgrade(&run),
             }),
-            self.options.clone(),
+            options,
         ) {
             Ok(s) => Arc::new(s),
             Err(e) => {
@@ -223,6 +293,9 @@ impl ClinkOutput {
                     |p| voice_run.handoff.lock().unwrap().input_session == Some(p.session),
                 );
                 if let Err(e) = result {
+                    if let Some(t) = &voice_run.trace {
+                        t.error(e.as_ref());
+                    }
                     if voice_run.active.load(Ordering::Acquire) {
                         voice_listener.error(&e.to_string());
                     }
@@ -263,6 +336,9 @@ impl ClinkOutput {
                 if let Err(e) =
                     media_worker(&media_run, placeholder.as_ref(), listener.as_ref(), &id)
                 {
+                    if let Some(t) = &media_run.trace {
+                        t.error(e.as_ref());
+                    }
                     if media_run.active.load(Ordering::Acquire) {
                         listener.error(&e.to_string());
                     }
@@ -319,6 +395,9 @@ impl ClinkOutput {
                 } else {
                     Some(state.id)
                 };
+                if let Some(t) = &run.trace {
+                    t.video("reset", "input_session");
+                }
                 h.queue.reset();
                 h.audio.clear();
                 h.audio_bytes = 0;
@@ -344,6 +423,32 @@ impl ClinkOutput {
         if let Some(run) = run {
             let mut h = run.handoff.lock().unwrap();
             if !same_format(&h.format, &format) {
+                if let Some(t) = &run.trace {
+                    let config = format
+                        .as_ref()
+                        .filter(|f| f.codec == VideoCodec::H264)
+                        .and_then(|f| AvcConfig::parse(&f.config).ok());
+                    let hex = |bytes: &Vec<u8>| {
+                        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    };
+                    t.sink.record(ClinkTraceEvent::Video {
+                        at_nanos: now_nanos(),
+                        session: t.session,
+                        event: "format".into(),
+                        source: String::new(),
+                        codec: format.as_ref().map(|f| f.codec_string.clone()),
+                        width: format.as_ref().map(|f| f.width),
+                        height: format.as_ref().map(|f| f.height),
+                        sps: config
+                            .as_ref()
+                            .map(|c| c.sps.iter().map(hex).collect())
+                            .unwrap_or_default(),
+                        pps: config
+                            .as_ref()
+                            .map(|c| c.pps.iter().map(hex).collect())
+                            .unwrap_or_default(),
+                    });
+                }
                 h.format = format;
                 h.queue.reset();
                 h.revision = h.revision.wrapping_add(1);
@@ -366,7 +471,14 @@ impl ClinkOutput {
                 return;
             }
             h.clock_mix.video(frame.pts_us, Instant::now());
-            if h.queue.offer(frame) {
+            let request = if let Some(t) = &run.trace {
+                h.queue.offer_observed(frame, || {
+                    t.queue_overflows.fetch_add(1, Ordering::Relaxed);
+                })
+            } else {
+                h.queue.offer(frame)
+            };
+            if request {
                 h.request_keyframe = true;
             }
         }
@@ -397,7 +509,7 @@ impl ClinkOutput {
             }
             h.voice_streams.remove(&stream);
             if format.as_ref().is_some_and(|f| {
-                f.role != AudioRole::Media
+                voice_role(f.role)
                     && f.codec == AudioCodec::PcmS16le
                     && (8000..=48000).contains(&f.sample_rate)
                     && (1..=2).contains(&f.channels)
@@ -498,11 +610,24 @@ impl ClinkListener for SessionListener {
     fn error(&self, e: &str) {
         self.0.error(e);
     }
+    fn diagnostic(&self, message: &str) {
+        self.0.diagnostic(message);
+    }
+    fn view_size(&self, width: u32, height: u32) {
+        self.0.view_size(width, height);
+    }
 }
 fn same_format(a: &Option<Arc<VideoFormat>>, b: &Option<Arc<VideoFormat>>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (Some(a), Some(b)) => {
+            Arc::ptr_eq(a, b)
+                || (a.codec == b.codec
+                    && a.codec_string == b.codec_string
+                    && a.width == b.width
+                    && a.height == b.height
+                    && a.config == b.config)
+        }
         _ => false,
     }
 }
@@ -525,21 +650,24 @@ fn media_worker(
             && nal::is_key_frame(&placeholder.frames()[0], VideoCodec::H264, Format::Avcc)?,
         "invalid_placeholder",
     )?;
+    let hevc_placeholder = BundledHevcPlaceholderVideo::new()?;
+    let hevc_placeholder_config = HevcConfig::parse(&hevc_placeholder.format().config)?;
     let audio_config = oxp_media::AudioSpecificConfig::new(2, 48000, 2)?;
     let mut gate = VideoSwitch::default();
     let mut revision = None;
     let mut generation: Option<Arc<ClinkSession>> = None;
     let mut format = None;
     let mut avc = None;
+    let mut hevc = None;
+    let mut session_codec = None;
     let mut placeholder_index = 0;
     let mut next_placeholder = Instant::now();
     let mut output_pts = -1i64;
     let mut video_clock = VideoClock::default();
     let mut keyframes = KeyframeRequests::default();
     let mut transport_pts = -1i64;
-    let mut audio_offset: Option<i64> = None;
     let mut live_offset = 0i64;
-    let mut sent = 0;
+    let mut statistics = MediaStatistics::default();
     let mut reported_at = None;
     let mut mismatch_reported = None;
     let mut path = RtpPath::default();
@@ -549,6 +677,7 @@ fn media_worker(
     let mut late_live = false;
     let mut adts = Vec::new();
     let mut muxer = None;
+    let mut trace_stats = run.trace.as_ref().map(|_| TraceMedia::default());
     while run.active.load(Ordering::Acquire) {
         let session = run.session.lock().unwrap().clone();
         // While a late write is in flight, media stays in the bounded queues (video drops to the next
@@ -577,12 +706,24 @@ fn media_worker(
                 _ => true,
             };
             if revision != Some(h.revision) || changed {
+                if let Some(t) = &run.trace {
+                    t.video(
+                        if video_clock.live_frame_at.is_some() {
+                            "freeze"
+                        } else {
+                            "reset"
+                        },
+                        "revision",
+                    );
+                }
                 gate.play(h.playing);
-                audio_offset = None;
+                video_clock.revision(changed);
                 if changed {
+                    statistics.new_session(h.queue.dropped, path.send_stalls);
+                    reported_at = None;
                     muxer = None;
+                    session_codec = None;
                     keyframes = KeyframeRequests::default();
-                    video_clock.live_frame_at = None;
                 }
                 placeholder_index = 0;
                 next_placeholder = Instant::now();
@@ -591,10 +732,18 @@ fn media_worker(
                 if !same_format(&format, &h.format) {
                     format = h.format.clone();
                     avc = None;
+                    hevc = None;
                     mismatch_reported = None;
                 }
             }
             if h.queue.take_gap() {
+                if let Some(t) = &run.trace {
+                    t.video("reset", "gap");
+                    if gate.live {
+                        t.video("freeze", "gap");
+                    }
+                    trace_stats.as_mut().unwrap().keyframe_source = "gap";
+                }
                 gate.reset();
                 placeholder_index = 0;
                 next_placeholder = Instant::now();
@@ -620,11 +769,44 @@ fn media_worker(
             }
         };
         let snapshot = session.snapshot();
+        // The car keeps the decoder selected by the first TS stream type for this entire session.
+        let session_codec = *session_codec.get_or_insert(if snapshot.hevc_enabled {
+            VideoCodec::H265
+        } else {
+            VideoCodec::H264
+        });
+        let clip: &dyn PlaceholderVideo = if session_codec == VideoCodec::H265 {
+            &hevc_placeholder
+        } else {
+            placeholder
+        };
+        let clip_config = if session_codec == VideoCodec::H265 {
+            VideoConfig::Hevc(&hevc_placeholder_config)
+        } else {
+            VideoConfig::Avc(&placeholder_config)
+        };
         let muxer = muxer.get_or_insert_with(|| {
+            if let Some(t) = &run.trace {
+                let codec = codec_name(session_codec);
+                t.sink.record(ClinkTraceEvent::Video {
+                    at_nanos: now_nanos(),
+                    session: t.session,
+                    event: "muxer_codec".into(),
+                    source: format!("initial->{codec} pmtVersion=0"),
+                    codec: Some(codec.into()),
+                    width: None,
+                    height: None,
+                    sps: Vec::new(),
+                    pps: Vec::new(),
+                });
+            }
             TsMuxer::with_options(
                 path.sink(),
                 oxp_media::ts::TsOptions {
                     audio_enabled: snapshot.media_audio,
+                    // The head unit identifies key frames from the first NAL.
+                    insert_aud: false,
+                    video_codec: session_codec,
                     ..Default::default()
                 },
             )
@@ -635,13 +817,24 @@ fn media_worker(
             .is_some_and(|(s, _)| Arc::ptr_eq(s, &session))
         {
             let target = session.clone();
-            let to_session: RtpWrite = Arc::new(move |p: &[u8]| target.send_rtp(p));
+            let trace = run.trace.clone();
+            let to_session: RtpWrite = Arc::new(move |p: &[u8]| {
+                let sent = target.send_rtp(p)?;
+                if sent {
+                    if let Some(t) = &trace {
+                        t.rtp_packets.fetch_add(1, Ordering::Relaxed);
+                        t.rtp_bytes
+                            .fetch_add((p.len() - 2) as u64, Ordering::Relaxed);
+                    }
+                }
+                Ok(sent)
+            });
             write = Some((session.clone(), to_session));
         }
         let write = &write.as_ref().unwrap().1;
         require(
             (snapshot.mode.width, snapshot.mode.height)
-                == (placeholder.format().width, placeholder.format().height),
+                == (clip.format().width, clip.format().height),
             "placeholder_timing_mismatch",
         )?;
         let origin = Origin {
@@ -652,6 +845,11 @@ fn media_worker(
         if !writable {
             keyframes.defer(request);
         } else if keyframes.poll(request, Instant::now()) {
+            if let Some(t) = &run.trace {
+                let stats = trace_stats.as_mut().unwrap();
+                t.video("keyframe_request", stats.keyframe_source);
+                stats.keyframe_source = "internal";
+            }
             with_sink(run, |sink| {
                 sink.control(ControlEvent::KeyFrameRequest {
                     screen: 0,
@@ -661,13 +859,32 @@ fn media_worker(
         }
         let had_frame = frame.is_some();
         if let Some(frame) = frame {
-            if let Some(f) = format.as_ref().filter(|f| f.codec == VideoCodec::H264) {
-                if avc.is_none() {
-                    avc = Some(AvcConfig::parse(&f.config)?);
-                }
-                let config = avc.as_ref().unwrap();
+            if let Some(f) = format.as_ref().filter(|f| f.codec == session_codec) {
+                let config = match f.codec {
+                    VideoCodec::H264 => {
+                        if avc.is_none() {
+                            avc = Some(AvcConfig::parse(&f.config)?);
+                        }
+                        VideoConfig::Avc(avc.as_ref().unwrap())
+                    }
+                    VideoCodec::H265 => {
+                        if hevc.is_none() {
+                            hevc = Some(HevcConfig::parse(&f.config)?);
+                        }
+                        VideoConfig::Hevc(hevc.as_ref().unwrap())
+                    }
+                };
                 // The same acceptance rule the transcoding policy uses.
-                let source = CodecProfile::avc(config.profile, config.compatibility, config.level);
+                let source = match config {
+                    VideoConfig::Avc(c) => CodecProfile::avc(c.profile, c.compatibility, c.level),
+                    VideoConfig::Hevc(c) => CodecProfile {
+                        codec: VideoCodec::H265,
+                        profile: c.profile,
+                        constraints: 0,
+                        level: c.level,
+                        high_tier: c.high_tier,
+                    },
+                };
                 let supported = snapshot.decoders.iter().any(|d| {
                     CodecProfile::parse(&d.codec_string).is_some_and(|d| d.accepts(&source))
                 });
@@ -685,10 +902,34 @@ fn media_worker(
                 let was_live = gate.live;
                 if gate.accept(frame.key_frame) {
                     if !was_live {
-                        live_offset = (output_pts + 1_000_000 / placeholder.fps() as i64)
+                        live_offset = (output_pts + 1_000_000 / clip.fps() as i64)
                             .max(0)
-                            .max(frame.pts_us + audio_offset.unwrap_or(-frame.pts_us))
+                            .max(frame.pts_us + video_clock.audio_offset.unwrap_or(-frame.pts_us))
                             - frame.pts_us;
+                        let previous = live_offset;
+                        live_offset =
+                            reanchor_video(frame.pts_us, live_offset, output_pts, transport_pts);
+                        if let Some(t) = &run.trace {
+                            let lead = (output_pts + 1)
+                                .max(transport_pts + 1)
+                                .max(frame.pts_us + previous)
+                                - transport_pts;
+                            let input = frame.pts_us;
+                            let audio_offset = video_clock.audio_offset.unwrap_or(-1);
+                            let detail = format!(
+                                concat!(
+                                    "in={input} out={output_pts} tr={transport_pts} ",
+                                    "off={live_offset} aoff={audio_offset} lead={lead}"
+                                ),
+                                input = input,
+                                output_pts = output_pts,
+                                transport_pts = transport_pts,
+                                live_offset = live_offset,
+                                audio_offset = audio_offset,
+                                lead = lead,
+                            );
+                            t.video(if lead > 500_000 { "reanchor" } else { "live" }, &detail);
+                        }
                     }
                     let pts = (output_pts + 1)
                         .max(transport_pts + 1)
@@ -698,11 +939,24 @@ fn media_worker(
                     })?;
                     output_pts = pts;
                     transport_pts = pts;
-                    if result == Emit::Dropped {
+                    if let Some(stats) = &mut trace_stats {
+                        if result == Emit::Dropped {
+                            stats.failed_video += 1;
+                        }
+                        if result != Emit::Dropped {
+                            stats.video_bytes += frame.data.len() as u64;
+                            stats.keyframes += u64::from(frame.key_frame);
+                        }
+                    }
+                    if !statistics.video(result, Some(f), frame.data.len()) {
+                        if let Some(t) = &run.trace {
+                            t.video("freeze", "unit_dropped");
+                            trace_stats.as_mut().unwrap().keyframe_source = "gap";
+                        }
                         gate.reset();
                         keyframes.defer(true);
                     } else {
-                        sent += 1;
+                        session.set_stream_size((f.width, f.height));
                         let now = Instant::now();
                         video_clock.live_frame_at = Some(now);
                         video_clock.written_at = Some(now);
@@ -713,9 +967,38 @@ fn media_worker(
                         late_live = true;
                     }
                 }
-            } else if mismatch_reported.as_deref() != Some("unsupported_h265") {
-                mismatch_reported = Some("unsupported_h265".into());
-                listener.error("Carlink v0 requires H.264 input");
+            } else {
+                if let Some(t) = &run.trace {
+                    t.sink.record(ClinkTraceEvent::Video {
+                        at_nanos: now_nanos(),
+                        session: t.session,
+                        event: "codec_mismatch".into(),
+                        source: format!(
+                            "expected={} actual={}",
+                            codec_name(session_codec),
+                            format
+                                .as_ref()
+                                .map(|f| codec_name(f.codec))
+                                .unwrap_or("null")
+                        ),
+                        codec: format.as_ref().map(|f| f.codec_string.clone()),
+                        width: None,
+                        height: None,
+                        sps: Vec::new(),
+                        pps: Vec::new(),
+                    });
+                    trace_stats.as_mut().unwrap().keyframe_source = "codec_mismatch";
+                }
+                statistics.total.dropped_frames += 1;
+                gate.reset();
+                keyframes.defer(true);
+                if mismatch_reported.as_deref() != Some("codec_mismatch") {
+                    mismatch_reported = Some("codec_mismatch".into());
+                    listener.diagnostic(&format!(
+                        "codec mismatch expected={session_codec:?} actual={:?}",
+                        format.as_ref().map(|f| f.codec)
+                    ));
+                }
             }
         }
         let now = Instant::now();
@@ -724,28 +1007,37 @@ fn media_worker(
             && now >= next_placeholder
             && video_clock.placeholder_due(now)
         {
-            let data = &placeholder.frames()[placeholder_index];
-            let pts = (output_pts + 1_000_000 / placeholder.fps() as i64)
+            let data = &clip.frames()[placeholder_index];
+            let pts = (output_pts + 1_000_000 / clip.fps() as i64)
                 .max(0)
                 .max(transport_pts + 1);
             let key = placeholder_index == 0;
             let result = path.emit(&run.sender, write, listener, pts, || {
-                muxer.write_video(data, &placeholder_config, pts, key)
+                muxer.write_video(data, clip_config, pts, key)
             })?;
             output_pts = pts;
             transport_pts = pts;
-            if result == Emit::Dropped {
+            if let Some(stats) = &mut trace_stats {
+                if result == Emit::Dropped {
+                    stats.failed_video += 1;
+                }
+                if result != Emit::Dropped {
+                    stats.video_bytes += data.len() as u64;
+                    stats.keyframes += u64::from(key);
+                }
+            }
+            if !statistics.video(result, None, data.len()) {
                 placeholder_index = 0;
             } else {
-                sent += 1;
+                session.set_stream_size((clip.format().width, clip.format().height));
                 video_clock.written_at = Some(Instant::now());
-                placeholder_index = (placeholder_index + 1) % placeholder.frames().len();
+                placeholder_index = (placeholder_index + 1) % clip.frames().len();
             }
             if result == Emit::Late {
                 writable = false;
                 late_video = true;
             }
-            next_placeholder = now + Duration::from_nanos(1_000_000_000 / placeholder.fps() as u64);
+            next_placeholder = now + Duration::from_nanos(1_000_000_000 / clip.fps() as u64);
         }
         if snapshot.media_audio {
             for _ in 0..4 {
@@ -754,15 +1046,15 @@ fn media_worker(
                 }
                 let audio = {
                     let mut h = run.handoff.lock().unwrap();
-                    if !gate.live && audio_offset.is_none() {
+                    if !gate.live && video_clock.audio_offset.is_none() {
                         if let Some(p) = h.audio.front() {
-                            audio_offset = Some(output_pts.max(0) - p.pts_us);
+                            video_clock.audio_offset = Some(output_pts.max(0) - p.pts_us);
                         }
                     }
                     let offset = if gate.live {
                         live_offset
                     } else {
-                        audio_offset.unwrap_or(0)
+                        video_clock.audio_offset.unwrap_or(0)
                     };
                     poll_audio(&mut h, offset, video_clock.pts(output_pts, Instant::now()))
                 };
@@ -771,7 +1063,7 @@ fn media_worker(
                         + if gate.live {
                             live_offset
                         } else {
-                            audio_offset.unwrap_or(0)
+                            video_clock.audio_offset.unwrap_or(0)
                         };
                     if mapped >= 0 && mapped >= transport_pts - 50_000 {
                         let pts = mapped.max(transport_pts);
@@ -784,6 +1076,12 @@ fn media_worker(
                         let result = path.emit(&run.sender, write, listener, pts, || {
                             muxer.write_audio(&adts, pts)
                         })?;
+                        if let Some(stats) = &mut trace_stats {
+                            stats.last_audio_pts = pts;
+                            if result != Emit::Dropped {
+                                stats.audio_frames += 1;
+                            }
+                        }
                         transport_pts = pts;
                         if result == Emit::Late {
                             writable = false;
@@ -797,7 +1095,37 @@ fn media_worker(
         }
         if reported_at.is_none_or(|t: Instant| now.duration_since(t) >= Duration::from_secs(1)) {
             let dropped = run.handoff.lock().unwrap().queue.dropped;
-            listener.statistics(sent, dropped);
+            if let Some(t) = &run.trace {
+                let stats = trace_stats.as_mut().unwrap();
+                if stats
+                    .clock_at
+                    .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(2))
+                {
+                    stats.clock_at = Some(now);
+                    t.video(
+                        "clock",
+                        &format!(
+                            "v={output_pts} a={} t={transport_pts} off={live_offset}",
+                            stats.last_audio_pts
+                        ),
+                    );
+                }
+                t.sink.record(ClinkTraceEvent::Media {
+                    at_nanos: now_nanos(),
+                    session: t.session,
+                    live_frames: statistics.total.live_frames,
+                    placeholder_frames: statistics.total.placeholder_frames,
+                    dropped_frames: dropped + stats.failed_video,
+                    keyframes: stats.keyframes,
+                    video_bytes: stats.video_bytes,
+                    rtp_packets: t.rtp_packets.load(Ordering::Relaxed),
+                    rtp_bytes: t.rtp_bytes.load(Ordering::Relaxed),
+                    send_stalls: path.send_stalls,
+                    audio_frames: stats.audio_frames,
+                    queue_overflows: t.queue_overflows.load(Ordering::Relaxed),
+                });
+            }
+            listener.statistics(statistics.snapshot(dropped, path.send_stalls));
             with_sink(run, |sink| {
                 sink.stats(OutputStats {
                     origin,
@@ -820,6 +1148,34 @@ fn media_worker(
     Ok(())
 }
 
+fn codec_name(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => "H264",
+        VideoCodec::H265 => "H265",
+    }
+}
+struct TraceMedia {
+    keyframes: u64,
+    failed_video: u64,
+    video_bytes: u64,
+    audio_frames: u64,
+    last_audio_pts: i64,
+    clock_at: Option<Instant>,
+    keyframe_source: &'static str,
+}
+impl Default for TraceMedia {
+    fn default() -> Self {
+        Self {
+            failed_video: 0,
+            keyframes: 0,
+            video_bytes: 0,
+            audio_frames: 0,
+            last_audio_pts: -1,
+            clock_at: None,
+            keyframe_source: "internal",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Emit {
     Sent,
@@ -828,18 +1184,64 @@ enum Emit {
     /// Beyond [RtpUnit::MAX_BYTES]; nothing was sent.
     Dropped,
 }
+#[derive(Default)]
+struct MediaStatistics {
+    total: ClinkStatistics,
+    base: ClinkStatistics,
+    queue_drop_base: u64,
+    stall_base: u64,
+}
+impl MediaStatistics {
+    fn new_session(&mut self, queue_drops: u64, send_stalls: u64) {
+        self.base = self.total;
+        self.queue_drop_base = queue_drops;
+        self.stall_base = send_stalls;
+        self.total.codec = None;
+        self.total.width = 0;
+        self.total.height = 0;
+    }
+    fn video(&mut self, result: Emit, format: Option<&VideoFormat>, bytes: usize) -> bool {
+        if result == Emit::Dropped {
+            self.total.dropped_frames += 1;
+            return false;
+        }
+        if let Some(format) = format {
+            self.total.live_frames += 1;
+            self.total.live_bytes += bytes as u64;
+            self.total.codec = Some(format.codec);
+            self.total.width = format.width;
+            self.total.height = format.height;
+        } else {
+            self.total.placeholder_frames += 1;
+        }
+        true
+    }
+    fn snapshot(&self, queue_drops: u64, send_stalls: u64) -> ClinkStatistics {
+        ClinkStatistics {
+            live_frames: self.total.live_frames - self.base.live_frames,
+            placeholder_frames: self.total.placeholder_frames - self.base.placeholder_frames,
+            dropped_frames: queue_drops - self.queue_drop_base + self.total.dropped_frames
+                - self.base.dropped_frames,
+            live_bytes: self.total.live_bytes - self.base.live_bytes,
+            send_stalls: send_stalls - self.stall_base,
+            ..self.total
+        }
+    }
+}
 /// The media worker's side of the RTP path: the muxer streams TS packets straight into the one
 /// reusable unit, which [RtpSender] writes on its own thread; nothing is retained per packet.
 struct RtpPath {
     rtp: RtpPacketizer,
     /// None while the writer holds the unit.
     unit: Rc<RefCell<Option<RtpUnit>>>,
+    send_stalls: u64,
 }
 impl Default for RtpPath {
     fn default() -> Self {
         Self {
             rtp: RtpPacketizer::default(),
             unit: Rc::new(RefCell::new(Some(RtpUnit::default()))),
+            send_stalls: 0,
         }
     }
 }
@@ -889,6 +1291,7 @@ impl RtpPath {
                 Ok(Emit::Sent)
             }
             None => {
+                self.send_stalls += 1;
                 listener.diagnostic(&format!(
                     "rtp send stalled ms={}",
                     sender.wait().as_millis()
@@ -935,6 +1338,18 @@ struct KeyframeRequests {
     requested_at: Option<Instant>,
     pending: bool,
 }
+/// Keep the first live frame within 500 ms of the shared transport clock.
+fn reanchor_video(input_pts: i64, offset: i64, output_pts: i64, transport_pts: i64) -> i64 {
+    let lead = (output_pts + 1)
+        .max(transport_pts + 1)
+        .max(input_pts + offset)
+        - transport_pts;
+    if lead > 500_000 {
+        offset - (lead - 1)
+    } else {
+        offset
+    }
+}
 impl KeyframeRequests {
     fn defer(&mut self, request: bool) {
         self.pending |= request;
@@ -956,10 +1371,18 @@ impl KeyframeRequests {
 }
 #[derive(Default)]
 struct VideoClock {
+    audio_offset: Option<i64>,
     written_at: Option<Instant>,
     live_frame_at: Option<Instant>,
 }
 impl VideoClock {
+    fn revision(&mut self, session_changed: bool) {
+        // Revisions keep the input clock; only a new socket session resets the anchor.
+        if session_changed {
+            self.audio_offset = None;
+            self.live_frame_at = None;
+        }
+    }
     fn pts(&self, output_pts: i64, now: Instant) -> i64 {
         // Video arrives in batches, but audio must advance even while the screen is static.
         output_pts
@@ -1028,6 +1451,276 @@ mod audio_tests {
         fn control(&self, _: ControlEvent) {}
         fn stats(&self, _: OutputStats) {}
     }
+    fn test_output() -> (ClinkOutput, Arc<Run>) {
+        let output = ClinkOutput::new(
+            Arc::new(StaticClinkLink(ClinkAddresses::new(
+                std::net::Ipv4Addr::LOCALHOST,
+                std::net::Ipv4Addr::LOCALHOST,
+            ))),
+            Arc::new(Pin),
+            Arc::new(Trust),
+        )
+        .unwrap();
+        let run = Arc::new(Run::new(Arc::new(Host)));
+        *output.current.lock().unwrap() = Some(run.clone());
+        (output, run)
+    }
+    #[derive(Default)]
+    struct Trace(Mutex<Vec<ClinkTraceEvent>>);
+    impl ClinkTrace for Trace {
+        fn record(&self, event: ClinkTraceEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+    #[test]
+    fn traced_format_decodes_parameter_sets_once_and_reset_keeps_run_session() {
+        let (output, old) = test_output();
+        let trace = Arc::new(Trace::default());
+        let mut run = Run::new(Arc::new(Host));
+        run.trace = Some(Arc::new(RunTrace {
+            sink: trace.clone(),
+            session: 77,
+            rtp_packets: AtomicU64::new(0),
+            rtp_bytes: AtomicU64::new(0),
+            queue_overflows: AtomicU64::new(0),
+        }));
+        *output.current.lock().unwrap() = Some(Arc::new(run));
+        let format = Arc::new(output.placeholder.format().clone());
+        output.on_video_format(0, Some(format.clone()));
+        output.on_video_format(0, Some(Arc::new(format.as_ref().clone())));
+        output.on_video_format(0, None);
+        let events = trace.0.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        let value = events[0].to_json();
+        assert_eq!(value["session"], 77);
+        assert_eq!(value["event"], "format");
+        assert_eq!(value["codec"], format.codec_string);
+        assert!(!value["sps"].as_array().unwrap().is_empty());
+        assert!(!value["pps"].as_array().unwrap().is_empty());
+        let reset = events[1].to_json();
+        assert_eq!(reset["codec"], serde_json::Value::Null);
+        assert_eq!(reset["sps"], serde_json::json!([]));
+        assert!(old.trace.is_none());
+    }
+    #[test]
+    fn traced_queue_distinguishes_waiting_drops_from_overflows() {
+        let mut queue = VideoQueue::new(2, 600_000, 2).unwrap();
+        let mut overflows = 0;
+        for key_frame in [false, true, false] {
+            queue.offer_observed(
+                VideoFrame {
+                    screen: 0,
+                    session: 1,
+                    data: Arc::from([0, 0]),
+                    pts_us: 0,
+                    key_frame,
+                    received_at_nanos: 0,
+                },
+                || overflows += 1,
+            );
+        }
+        assert_eq!(overflows, 1);
+        assert_eq!(queue.dropped, 3);
+    }
+    #[test]
+    fn only_voice_and_telephony_are_delivered_to_the_voice_channel() {
+        let (output, run) = test_output();
+        for (stream, role) in [
+            AudioRole::Media,
+            AudioRole::Alert,
+            AudioRole::Voice,
+            AudioRole::Telephony,
+            AudioRole::Other,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let stream = stream as u32;
+            output.on_audio_format(
+                stream,
+                Some(Arc::new(AudioFormat {
+                    stream,
+                    role,
+                    codec: AudioCodec::PcmS16le,
+                    sample_rate: 16000,
+                    channels: 1,
+                    config: None,
+                })),
+            );
+        }
+        assert_eq!(
+            run.handoff.lock().unwrap().voice_streams,
+            BTreeSet::from([2, 3])
+        );
+        output.on_audio_format(2, None);
+        assert_eq!(
+            run.handoff.lock().unwrap().voice_streams,
+            BTreeSet::from([3])
+        );
+    }
+    #[test]
+    fn equal_video_formats_in_distinct_arcs_keep_the_queue_and_revision() {
+        let (output, run) = test_output();
+        let a = Arc::new(output.placeholder.format().clone());
+        let mut equal = a.as_ref().clone();
+        equal.config = a.config.to_vec().into();
+        equal.fps_hint = Some(60.0);
+        let b = Arc::new(equal);
+        assert!(!Arc::ptr_eq(&a, &b));
+        output.on_video_format(0, Some(a.clone()));
+        let revision = {
+            let mut h = run.handoff.lock().unwrap();
+            h.request_keyframe = false;
+            h.queue.offer(VideoFrame {
+                screen: 0,
+                session: 1,
+                data: output.placeholder.frames()[0].clone(),
+                pts_us: 0,
+                key_frame: true,
+                received_at_nanos: 0,
+            });
+            h.revision
+        };
+        output.on_video_format(0, Some(b));
+        let mut h = run.handoff.lock().unwrap();
+        assert_eq!(h.revision, revision);
+        assert!(!h.request_keyframe);
+        assert!(h.queue.poll().is_some());
+        drop(h);
+        for field in 0..5 {
+            let mut different = a.as_ref().clone();
+            match field {
+                0 => different.codec = VideoCodec::H265,
+                1 => different.codec_string.push('0'),
+                2 => different.width += 1,
+                3 => different.height += 1,
+                _ => different.config = Arc::from([1u8]),
+            }
+            assert!(!same_format(&Some(a.clone()), &Some(Arc::new(different))));
+        }
+        assert!(same_format(&None, &None));
+        assert!(!same_format(&Some(a), &None));
+        output.on_video_format(0, None);
+        assert_eq!(run.handoff.lock().unwrap().revision, revision + 1);
+    }
+    #[test]
+    fn session_diagnostics_reach_the_output_listener() {
+        #[derive(Default)]
+        struct Listener(Mutex<Vec<String>>);
+        impl ClinkListener for Listener {
+            fn diagnostic(&self, message: &str) {
+                self.0.lock().unwrap().push(message.into());
+            }
+        }
+        let listener = Arc::new(Listener::default());
+        let session_listener = SessionListener(listener.clone());
+        session_listener.diagnostic("link stalled ms=5000");
+        session_listener.diagnostic("link recovered after ms=10000");
+        assert_eq!(
+            *listener.0.lock().unwrap(),
+            ["link stalled ms=5000", "link recovered after ms=10000"]
+        );
+    }
+    #[test]
+    fn session_view_sizes_reach_the_output_listener() {
+        #[derive(Default)]
+        struct Listener(Mutex<Vec<(u32, u32)>>);
+        impl ClinkListener for Listener {
+            fn view_size(&self, width: u32, height: u32) {
+                self.0.lock().unwrap().push((width, height));
+            }
+        }
+        let listener = Arc::new(Listener::default());
+        let session_listener = SessionListener(listener.clone());
+        session_listener.view_size(1532, 1013);
+        session_listener.view_size(1814, 1200);
+        assert_eq!(*listener.0.lock().unwrap(), [(1532, 1013), (1814, 1200)]);
+    }
+    #[test]
+    fn media_statistics_count_emits_drops_and_stalls_with_per_session_bases() {
+        let clip = BundledPlaceholderVideo::new().unwrap();
+        let mut stats = MediaStatistics::default();
+        stats.new_session(7, 2);
+        assert_eq!(stats.snapshot(7, 2), ClinkStatistics::default());
+        assert!(stats.video(Emit::Sent, None, 100));
+        assert_eq!(
+            stats.snapshot(7, 2),
+            ClinkStatistics {
+                placeholder_frames: 1,
+                ..Default::default()
+            }
+        );
+        assert!(stats.video(Emit::Sent, Some(clip.format()), 200));
+        assert!(stats.video(Emit::Late, Some(clip.format()), 300));
+        assert!(!stats.video(Emit::Dropped, Some(clip.format()), 400));
+        assert!(!stats.video(Emit::Dropped, None, 500));
+        // Codec mismatch skips join failed emits; queue drops and stalls have separate bases.
+        stats.total.dropped_frames += 1;
+        let expected = ClinkStatistics {
+            live_frames: 2,
+            placeholder_frames: 1,
+            dropped_frames: 6,
+            live_bytes: 500,
+            send_stalls: 2,
+            codec: Some(VideoCodec::H264),
+            width: 1280,
+            height: 720,
+        };
+        assert_eq!(stats.snapshot(10, 4), expected);
+        assert_eq!(stats.snapshot(10, 4), expected, "reports are cumulative");
+        stats.new_session(10, 4);
+        assert_eq!(stats.snapshot(10, 4), ClinkStatistics::default());
+        assert!(stats.video(Emit::Late, None, 1000));
+        assert_eq!(
+            stats.snapshot(11, 5),
+            ClinkStatistics {
+                placeholder_frames: 1,
+                dropped_frames: 1,
+                send_stalls: 1,
+                ..Default::default()
+            }
+        );
+    }
+    #[test]
+    fn audio_anchor_survives_revisions_and_resets_for_a_new_session() {
+        let now = Instant::now();
+        let mut clock = VideoClock {
+            audio_offset: Some(-8_000_000_000),
+            written_at: Some(now),
+            live_frame_at: Some(now),
+        };
+        let mut gate = VideoSwitch::default();
+        for _ in 0..3 {
+            gate.play(true);
+            clock.revision(false);
+            assert_eq!(clock.audio_offset, Some(-8_000_000_000));
+            assert_eq!(clock.live_frame_at, Some(now));
+            assert_eq!(8_000_020_000 + clock.audio_offset.unwrap(), 20_000);
+        }
+        clock.revision(true);
+        assert!(clock.audio_offset.is_none());
+        assert!(clock.live_frame_at.is_none());
+    }
+    #[test]
+    fn first_live_video_reanchors_only_beyond_500_ms_of_transport_pts() {
+        let input = 8_000_000_000;
+        let transport = 1_000_000;
+        for (lead, expected) in [
+            (499_999, 499_999),
+            (500_000, 500_000),
+            (500_001, 1),
+            (9_000_000, 1),
+        ] {
+            let offset = reanchor_video(input, transport + lead - input, transport - 1, transport);
+            assert_eq!(input + offset - transport, expected);
+        }
+        // An audio clock already ahead of video is also a floor for the first live frame.
+        let offset = reanchor_video(input, -input, 900_000, transport);
+        assert_eq!(
+            (900_001i64).max(transport + 1).max(input + offset),
+            transport + 1
+        );
+    }
     #[test]
     fn keyframe_requests_are_deferred_coalesced_and_reset_with_session() {
         let now = Instant::now();
@@ -1040,6 +1733,10 @@ mod audio_tests {
         assert!(!requests.poll(false, now + Duration::from_secs(2)));
         requests = KeyframeRequests::default();
         assert!(requests.poll(true, now + Duration::from_millis(1100)));
+        requests.defer(true);
+        assert!(!requests.poll(false, now + Duration::from_millis(1200)));
+        assert!(requests.poll(false, now + Duration::from_millis(2100)));
+        assert!(!requests.poll(false, now + Duration::from_secs(4)));
     }
     #[test]
     fn static_video_releases_audio_against_running_clock() {
@@ -1048,6 +1745,7 @@ mod audio_tests {
         let clock = VideoClock {
             written_at: Some(now),
             live_frame_at: Some(now),
+            ..Default::default()
         };
         let mut h = run.handoff.lock().unwrap();
         h.audio.push_back(AudioPacket {
@@ -1452,6 +2150,7 @@ mod audio_tests {
             assert_eq!(Emit::Sent, result);
         }
         assert!(late, "the socket never stalled");
+        assert_eq!(path.send_stalls, 1);
         // The media worker keeps running: polling never blocks, and video waiting meanwhile drops at
         // the queue's 600 ms bound.
         let mut queue = VideoQueue::default();
@@ -1482,6 +2181,7 @@ mod audio_tests {
             thread::sleep(Duration::from_millis(2));
         }
         assert!(sender.take_recovered().unwrap() >= sender.wait());
+        assert_eq!(path.send_stalls, 1, "recovery does not count another stall");
         active.store(false, Ordering::Release);
         writer.join().unwrap();
         drop(write);

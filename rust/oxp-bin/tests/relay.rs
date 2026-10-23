@@ -519,3 +519,186 @@ fn relay_events_use_stdout_for_unix_and_preserve_stdio_wire_transport() {
         );
     }
 }
+
+#[test]
+fn carlink_repin_diagnostic_auto_confirmation_and_incorrect_pin_reach_stdout() {
+    use oxp_clink::protocol::{AuthIdentity, FieldValue, Fields, Frame};
+    use std::{
+        collections::BTreeMap,
+        io::Read,
+        net::{TcpListener, TcpStream},
+        process::{Child, Command, Stdio},
+        time::{Duration, Instant},
+    };
+    struct Process(Child);
+    impl Drop for Process {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn read_frame(socket: &mut TcpStream) -> Frame {
+        let mut prefix = [0; 4];
+        socket.read_exact(&mut prefix).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(prefix) as usize];
+        bytes[..4].copy_from_slice(&prefix);
+        socket.read_exact(&mut bytes[4..]).unwrap();
+        Frame::decode(&bytes).unwrap()
+    }
+    fn reply(socket: &mut TcpStream, request: &Frame, fields: BTreeMap<u32, FieldValue>) {
+        socket
+            .write_all(
+                &Frame {
+                    source: 0,
+                    kind: 2,
+                    method: 2,
+                    body: Fields(fields).encode().unwrap(),
+                    ..request.clone()
+                }
+                .encode()
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    let dir = std::env::temp_dir().join(format!("oxp-clink-events-{}", std::process::id()));
+    let store = FileTrust::new(&dir).unwrap();
+    store
+        .save_peer_key("127.0.0.1", &AuthIdentity::generate().public_key())
+        .unwrap();
+    let auth = TcpListener::bind("127.0.0.1:0").unwrap();
+    auth.set_nonblocking(true).unwrap();
+    let services = ["control", "media", "cert", "rtsp", "uibc", "rtp"];
+    let reserved: Vec<_> = services
+        .iter()
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let mut ports = format!("auth={}", auth.local_addr().unwrap().port());
+    for (service, listener) in services.iter().zip(&reserved) {
+        ports.push_str(&format!(
+            ",{service}={}",
+            listener.local_addr().unwrap().port()
+        ));
+    }
+    let path = dir.join("wire.sock");
+    let mut child = Process(
+        Command::new(env!("CARGO_BIN_EXE_oxp-relay"))
+            .args([
+                "--unix",
+                path.to_str().unwrap(),
+                "--clink-head-unit",
+                "127.0.0.1",
+                "--clink-local",
+                "127.0.0.1",
+                "--state-dir",
+                dir.to_str().unwrap(),
+                "--pin",
+                "123456",
+                "--clink-transcode",
+                "off",
+                "--port",
+                &ports,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut wire = loop {
+        if let Ok(wire) = UnixStream::connect(&path) {
+            break wire;
+        }
+        assert!(Instant::now() < deadline, "relay wire listener deadline");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    wire.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    assert!(
+        matches!(oxp_wire::read(&mut wire).unwrap(), Some(Message::Json(v)) if v["type"] == "hello")
+    );
+    drop(reserved);
+    oxp_wire::write(
+        &mut wire,
+        &Message::hello("producer", "test", "default").unwrap(),
+    )
+    .unwrap();
+    let mut socket = loop {
+        if let Ok((socket, _)) = auth.accept() {
+            break socket;
+        }
+        assert!(Instant::now() < deadline, "relay AUTH deadline");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    socket.set_nonblocking(false).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let request = read_frame(&mut socket);
+    assert_eq!(request.sequence, 1);
+    assert!(!Fields::decode(&request.body).unwrap().0.contains_key(&2));
+    // A quick response whose signature no longer matches the saved identity triggers repinning.
+    reply(
+        &mut socket,
+        &request,
+        BTreeMap::from([
+            (1, FieldValue::Varint(1)),
+            (4, FieldValue::Bytes(vec![0; 64])),
+            (5, FieldValue::Bytes(vec![1])),
+            (6, FieldValue::Bytes(vec![17; 32])),
+            (7, FieldValue::Varint(0)),
+        ]),
+    );
+    let request = read_frame(&mut socket);
+    assert_eq!(request.sequence, 3);
+    assert!(Fields::decode(&request.body).unwrap().0.contains_key(&2));
+    reply(
+        &mut socket,
+        &request,
+        BTreeMap::from([(1, FieldValue::Varint(1)), (7, FieldValue::Varint(2))]),
+    );
+    let request = read_frame(&mut socket);
+    assert_eq!(request.sequence, 5);
+    assert_eq!(Fields::decode(&request.body).unwrap().number(9).unwrap(), 1);
+    reply(
+        &mut socket,
+        &request,
+        BTreeMap::from([(1, FieldValue::Varint(1)), (7, FieldValue::Varint(1))]),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "relay shutdown deadline");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(!status.success());
+    let mut stdout = String::new();
+    child
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let mut stderr = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.is_empty(), "{stderr}");
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let diagnostic =
+        json!({"type":"diagnostic","message":"auth repin reason=auth_signature_failed"});
+    assert_eq!(events.iter().filter(|e| **e == diagnostic).count(), 1);
+    assert!(events.contains(&json!({"type":"clink-pin","result":"incorrect","client":"127.0.0.1"})));
+    assert!(!stdout.contains("123456"));
+    assert!(store.load_peer_key("127.0.0.1").unwrap().is_none());
+    std::fs::remove_dir_all(dir).unwrap();
+}

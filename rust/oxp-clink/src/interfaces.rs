@@ -30,7 +30,9 @@ pub struct ClinkConnection {
     pub head_unit_id: String,
     pub local_ipv4: Ipv4Addr,
     pub transport: Arc<dyn ClinkTransport>,
+    /// PIN supplied by a wired transport instead of an interactive provider.
     pub wired_pin: Option<String>,
+    /// The transport has already obtained the user's consent to pair.
     pub auto_confirm: bool,
 }
 impl From<ClinkAddresses> for ClinkConnection {
@@ -65,6 +67,8 @@ pub trait PinProvider: Send + Sync {
     fn confirm_pairing(&self, _: &str) -> bool {
         false
     }
+    /// A supplied PIN was rejected; the shell may prompt again for a new session.
+    fn pin_incorrect(&self, _: &str) {}
 }
 pub trait TrustStore: Send + Sync {
     fn load_identity(&self) -> Result<Option<AuthIdentity>>;
@@ -81,14 +85,34 @@ pub enum ClinkState {
     Playing,
     Ended,
 }
+/// Cumulative media counters for the current Carlink session, independent of tracing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClinkStatistics {
+    pub live_frames: u64,
+    pub placeholder_frames: u64,
+    pub dropped_frames: u64,
+    pub live_bytes: u64,
+    pub send_stalls: u64,
+    pub codec: Option<crate::model::VideoCodec>,
+    pub width: u32,
+    pub height: u32,
+}
 pub trait ClinkListener: Send + Sync {
     fn state(&self, _: ClinkState) {}
     fn error(&self, _: &str) {}
     fn diagnostic(&self, _: &str) {}
-    fn statistics(&self, _: u64, _: u64) {}
+    /// Head-unit view size on the first UIBC touch of a session and whenever it changes.
+    fn view_size(&self, _: u32, _: u32) {}
+    fn statistics(&self, _: ClinkStatistics) {}
     fn profile_mismatch(&self, _: &str, _: &[String]) {}
 }
 impl ClinkListener for () {}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClinkHevcMode {
+    #[default]
+    Auto,
+    Off,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct ClinkPorts {
     pub auth: u16,

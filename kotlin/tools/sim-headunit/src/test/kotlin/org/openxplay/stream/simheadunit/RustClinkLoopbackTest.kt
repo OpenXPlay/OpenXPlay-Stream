@@ -24,15 +24,22 @@ import kotlin.test.*
 @Timeout(20)
 class RustClinkLoopbackTest {
     @Test
-    fun rustOutputMatchesKotlinLoopback() {
+    fun rustOutputMatchesKotlinLoopback() = loopback(false)
+
+    @Test
+    fun rustRelayTraceMatchesAndroidFormat() = loopback(true)
+
+    private fun loopback(tracing: Boolean) {
+        val outputId = if (tracing) "relay" else "clink"
         val repository = Path.of(checkNotNull(System.getProperty("sim.repository")))
-        val binary = repository.resolve("../rust/target/debug/oxp-clink")
+        val binary = repository.resolve("../rust/target/debug/" + if (tracing) "oxp-relay" else "oxp-clink")
         assumeTrue(Files.isExecutable(binary), "Rust loopback skipped: run cargo build -p oxp-bin --offline in ../rust/ to build ../rust/target/debug/oxp-clink")
         val ports = freePorts()
         val stateDir = Files.createTempDirectory("rust-clink-loopback-")
         val clip = BaselineClip()
         val input = ClipInput(clip)
         val errors = CopyOnWriteArrayList<Throwable>()
+        val wireErrors = CopyOnWriteArrayList<Throwable>()
         val diagnostics = CopyOnWriteArrayList<String>()
         val states = LinkedBlockingQueue<String>()
         val first = SimulatedHeadUnit(ports)
@@ -48,9 +55,12 @@ class RustClinkLoopbackTest {
         }
         val hub = ProjectionHub(producer)
         try {
-            val process = ProcessBuilder(binary.toString(), "--stdio", "--link", "static", "--head-unit", "127.0.0.1",
-                "--local", "127.0.0.1", "--pin", "012345", "--state-dir", stateDir.toString(), "--port",
-                "auth=${ports.auth},control=${ports.control},media=${ports.media},cert=${ports.cert},rtsp=${ports.rtsp},uibc=${ports.uibc},rtp=${ports.rtp}").start()
+            val options = if (tracing) listOf("--clink-link", "static", "--clink-head-unit", "127.0.0.1",
+                "--clink-local", "127.0.0.1", "--clink-trace", stateDir.resolve("trace").toString(), "--clink-transcode", "off")
+                else listOf("--link", "static", "--head-unit", "127.0.0.1", "--local", "127.0.0.1")
+            val process = ProcessBuilder(listOf(binary.toString(), "--stdio") + options + listOf(
+                "--pin", "012345", "--state-dir", stateDir.toString(), "--port",
+                "auth=${ports.auth},control=${ports.control},media=${ports.media},cert=${ports.cert},rtsp=${ports.rtsp},uibc=${ports.uibc},rtp=${ports.rtp}")).start()
             child = process
             val stderr = Thread({
                 try {
@@ -58,13 +68,16 @@ class RustClinkLoopbackTest {
                         diagnostics += line
                         val event = Json.parseToJsonElement(line).jsonObject
                         if (event["type"]?.jsonPrimitive?.content == "state") states.add(event.getValue("state").jsonPrimitive.content)
-                        if (event["type"]?.jsonPrimitive?.content == "error") errors += AssertionError(line)
+                        if (event["type"]?.jsonPrimitive?.content == "error" &&
+                            !(tracing && event["message"]?.jsonPrimitive?.content == "Carlink session failed")) {
+                            errors += AssertionError(line)
+                        }
                     } }
                 } catch (e: Exception) { errors += e }
             }, "rust-clink-stderr").apply { isDaemon = true; start() }
             reader = stderr
-            val output = WireOutput(WireTransport.streams(process.inputStream, process.outputStream), id = "clink",
-                inputCapabilities = producer.capabilities, onError = { errors += it })
+            val output = WireOutput(WireTransport.streams(process.inputStream, process.outputStream), id = outputId,
+                inputCapabilities = producer.capabilities, onError = { if (tracing) wireErrors += it else errors += it })
             hub.start(); hub.addOutput(output)
             first.await("placeholder") { first.playing && first.accessUnits.isNotEmpty() &&
                 first.configurationAnswered && first.requestedUibcPort == ports.uibc && first.requestedMediaPort == ports.media && first.heartbeats > 0 }
@@ -75,13 +88,13 @@ class RustClinkLoopbackTest {
             assertTrue(first.accessUnits.first().keyFrame)
             val request = input.next<ControlEvent.KeyFrameRequest>()
             assertEquals(ScreenId.MAIN, request.screen)
-            assertEquals(Origin("clink", "127.0.0.1"), request.origin)
+            assertEquals(Origin(outputId, "127.0.0.1"), request.origin)
 
             val before = first.accessUnits.size
             input.send(1) // A delta frame cannot replace the placeholder.
             first.await("placeholder continues after a delta frame") { first.accessUnits.size >= before + 2 }
             assertTrue(first.accessUnits.all { it.size == 1280 to 720 })
-            // Linux uses the WFD mode for touch; check it while the placeholder is playing.
+            // Touch follows the picture sent: 1280x720 for the placeholder, then the live video's own size.
             input.events.clear()
             first.requestKeyframe()
             assertEquals(request.origin, input.next<ControlEvent.KeyFrameRequest>().origin)
@@ -124,6 +137,12 @@ class RustClinkLoopbackTest {
             // A following PES start completes the final zero-length video PES in the capture.
             input.send(0, clip.frames.size)
             first.await("all clip access units") { first.accessUnits.count { it.size == 640 to 360 } >= clip.frames.size }
+            // Like the car, the simulated head unit maps its 1280x720 view onto the 640x360 picture it
+            // decodes, so the view's centre arrives as (320, 180); dividing by the WFD mode would give 0.25.
+            first.touch(0, listOf(PixelContact(41, 640, 360)))
+            assertContacts(listOf(TouchContact(0, 0.5, 0.5, true)), input.next<ControlEvent.Touch>().contacts)
+            first.touch(1, listOf(PixelContact(41, 640, 360)))
+            assertContacts(listOf(TouchContact(0, 0.5, 0.5, false)), input.next<ControlEvent.Touch>().contacts)
             val received = first.accessUnits.filter { it.size == 640 to 360 }.take(clip.frames.size)
             assertEquals(60, received.size)
             assertTrue(received.first().keyFrame)
@@ -181,13 +200,59 @@ class RustClinkLoopbackTest {
                 val state = states.poll(remaining, TimeUnit.NANOSECONDS) ?: fail("m23 did not end Rust session: $diagnostics")
                 if (state == "Ended") break
             }
-            // Session ENDED joins Rust workers; closing Wire stdin then ends the shell.
-            hub.stop()
+            // oxp-relay exits on car disconnect so its supervisor can respawn it. Keep Wire
+            // stdin open until then; oxp-clink still ends when the hub closes Wire stdin.
+            if (!tracing) hub.stop()
             assertTrue(process.waitFor(3, TimeUnit.SECONDS), "Rust process did not exit: $diagnostics")
             stderr.join(1000)
             assertFalse(stderr.isAlive, "stderr reader leaked")
-            assertEquals(0, process.exitValue(), diagnostics.joinToString("\n"))
+            assertEquals(if (tracing) 1 else 0, process.exitValue(), diagnostics.joinToString("\n"))
             assertTrue(errors.isEmpty(), errors.joinToString("\n"))
+            if (tracing) {
+                val events = diagnostics.map { Json.parseToJsonElement(it).jsonObject }
+                assertEquals(listOf("Carlink session failed"), events
+                    .filter { it["type"]?.jsonPrimitive?.content == "error" }
+                    .map { it["message"]?.jsonPrimitive?.content })
+                hub.stop()
+                // The relay closes Wire when it exits; all other transport errors remain failures.
+                assertTrue(wireErrors.all { it is IllegalStateException && it.message == "Peer closed" },
+                    wireErrors.joinToString("\n"))
+                val statuses = events.filter { it["type"]?.jsonPrimitive?.content == "clink-trace" }
+                assertTrue(statuses.isNotEmpty(), "No clink-trace status: $diagnostics")
+                assertTrue(statuses.all { it["failure"] == JsonNull &&
+                    it["capture"]?.jsonObject?.get("state")?.jsonPrimitive?.content != "failed" &&
+                    it["capture"]?.jsonObject?.get("reason")?.jsonPrimitive?.content != "error" },
+                    "clink-trace reported a failure: $statuses")
+                val trace = Files.list(stateDir.resolve("trace")).use { files -> files
+                    .filter { it.fileName.toString().endsWith(".jsonl") }.sorted().toList() }
+                    .flatMap { Files.readAllLines(it) }.map { Json.parseToJsonElement(it).jsonObject }
+                fun type(event: JsonObject) = event.getValue("type").jsonPrimitive.content
+                assertTrue(trace.takeLast(10).any { type(it) == "Link" &&
+                    it["stage"]?.jsonPrimitive?.content == "state" &&
+                    it["fields"]?.jsonObject?.get("state")?.jsonPrimitive?.content == "Ended" },
+                    "Trace tail did not record Ended: ${trace.takeLast(10)}")
+                assertTrue(setOf("Socket", "Rtsp", "Negotiation", "Frame", "Link", "Video", "Media", "Input")
+                    .all { expected -> trace.any { type(it) == expected } })
+                for (direction in listOf("RX", "TX")) {
+                    assertTrue(trace.any { type(it) == "Rtsp" && it["direction"]?.jsonPrimitive?.content == direction })
+                    assertTrue(trace.any { type(it) == "Frame" && it["direction"]?.jsonPrimitive?.content == direction &&
+                        it.getValue("fields").jsonObject.isNotEmpty() })
+                }
+                assertTrue(trace.filter { type(it) == "Frame" && it["service"]?.jsonPrimitive?.content in listOf("auth", "cert") }
+                    .all { it.getValue("fields").jsonObject.isEmpty() })
+                assertTrue(trace.any { type(it) == "Link" && it["stage"]?.jsonPrimitive?.content == "head_unit_certificate" })
+                assertTrue(trace.any { type(it) == "Video" && it["event"]?.jsonPrimitive?.content == "format" })
+                assertTrue(trace.any { type(it) == "Input" && it["kind"]?.jsonPrimitive?.content == "touch_down" &&
+                    it.getValue("rawCoordinates").jsonArray.isNotEmpty() && it["viewSize"] != JsonNull })
+                val media = trace.filter { type(it) == "Media" }
+                assertTrue(media.last().getValue("rtpPackets").jsonPrimitive.long > 0)
+                assertTrue(media.zipWithNext().all { (a, b) ->
+                    b.getValue("rtpPackets").jsonPrimitive.long >= a.getValue("rtpPackets").jsonPrimitive.long })
+            }
+        } catch (e: Throwable) {
+            System.err.println(diagnostics.joinToString("\n"))
+            System.err.println(e.stackTraceToString())
+            throw e
         } finally {
             first.expectRelayClose()
             child?.let { if (it.isAlive) it.destroyForcibly() }

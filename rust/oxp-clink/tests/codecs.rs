@@ -414,6 +414,133 @@ fn touch_source_pixels_slots_pointer_order_up_cancel_and_keys() {
     );
 }
 #[test]
+fn touch_follows_live_and_placeholder_stream_sizes_instead_of_the_view_or_wfd_mode() {
+    let mut decoder = UibcDecoder::new(origin());
+    for (size, x, y, expected) in [
+        ((1450, 960), 725, 900, (0.5, 900.0 / 960.0)),
+        ((640, 360), 320, 180, (0.5, 0.5)),
+        ((1280, 720), 640, 360, (0.5, 0.5)),
+    ] {
+        let payload = serde_json::json!({"type":1,"action":2,"count":1,"trackID0":7,
+            "x0":x,"y0":y,"width":1532,"height":1013});
+        let Some(ControlEvent::Touch { contacts, .. }) = decoder
+            .decode(payload.to_string().as_bytes(), size)
+            .unwrap()
+        else {
+            panic!("expected touch")
+        };
+        assert_eq!(
+            contacts,
+            [TouchContact::new(0, expected.0, expected.1, true).unwrap()]
+        );
+    }
+}
+#[test]
+fn view_sizes_are_reported_on_first_touch_and_changes_including_cancel() {
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reported = reports.clone();
+    let mut decoder = UibcDecoder::new(origin())
+        .with_view_size(move |w, h| reported.lock().unwrap().push((w, h)));
+    let sizes = [
+        (1532, 1013),
+        (1814, 1200),
+        (1532, 1013),
+        (1533, 1013),
+        (1533, 1014),
+    ];
+    for (index, (w, h)) in sizes.iter().enumerate() {
+        for _ in 0..3 {
+            let payload = serde_json::json!({"type":1,"action":2,"count":1,"trackID0":7,
+                "x0":640,"y0":360,"width":w,"height":h});
+            decoder
+                .decode(payload.to_string().as_bytes(), (1280, 720))
+                .unwrap();
+            assert_eq!(*reports.lock().unwrap(), sizes[..=index]);
+        }
+    }
+    decoder
+        .decode(
+            br#"{"type":1,"action":3,"count":0,"width":1532,"height":1013}"#,
+            (0, 0),
+        )
+        .unwrap();
+    decoder.release();
+    decoder
+        .decode(
+            br#"{"type":1,"action":3,"count":0,"width":1532,"height":1013}"#,
+            (0, 0),
+        )
+        .unwrap();
+    assert_eq!(
+        *reports.lock().unwrap(),
+        [&sizes[..], &[(1532, 1013)]].concat()
+    );
+}
+#[test]
+fn invalid_views_and_non_touch_reports_do_not_announce_sizes_or_break_touches() {
+    use serde_json::{json, Value};
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reported = reports.clone();
+    let mut decoder = UibcDecoder::new(origin())
+        .with_view_size(move |w, h| reported.lock().unwrap().push((w, h)));
+    let touch = json!({"type":1,"action":0,"count":1,"trackID0":7,"x0":640,"y0":360});
+    let mut valid = touch.clone();
+    valid["width"] = json!(1532);
+    valid["height"] = json!(1013);
+    for initialized in [false, true] {
+        if initialized {
+            decoder
+                .decode(valid.to_string().as_bytes(), (1280, 720))
+                .unwrap();
+        }
+        for key in ["width", "height"] {
+            for invalid in [
+                None,
+                Some(json!(0)),
+                Some(json!(-1)),
+                Some(json!("1532")),
+                Some(json!(1.5)),
+                Some(json!(2147483648u64)),
+                Some(Value::Null),
+                Some(json!(true)),
+                Some(json!([])),
+                Some(json!({})),
+            ] {
+                let mut payload = valid.clone();
+                if let Some(value) = invalid {
+                    payload[key] = value;
+                } else {
+                    payload.as_object_mut().unwrap().remove(key);
+                }
+                let Some(ControlEvent::Touch { contacts, .. }) = decoder
+                    .decode(payload.to_string().as_bytes(), (1280, 720))
+                    .unwrap()
+                else {
+                    panic!("expected touch")
+                };
+                assert_eq!(contacts, [TouchContact::new(0, 0.5, 0.5, true).unwrap()]);
+                assert_eq!(reports.lock().unwrap().len(), usize::from(initialized));
+            }
+        }
+    }
+    for kind in [2, 99] {
+        let payload = json!({"type":kind,"keycode":4,"width":1814,"height":1200});
+        decoder
+            .decode(payload.to_string().as_bytes(), (1280, 720))
+            .unwrap();
+    }
+    let mut malformed = valid.clone();
+    malformed["count"] = json!(17);
+    malformed["width"] = json!(1814);
+    assert!(decoder
+        .decode(malformed.to_string().as_bytes(), (1280, 720))
+        .is_err());
+    decoder
+        .decode(valid.to_string().as_bytes(), (1280, 720))
+        .unwrap();
+    assert_eq!(*reports.lock().unwrap(), [(1532, 1013)]);
+}
+#[test]
 fn encrypted_uibc_fragmentation() {
     let key = [7; 16];
     let record = SecureRecord::new(&key)
@@ -454,7 +581,16 @@ fn cert_signed_byte_envelope_and_control_projection_mode() {
         .encode()
         .unwrap()
     };
-    certificate::check(&body(&envelope)).unwrap();
+    assert_eq!(
+        certificate::check(&body(&envelope)).unwrap(),
+        BTreeMap::from([
+            ("short_name".into(), "car".into()),
+            ("product_name".into(), "model".into()),
+            ("vendor_name".into(), "vendor".into()),
+            ("vendor_id".into(), "v1".into()),
+            ("product_id".into(), "p1".into()),
+        ])
+    );
     let mut bad = envelope.clone();
     bad["version"] = 2.into();
     assert!(certificate::check(&body(&bad)).is_err());
@@ -500,6 +636,22 @@ fn cert_signed_byte_envelope_and_control_projection_mode() {
             .unwrap()
     );
 }
+#[test]
+fn placeholder_access_units_use_aud_only_as_boundaries() {
+    let p = BundledPlaceholderVideo::new().unwrap();
+    assert_eq!(p.frames().len(), 30);
+    for (i, frame) in p.frames().iter().enumerate() {
+        let units = oxp_media::nal::units(frame, oxp_media::nal::Format::Avcc).unwrap();
+        assert!(!units.is_empty());
+        assert!(units.iter().all(|n| [1, 5, 6].contains(&(n[0] & 31))));
+        assert_eq!(
+            i == 0,
+            oxp_media::nal::is_key_frame(frame, VideoCodec::H264, oxp_media::nal::Format::Avcc)
+                .unwrap()
+        );
+    }
+}
+
 #[test]
 fn placeholder_gate_and_queue_overflow_retains_shared_keyframe() {
     let p = BundledPlaceholderVideo::new().unwrap();
@@ -600,5 +752,91 @@ fn aac_negotiation_requires_lc_bit_and_complete_entry() {
         } else {
             "wfd_audio_codecs: none"
         }));
+    }
+}
+
+#[test]
+fn m3_hevc_flag_and_mode_control_decoders_without_echoing_in_m4() {
+    assert_eq!(ClinkHevcMode::default(), ClinkHevcMode::Auto);
+    let fixture = include_str!("../../../kotlin/clink/src/test/resources/head-unit-wfd.txt");
+    for mode in [ClinkHevcMode::Auto, ClinkHevcMode::Off] {
+        for flag in [
+            None,
+            Some("supported"),
+            Some("unsupported"),
+            Some("Supported"),
+            Some("true"),
+            Some(""),
+        ] {
+            let mut source =
+                WfdSource::with_hevc_mode("127.0.0.1".into(), ClinkPorts::default(), mode);
+            let display = DisplayInfo::default();
+            let start = source.start();
+            let get = source
+                .handle(&response(&start, ""), &display)
+                .unwrap()
+                .remove(0);
+            let body = format!(
+                "{fixture}\r\n{}",
+                flag.map(|v| format!("iccoa_support_hevc: {v}\r\n"))
+                    .unwrap_or_default()
+            );
+            let m4 = source
+                .handle(&response(&get, &body), &display)
+                .unwrap()
+                .remove(0);
+            let enabled = mode == ClinkHevcMode::Auto && flag == Some("supported");
+            assert_eq!(source.iccoa_support_hevc.as_deref(), flag);
+            assert_eq!(source.hevc_enabled(), enabled);
+            assert_eq!(
+                source.decoders[0],
+                DecoderSupport {
+                    codec_string: "avc1.42E01F".into(),
+                    hardware: true
+                }
+            );
+            assert_eq!(source.decoders.len(), if enabled { 2 } else { 1 });
+            if enabled {
+                assert_eq!(
+                    source.decoders[1],
+                    DecoderSupport {
+                        codec_string: "hvc1.1.6.L123.B0".into(),
+                        hardware: true
+                    }
+                );
+            }
+            assert!(!parameters(&m4.body).contains_key("iccoa_support_hevc"));
+        }
+    }
+}
+
+#[test]
+fn hevc_placeholder_uses_first_slice_boundaries_and_contains_only_video_slices() {
+    let clip = BundledHevcPlaceholderVideo::new().unwrap();
+    assert_eq!(clip.format().codec, VideoCodec::H265);
+    assert_eq!(
+        (
+            clip.format().width,
+            clip.format().height,
+            clip.fps(),
+            clip.frames().len()
+        ),
+        (1280, 720, 30, 30)
+    );
+    let config = oxp_media::HevcConfig::parse(&clip.format().config).unwrap();
+    assert_eq!(
+        (config.profile, config.level, config.nal_length_size),
+        (1, 93, 4)
+    );
+    for (i, frame) in clip.frames().iter().enumerate() {
+        let units = oxp_media::nal::units(frame, oxp_media::nal::Format::Avcc).unwrap();
+        assert!(!units.is_empty());
+        assert!(units.iter().all(|n| n.len() >= 3 && (n[0] >> 1) & 63 <= 31));
+        assert_ne!(units[0][2] & 0x80, 0);
+        assert_eq!(
+            oxp_media::nal::is_key_frame(frame, VideoCodec::H265, oxp_media::nal::Format::Avcc)
+                .unwrap(),
+            i == 0
+        );
     }
 }

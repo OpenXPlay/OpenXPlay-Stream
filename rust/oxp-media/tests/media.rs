@@ -194,6 +194,151 @@ fn configs_and_all_truncated_prefixes() {
     }
 }
 #[test]
+fn ts_h264_output_is_byte_exact() {
+    for insert_aud in [false, true] {
+        let mut packets = Vec::new();
+        {
+            let mut muxer = TsMuxer::with_options(
+                |p: &[u8; 188]| packets.extend_from_slice(p),
+                TsOptions {
+                    audio_enabled: true,
+                    insert_aud,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            muxer.write_video(&frame(2, 5), &config(), 0, true).unwrap();
+            muxer
+                .write_audio(&hex("fff15080013ffc1122"), 20_000)
+                .unwrap();
+            muxer
+                .write_video(&frame(200, 1), &config(), 66_666, false)
+                .unwrap();
+        }
+        let expected = if insert_aud {
+            include_bytes!("assets/avc-aud-true.ts")
+        } else {
+            include_bytes!("assets/avc-aud-false.ts")
+        };
+        assert_eq!(packets, expected, "insert_aud={insert_aud}");
+    }
+}
+#[test]
+fn ts_hevc_pmt_and_iraps_start_with_parameter_sets_without_aud() {
+    let config = HevcConfig::parse(&vector("hevc-main-1920x1080")).unwrap();
+    let access_unit = |kind: u8| {
+        let mut frame = Vec::new();
+        for n in [
+            [70, 1, 0x50], // AUD
+            [64, 1, 0xaa], // In-band VPS/SPS/PPS replaced on IRAPs.
+            [66, 1, 0xbb],
+            [68, 1, 0xcc],
+            [78, 1, 0xdd], // Prefix SEI
+            [kind << 1, 1, 0x80],
+            [80, 1, 0xee], // Suffix SEI
+        ] {
+            frame.extend_from_slice(&3u32.to_be_bytes());
+            frame.extend_from_slice(&n);
+        }
+        frame
+    };
+    for audio_enabled in [false, true] {
+        for pmt_version in [0, 31] {
+            let mut packets = Vec::new();
+            {
+                let mut muxer = TsMuxer::with_options(
+                    |p: &[u8; 188]| packets.push(p.to_vec()),
+                    TsOptions {
+                        video_codec: VideoCodec::H265,
+                        pmt_version,
+                        audio_enabled,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                for (i, kind) in (16..=21).chain([1, 1]).enumerate() {
+                    // Detect IRAP from the NAL header even when the caller has not marked it key.
+                    muxer
+                        .write_video(&access_unit(kind), &config, i as i64 * 33_333, i == 7)
+                        .unwrap();
+                }
+            }
+            for p in packets.iter().filter(|p| pid(p) == 0x100) {
+                let pmt = section(p);
+                assert_eq!(pmt[12], 0x24);
+                assert_eq!((pmt[5] >> 1) & 31, pmt_version);
+                assert_eq!(ts::crc32_mpeg2(pmt), 0);
+                if audio_enabled {
+                    assert_eq!(pmt[17], 0x0f);
+                }
+            }
+            let access_units = pes(&packets, 0x101);
+            assert_eq!(access_units.len(), 8);
+            for (i, p) in access_units.iter().enumerate() {
+                let units = nal::units(&p[14..], Format::AnnexB).unwrap();
+                let types: Vec<_> = units.iter().map(|n| (n[0] >> 1) & 63).collect();
+                if i < 6 {
+                    assert_eq!(types, [32, 33, 34, 16 + i as u8, 40]);
+                    assert_eq!(
+                        units[..3],
+                        [
+                            config.vps[0].as_slice(),
+                            config.sps[0].as_slice(),
+                            config.pps[0].as_slice()
+                        ]
+                    );
+                } else {
+                    assert_eq!(types, [32, 33, 34, 39, 1, 40]);
+                    assert_eq!(units[0], [64, 1, 0xaa]);
+                }
+            }
+            let random: Vec<_> = packets
+                .iter()
+                .filter(|p| pid(p) == 0x101 && start(p))
+                .map(|p| p[5] & 0x40 != 0)
+                .collect();
+            assert_eq!(random, [true, true, true, true, true, true, false, true]);
+        }
+    }
+}
+#[test]
+fn ts_hevc_invalid_frames_and_codec_mismatches_emit_nothing() {
+    let config = HevcConfig::parse(&vector("hevc-main-1920x1080")).unwrap();
+    let mut packets = Vec::new();
+    {
+        let mut muxer = TsMuxer::with_options(
+            |p: &[u8; 188]| packets.push(p.to_vec()),
+            TsOptions {
+                video_codec: VideoCodec::H265,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for bad in [
+            "",
+            "0000000126",
+            "000000032601",
+            "0000000326018000000001",
+            "00000000",
+        ] {
+            assert!(
+                muxer.write_video(&hex(bad), &config, 0, true).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(muxer
+            .write_video(&hex("00000003260180"), &config, -1, true)
+            .is_err());
+        assert!(muxer
+            .write_video(&frame(2, 5), &self::config(), 0, true)
+            .is_err());
+    }
+    assert!(packets.is_empty());
+    assert!(TsMuxer::new(|_| panic!("codec mismatch emitted a packet"))
+        .write_video(&hex("00000003260180"), &config, 0, true)
+        .is_err());
+}
+#[test]
 fn ts_sizes_stuffing_and_pes_payload() {
     let mut packets = Vec::new();
     let mut pointers = Vec::new();
@@ -289,6 +434,38 @@ fn ts_pts_markers_rounding_and_wrap() {
         }
     }
 }
+#[test]
+fn ts_without_aud_starts_keyframes_with_sps_and_other_frames_with_slice() {
+    let mut packets = Vec::new();
+    {
+        let mut muxer = TsMuxer::with_options(
+            |p: &[u8; 188]| packets.push(p.to_vec()),
+            TsOptions {
+                insert_aud: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        muxer.write_video(&frame(2, 5), &config(), 0, true).unwrap();
+        muxer
+            .write_video(&frame(2, 1), &config(), 33_333, false)
+            .unwrap();
+    }
+    let access_units = pes(&packets, 0x101);
+    let types: Vec<Vec<_>> = access_units
+        .iter()
+        .map(|p| {
+            nal::units(&p[14..], Format::AnnexB)
+                .unwrap()
+                .iter()
+                .map(|n| n[0] & 31)
+                .collect()
+        })
+        .collect();
+    assert_eq!(types, [vec![7, 8, 5], vec![1]]);
+    assert!(TsOptions::default().insert_aud);
+}
+
 #[test]
 fn ts_aud_parameter_sets_psi_and_continuity() {
     let mut packets = Vec::new();
@@ -454,6 +631,10 @@ fn ts_pcr_gap_fill_audio_and_invalid_inputs() {
         },
         TsOptions {
             psi_interval_frames: 0,
+            ..Default::default()
+        },
+        TsOptions {
+            pmt_version: 32,
             ..Default::default()
         },
     ] {

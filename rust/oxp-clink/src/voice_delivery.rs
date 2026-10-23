@@ -11,6 +11,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+pub(crate) fn voice_role(role: AudioRole) -> bool {
+    matches!(role, AudioRole::Voice | AudioRole::Telephony)
+}
 enum Command {
     Format(u32, Option<Arc<AudioFormat>>),
     Packet(AudioPacket, Instant),
@@ -130,7 +133,7 @@ impl VoiceDelivery {
                     Command::Format(stream, f) => {
                         formats.remove(&stream);
                         if let Some(f) = f.filter(|f| {
-                            f.role != AudioRole::Media
+                            voice_role(f.role)
                                 && f.codec == AudioCodec::PcmS16le
                                 && (8000..=48000).contains(&f.sample_rate)
                                 && (1..=2).contains(&f.channels)

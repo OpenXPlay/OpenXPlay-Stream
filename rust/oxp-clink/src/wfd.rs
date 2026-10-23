@@ -3,7 +3,7 @@
 // Created by riko chen on 2026-10-14
 
 use crate::{
-    interfaces::ClinkPorts,
+    interfaces::{ClinkHevcMode, ClinkPorts},
     model::{DecoderSupport, DisplayInfo},
     require, Result,
 };
@@ -154,6 +154,7 @@ pub struct WfdSource {
     ports: ClinkPorts,
     pub mode: WfdMode,
     pub decoders: Vec<DecoderSupport>,
+    pub iccoa_support_hevc: Option<String>,
     pub playing: bool,
     pub audio: bool,
     pub rtp_port: u16,
@@ -163,9 +164,13 @@ pub struct WfdSource {
     pending: BTreeMap<String, String>,
     session: String,
     advertised_rtp: String,
+    hevc: ClinkHevcMode,
 }
 impl WfdSource {
     pub fn new(address: String, ports: ClinkPorts) -> Self {
+        Self::with_hevc_mode(address, ports, ClinkHevcMode::default())
+    }
+    pub fn with_hevc_mode(address: String, ports: ClinkPorts, hevc: ClinkHevcMode) -> Self {
         use rand::RngCore;
         let mut id = [0; 16];
         rand::rngs::OsRng.fill_bytes(&mut id);
@@ -175,6 +180,7 @@ impl WfdSource {
             address,
             mode: WfdMode::default(),
             decoders: Vec::new(),
+            iccoa_support_hevc: None,
             playing: false,
             audio: false,
             rtp_port: ports.rtp,
@@ -185,7 +191,11 @@ impl WfdSource {
             session: id.iter().map(|v| format!("{v:02x}")).collect(),
             advertised_rtp: format!("RTP/AVP/TCP;unicast {} 0 mode=play", ports.rtp),
             ports,
+            hevc,
         }
+    }
+    pub fn hevc_enabled(&self) -> bool {
+        self.hevc == ClinkHevcMode::Auto && self.iccoa_support_hevc.as_deref() == Some("supported")
     }
     fn request(
         &mut self,
@@ -226,6 +236,7 @@ impl WfdSource {
     }
     fn negotiate(&mut self, body: &str) -> Result<()> {
         let peer = parameters(body);
+        self.iccoa_support_hevc = peer.get("iccoa_support_hevc").cloned();
         self.audio = peer.get("wfd_audio_codecs").is_some_and(|s| {
             s.split(',').any(|entry| {
                 let f: Vec<_> = entry.split_whitespace().collect();
@@ -271,6 +282,12 @@ impl WfdSource {
             }
         }
         self.mode = selected.ok_or("projection_timing_mismatch")?;
+        if self.hevc_enabled() {
+            supported.push(DecoderSupport {
+                codec_string: "hvc1.1.6.L123.B0".into(),
+                hardware: true,
+            });
+        }
         self.decoders = supported;
         if let Some(r) = peer.get("wfd_client_rtp_ports") {
             require(

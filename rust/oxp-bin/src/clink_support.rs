@@ -18,6 +18,8 @@ pub struct Pin {
     pub digits: Option<String>,
     pub file: Option<String>,
     pub stopped: Arc<AtomicBool>,
+    /// The user's PIN entry or Connect action already confirms pairing.
+    pub auto_confirm: bool,
 }
 impl Pin {
     pub fn request_with(
@@ -79,6 +81,12 @@ impl PinProvider for Pin {
     fn request_pin(&self, id: &str) -> Option<String> {
         self.request_with(id, Duration::from_secs(120), event)
     }
+    fn confirm_pairing(&self, _: &str) -> bool {
+        self.auto_confirm && !self.stopped.load(Ordering::Acquire)
+    }
+    fn pin_incorrect(&self, id: &str) {
+        event(json!({"type":"clink-pin","result":"incorrect","client":id}));
+    }
 }
 pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
     use oxp_link_linux::LinkEvent;
@@ -103,6 +111,24 @@ pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
     }
 }
 pub struct Listener;
+fn view_size_event(width: u32, height: u32) -> serde_json::Value {
+    json!({"type":"clink-view-size","width":width,"height":height})
+}
+fn media_stats_event(stats: ClinkStatistics) -> serde_json::Value {
+    json!({
+        "type":"media-stats",
+        "sent":stats.live_frames + stats.placeholder_frames,
+        "dropped":stats.dropped_frames,
+        "liveFrames":stats.live_frames,
+        "placeholderFrames":stats.placeholder_frames,
+        "droppedFrames":stats.dropped_frames,
+        "liveBytes":stats.live_bytes,
+        "sendStalls":stats.send_stalls,
+        "codec":stats.codec.map(|codec| match codec { VideoCodec::H264 => "H264", VideoCodec::H265 => "H265" }),
+        "width":stats.width,
+        "height":stats.height,
+    })
+}
 impl ClinkListener for Listener {
     fn state(&self, s: ClinkState) {
         if s == ClinkState::Ended {
@@ -117,8 +143,11 @@ impl ClinkListener for Listener {
     fn diagnostic(&self, message: &str) {
         event(json!({"type":"diagnostic","message":message}));
     }
-    fn statistics(&self, sent: u64, dropped: u64) {
-        event(json!({"type":"media-stats","sent":sent,"dropped":dropped}));
+    fn view_size(&self, width: u32, height: u32) {
+        event(view_size_event(width, height));
+    }
+    fn statistics(&self, stats: ClinkStatistics) {
+        event(media_stats_event(stats));
     }
     fn profile_mismatch(&self, input: &str, decoders: &[String]) {
         event(json!({"type":"profile-mismatch","input":input,"decoders":decoders}));
@@ -275,6 +304,13 @@ pub fn transcode_enabled(value: Option<&str>) -> Result<bool> {
         _ => Err("--clink-transcode must be auto or off".into()),
     }
 }
+pub fn hevc_mode(value: Option<&str>) -> Result<ClinkHevcMode> {
+    match value.unwrap_or("auto") {
+        "auto" => Ok(ClinkHevcMode::Auto),
+        "off" => Ok(ClinkHevcMode::Off),
+        _ => Err("--clink-hevc must be auto or off".into()),
+    }
+}
 /// Wraps an output so decisions and failures appear as relay diagnostics. The factory is probed
 /// here, at startup, and the devices it found are logged once.
 pub fn with_transcoding(
@@ -322,6 +358,43 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+    #[test]
+    fn view_size_json_uses_the_relay_event_contract() {
+        assert_eq!(
+            view_size_event(1532, 1013),
+            json!({"type":"clink-view-size","width":1532,"height":1013})
+        );
+    }
+    #[test]
+    fn media_stats_json_keeps_old_fields_and_adds_session_counters_and_format() {
+        assert_eq!(
+            media_stats_event(ClinkStatistics::default()),
+            json!({
+                "type":"media-stats","sent":0,"dropped":0,"liveFrames":0,
+                "placeholderFrames":0,"droppedFrames":0,"liveBytes":0,"sendStalls":0,
+                "codec":null,"width":0,"height":0,
+            })
+        );
+        for (codec, name) in [(VideoCodec::H264, "H264"), (VideoCodec::H265, "H265")] {
+            assert_eq!(
+                media_stats_event(ClinkStatistics {
+                    live_frames: 2,
+                    placeholder_frames: 3,
+                    dropped_frames: 4,
+                    live_bytes: 5678,
+                    send_stalls: 6,
+                    codec: Some(codec),
+                    width: 1450,
+                    height: 960,
+                }),
+                json!({
+                    "type":"media-stats","sent":5,"dropped":4,"liveFrames":2,
+                    "placeholderFrames":3,"droppedFrames":4,"liveBytes":5678,"sendStalls":6,
+                    "codec":name,"width":1450,"height":960,
+                })
+            );
+        }
+    }
     #[test]
     fn wire_sink_preserves_preferences_and_orders_capabilities_before_restart() {
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
@@ -462,6 +535,7 @@ mod tests {
                     .into_owned(),
             ),
             stopped: Arc::new(AtomicBool::new(false)),
+            auto_confirm: false,
         }
     }
     #[test]
@@ -556,6 +630,27 @@ mod tests {
             pin.request_with("unit", Duration::ZERO, |_| {}),
             Some("001234".into())
         );
+    }
+    #[test]
+    fn pairing_confirmation_requires_auto_confirm_and_an_active_session() {
+        let mut pin = pin();
+        assert!(!pin.confirm_pairing("unit"));
+        pin.auto_confirm = true;
+        assert!(pin.confirm_pairing("unit"));
+        pin.stopped.store(true, Ordering::Release);
+        assert!(!pin.confirm_pairing("unit"));
+    }
+    #[test]
+    fn hevc_defaults_to_auto_and_rejects_experimental_or_unknown_modes() {
+        assert_eq!(hevc_mode(None).unwrap(), ClinkHevcMode::Auto);
+        assert_eq!(hevc_mode(Some("auto")).unwrap(), ClinkHevcMode::Auto);
+        assert_eq!(hevc_mode(Some("off")).unwrap(), ClinkHevcMode::Off);
+        for value in ["", "on", "signal", "AUTO"] {
+            assert_eq!(
+                hevc_mode(Some(value)).unwrap_err().to_string(),
+                "--clink-hevc must be auto or off"
+            );
+        }
     }
     #[test]
     fn transcoding_defaults_to_auto_and_wraps_with_diagnostics() {
