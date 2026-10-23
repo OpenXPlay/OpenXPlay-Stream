@@ -6,6 +6,7 @@ package org.openxplay.stream.devrelay
 
 import java.util.concurrent.CountDownLatch
 import kotlin.system.exitProcess
+import org.openxplay.stream.cast.CastDiscovery
 
 object DevRelayMain {
     @JvmStatic
@@ -19,6 +20,13 @@ object DevRelayMain {
             EventLog(System.out).use { it.error("arguments", failure) }
             System.err.print(RelayOptions.USAGE)
             exitProcess(2)
+        }
+        if (options.castSearch) {
+            CastDiscovery().search().forEach { renderer ->
+                println(listOf(renderer.udn, renderer.friendlyName, renderer.modelName, renderer.address)
+                    .joinToString("\t") { it.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ') })
+            }
+            return
         }
         val stopped = CountDownLatch(1)
         // Register before starting so SIGINT also cleans up a partially started shell.

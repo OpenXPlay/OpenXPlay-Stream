@@ -14,6 +14,7 @@ dependencies {
     implementation(project(":replay"))
     implementation(project(":web-server"))
     implementation(project(":clink"))
+    implementation(project(":cast"))
     testImplementation(libs.kotlin.test.junit5)
     testRuntimeOnly(libs.junit.jupiter.engine)
     testRuntimeOnly(libs.junit.platform.launcher)

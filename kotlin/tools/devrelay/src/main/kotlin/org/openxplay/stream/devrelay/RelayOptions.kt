@@ -9,7 +9,7 @@ import java.nio.file.Path
 import org.openxplay.stream.replay.ReplayAudioOptions
 
 data class RelayOptions(
-    val clip: Path,
+    val clip: Path? = null,
     val fps: Double = 30.0,
     val webPort: Int? = null,
     val webBind: String = "127.0.0.1",
@@ -21,10 +21,14 @@ data class RelayOptions(
     val clinkLocal: String? = null,
     val clinkPin: String? = null,
     val audio: ReplayAudioOptions = ReplayAudioOptions(),
+    val castSearch: Boolean = false,
+    val castRenderer: String? = null,
 ) {
     init {
         listOfNotNull(audio.media, audio.voice).forEach { require(Files.isRegularFile(it)) { "Audio must be a regular file: $it" } }
-        require(Files.isRegularFile(clip)) { "Clip must be a regular file: $clip" }
+        require(castSearch || clip != null) { "--clip is required" }
+        require(clip == null || Files.isRegularFile(clip)) { "Clip must be a regular file: $clip" }
+        require(castRenderer == null || castRenderer.isNotBlank()) { "Cast renderer UDN must not be blank" }
         require(fps.isFinite() && fps > 0 && fps <= 1_000_000 && 1_000_000_000.0 / fps < Long.MAX_VALUE.toDouble()) {
             "Invalid frame rate"
         }
@@ -39,6 +43,9 @@ data class RelayOptions(
 
     companion object {
         const val USAGE: String = """Usage: devrelay --clip <annex-b.h264> [options]
+       devrelay --cast-search
+  --cast-search             Print DLNA renderers and exit (--clip is optional)
+  --cast-renderer <udn>     Add a DLNA output for the renderer UDN
   --fps <n>                  Frame rate (default 30)
   --web-port <port>          Enable web output (0 selects an ephemeral port)
   --web-bind <address>       Bind address (default 127.0.0.1)
@@ -59,7 +66,7 @@ data class RelayOptions(
 
         fun parse(args: Array<String>, root: Path = repositoryRoot()): RelayOptions {
             val names = setOf("clip", "fps", "web-port", "web-bind", "web-root", "source-url",
-                "tls-keystore", "tls-password", "clink-head-unit", "clink-local", "clink-pin", "audio-media", "audio-voice", "audio-voice-every", "mic-rate", "mic-out")
+                "cast-search", "cast-renderer", "tls-keystore", "tls-password", "clink-head-unit", "clink-local", "clink-pin", "audio-media", "audio-voice", "audio-voice-every", "mic-rate", "mic-out")
             val values = mutableMapOf<String, String>()
             var index = 0
             while (index < args.size) {
@@ -67,12 +74,14 @@ data class RelayOptions(
                 require(flag.startsWith("--") && flag.drop(2) in names) { "Unknown option: $flag" }
                 val name = flag.drop(2)
                 require(name !in values) { "Duplicate option: $flag" }
+                if (name == "cast-search") { values[name] = "true"; continue }
                 require(index < args.size && !args[index].startsWith("--")) { "Missing value for $flag" }
                 values[name] = args[index++]
             }
             fun path(value: String): Path = root.resolve(value).normalize().toAbsolutePath()
             return RelayOptions(
-                clip = path(requireNotNull(values["clip"]) { "--clip is required" }),
+                clip = values["clip"]?.let(::path),
+                castSearch = values["cast-search"] == "true", castRenderer = values["cast-renderer"],
                 fps = values["fps"]?.toDouble() ?: 30.0,
                 webPort = values["web-port"]?.toInt(),
                 webBind = values["web-bind"] ?: "127.0.0.1",
