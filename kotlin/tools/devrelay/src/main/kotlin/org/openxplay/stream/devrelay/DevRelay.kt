@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import org.openxplay.stream.cast.*
 import org.openxplay.stream.clink.*
 import org.openxplay.stream.clink.protocol.AuthIdentity
 import org.openxplay.stream.core.*
@@ -22,7 +23,7 @@ import org.openxplay.stream.web.*
 class DevRelay private constructor(private val options: RelayOptions, stdout: PrintStream) : AutoCloseable {
     private val log = EventLog(stdout)
     private val closed = AtomicBoolean(false)
-    private val replay = AnnexBFileInput(options.clip, options.fps, audio = options.audio, micSummary = log::microphoneStats)
+    private val replay = AnnexBFileInput(requireNotNull(options.clip) { "Replay requires --clip" }, options.fps, audio = options.audio, micSummary = log::microphoneStats)
     private val input: ProjectionInput = LoggedInput(replay, log)
     private val hub = ProjectionHub(input, clock = MonotonicClock.system, listener = object : HubListener {
         override fun outputFailed(outputId: String, failure: Throwable) {
@@ -63,6 +64,21 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
                 log.error(web.id, failure)
                 throw failure
             }
+        }
+        options.castRenderer?.let { udn ->
+            val cast = CastOutput(CastOutputConfig(udn, fps = if (options.fps >= 60) 60 else 30),
+                listener = object : CastListener {
+                    override fun state(state: CastState, renderer: CastRenderer?) = log.event("cast-state",
+                        "state" to state, "renderer" to renderer?.friendlyName)
+                    override fun failure(failure: CastFailure) = log.event("cast-failure", "code" to failure.code, "detail" to failure.detail)
+                    override fun diagnostic(message: String) = log.event("cast-diagnostic", "message" to message)
+                    override fun statistics(statistics: CastStatistics) = log.event("cast-stats",
+                        "clients" to statistics.clients, "videoFrames" to statistics.videoFrames,
+                        "audioFrames" to statistics.audioFrames, "silentFrames" to statistics.silentFrames,
+                        "bytesSent" to statistics.bytesSent, "droppedFrames" to statistics.droppedFrames,
+                        "overflows" to statistics.overflows, "rendererState" to statistics.rendererState)
+                })
+            hub.addOutput(LoggedOutput(cast, log))
         }
         options.clinkHeadUnit?.let { headUnit ->
             val clink = ClinkOutput(
