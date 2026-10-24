@@ -4,8 +4,10 @@
 
 name: Test
 
+# Pull requests run the checks that main requires; push runs only for main itself.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
