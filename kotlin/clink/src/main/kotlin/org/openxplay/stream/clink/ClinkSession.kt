@@ -263,6 +263,7 @@ public class ClinkSession(
             resources += socket
             if (trace !== ClinkTrace.NONE) tracedSockets[socket] = port to name
             if (stopped) { socket.close(); error("session_stopped") }
+            a.socketBinding.bind(socket)
             socket.bind(InetSocketAddress(a.localIpv4, 0))
             socketEvent(port, "DIAL", a.headUnitIpv4, name = name)
             try { socket.connect(InetSocketAddress(a.headUnitIpv4, port), 12000) }

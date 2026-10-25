@@ -27,7 +27,13 @@ class ClinkLoopbackTest {
         val errors = CopyOnWriteArrayList<Throwable>()
         val states = LinkedBlockingQueue<ClinkState>()
         val traces = CopyOnWriteArrayList<ClinkTraceEvent.Input>()
-        val output = ClinkOutput(StaticClinkLink(ClinkAddresses("127.0.0.1", "127.0.0.1", ports.auth, "loopback")),
+        val boundSockets = java.util.concurrent.atomic.AtomicInteger()
+        val binding = ClinkSocketBinding { socket ->
+            assertFalse(socket.isBound)
+            assertFalse(socket.isConnected)
+            boundSockets.incrementAndGet()
+        }
+        val output = ClinkOutput(StaticClinkLink(ClinkAddresses("127.0.0.1", "127.0.0.1", ports.auth, "loopback", binding)),
             PinProvider { "012345" }, trust, ports = ports, trace = ClinkTrace { if (it is ClinkTraceEvent.Input) traces += it }, listener = object : ClinkListener {
                 override fun state(state: ClinkState) { states.add(state) }
                 override fun error(error: Throwable) { errors += error }
@@ -40,6 +46,7 @@ class ClinkLoopbackTest {
             first.await("placeholder") { first.playing && first.accessUnits.isNotEmpty() &&
                 first.configurationAnswered && first.requestedUibcPort == ports.uibc && first.heartbeats > 0 }
             assertTrue(first.authenticated)
+            assertTrue(boundSockets.get() >= 2, "Both authentication and RTP use the connection binding")
             assertContentEquals(first.peerKey, trust.loadPeerKey("loopback"))
             assertEquals(1280 to 720, first.accessUnits.first().size)
             assertTrue(first.accessUnits.first().keyFrame)
