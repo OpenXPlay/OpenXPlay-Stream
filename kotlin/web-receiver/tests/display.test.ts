@@ -39,6 +39,7 @@ it('requires a welcome feature and clears it on legacy welcome or disconnect', (
   gate.welcome(['display-settings']);
   expect(gate.message('720p', 125, 'h265')).toEqual(vector('display-settings-client-codec'));
   expect(gate.message('native', 200)).toEqual(vector('display-settings-native'));
+  expect(gate.message('720p', 125, 'h265', 'FPS_45')).toEqual(vector('display-settings-client-frame-rate'));
   gate.welcome(); expect(gate.supported).toBe(false);
 });
 it('accepts the exact vectors and rejects malformed viewport, feature and setting fields', () => {
@@ -119,4 +120,19 @@ it('requires codec in relay settings, accepts old clients and validates every co
   const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
   expect(html).not.toContain('id="video-codec"');
   expect(html.slice(html.indexOf('id="display-settings"'), html.indexOf('id="frame-rate"'))).toContain('id="relay-video-codec"');
+});
+
+it('accepts every optional frame rate in both directions and rejects invalid literals', () => {
+  const legacy = vector('display-settings-relay');
+  for (const direction of ['client-to-relay', 'relay-to-client'] as const) {
+    expect(parseMessage(legacy, direction)).toEqual(legacy);
+    for (const frameRate of ['AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60']) {
+      const message = { ...legacy, frameRate };
+      expect(parseMessage(message, direction)).toEqual(message);
+    }
+    for (const frameRate of [null, 'auto', 'FPS_120', '60', 30, true])
+      expect(() => parseMessage({ ...legacy, frameRate }, direction)).toThrow();
+  }
+  expect(strings.en.applying).toBe('Applying. CarPlay reconnects in a few seconds');
+  expect(strings['zh-CN'].applying).toBe('正在应用，CarPlay 将在几秒后重新连接');
 });

@@ -24,8 +24,8 @@ export class DisplayDebounce {
 export class DisplaySettingsGate {
   supported = false;
   welcome(features?: string[]): void { this.supported = features?.includes('display-settings') ?? false; }
-  message(resolution: DisplaySettings['resolution'], screenWidth: DisplaySettings['screenWidth'], videoCodec: DisplaySettings['videoCodec'] = 'auto'): DisplaySettings | undefined {
-    return this.supported ? { type: 'display-settings', resolution, screenWidth, videoCodec } : undefined;
+  message(resolution: DisplaySettings['resolution'], screenWidth: DisplaySettings['screenWidth'], videoCodec: DisplaySettings['videoCodec'] = 'auto', frameRate?: DisplaySettings['frameRate']): DisplaySettings | undefined {
+    return this.supported ? { type: 'display-settings', resolution, screenWidth, videoCodec, ...(frameRate !== undefined ? { frameRate } : {}) } : undefined;
   }
 }
 export function pictureSize(width: number, height: number): string {
