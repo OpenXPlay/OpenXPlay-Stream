@@ -5,6 +5,15 @@
 package org.openxplay.stream.clink
 
 import org.openxplay.stream.clink.protocol.AuthIdentity
+import java.net.Socket
+
+/** A connection's network binding, applied before the socket's local bind and connect. */
+public fun interface ClinkSocketBinding {
+    public fun bind(socket: Socket)
+    public companion object {
+        public val SYSTEM: ClinkSocketBinding = ClinkSocketBinding { }
+    }
+}
 
 /** Platform network bootstrap. Implementations document callback delivery and serialize lifecycle calls. */
 public interface ClinkLink {
@@ -20,6 +29,7 @@ public data class ClinkAddresses(
     public val localIpv4: String,
     public val authPort: Int = 57209,
     public val headUnitId: String = headUnitIpv4,
+    public val socketBinding: ClinkSocketBinding = ClinkSocketBinding.SYSTEM,
 )
 /** UI adapter. May block awaiting user input; call on a session worker, never a media thread. */
 public fun interface PinProvider {
