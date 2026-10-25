@@ -220,7 +220,7 @@ for (const fit of ['fit', 'fill'] as const) element(fit).onclick = () => {
 const restartGate = new RestartGate();
 for (const id of ['resolution', 'screen-width', 'relay-video-codec']) element<HTMLSelectElement>(id).onchange = () => {
   if (!initialized || !displayGate.supported || !restartGate.allow(performance.now())) { updateDisplaySettings(); return; }
-  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLSelectElement>('relay-video-codec').value as DisplaySettings['videoCodec']);
+  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLSelectElement>('relay-video-codec').value as DisplaySettings['videoCodec'], currentDisplaySettings.frameRate);
   if (message) post(message);
   updateDisplaySettings();
 };
@@ -228,6 +228,13 @@ element<HTMLSelectElement>('frame-rate').onchange = event => {
   const choice = event.target as HTMLSelectElement;
   const preference = frameRatePreference(choice.value);
   if (preference === preferences.frameRate) return;
+  if (currentDisplaySettings.frameRate !== undefined) {
+    if (initialized && displayGate.supported && restartGate.allow(performance.now())) {
+      const message = displayGate.message(currentDisplaySettings.resolution, currentDisplaySettings.screenWidth, currentDisplaySettings.videoCodec, preference);
+      if (message) { post(message); element('frame-rate-status').hidden = false; }
+    }
+    updateSettings(); return;
+  }
   if (initialized && !restartGate.allow(performance.now())) { updateSettings(); return; }
   preferences.frameRate = preference; storage.save(preferences); updateSettings();
   if (!initialized) return;
@@ -489,10 +496,27 @@ async function start(): Promise<void> {
         }
         case 'hold': updatePlayback(message); break;
         case 'ended': updatePlayback(message); break;
-        case 'playing': element('frame-rate-status').hidden = true; updatePlayback(message); wakeGear(); break;
+        case 'playing': if (currentDisplaySettings.frameRate === undefined) element('frame-rate-status').hidden = true; updatePlayback(message); wakeGear(); break;
         case 'view-area': releaseAll(); viewArea = message.area; break;
-        case 'display-disconnected': fullscreen.viewAreas = false; displayGate.welcome(); updateDisplaySettings(); break;
-        case 'display-settings': currentDisplaySettings = message; updateDisplaySettings(); break;
+        case 'display-disconnected': {
+          fullscreen.viewAreas = false; displayGate.welcome();
+          if (currentDisplaySettings.frameRate !== undefined) {
+            const { frameRate: _, ...legacySettings } = currentDisplaySettings;
+            currentDisplaySettings = legacySettings;
+            hello = withFrameRate(hello, preferences.frameRate); post({ type: 'hello', hello });
+          }
+          element('frame-rate-status').hidden = true; updateDisplaySettings(); break;
+        }
+        case 'display-settings':
+          currentDisplaySettings = message; updateDisplaySettings();
+          if (message.frameRate !== undefined) {
+            preferences.frameRate = message.frameRate; storage.save(preferences); updateSettings();
+            if (hello.displays.some(display => display.frameRate !== undefined)) {
+              hello = withFrameRate(hello, 'AUTO'); post({ type: 'hello', hello });
+            }
+            element('frame-rate-status').hidden = true;
+          }
+          break;
         case 'welcome':
           if (shouldReload(message.receiverBuild, () => sessionStorage)) { location.reload(); break; }
           fullscreen.viewAreas = message.features?.includes('view-area') ?? false;

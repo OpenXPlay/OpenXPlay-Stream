@@ -5,15 +5,20 @@
 package org.openxplay.stream.web
 
 import org.openxplay.stream.core.Origin
+import org.openxplay.stream.core.FrameRatePreference
 import kotlinx.serialization.json.*
 
-public data class DisplaySettings(public val resolution: String = "auto", public val screenWidth: Int = 200, public val videoCodec: String = "auto") {
+public data class DisplaySettings(public val resolution: String = "auto", public val screenWidth: Int = 200, public val videoCodec: String = "auto", public val frameRate: FrameRatePreference = FrameRatePreference.AUTO) {
     init { require(resolution in setOf("auto", "native", "1080p", "720p", "screen") && screenWidth in setOf(125, 200, 250, 300) && videoCodec in setOf("auto", "h265", "h264")) }
     public fun message(): JsonObject = buildJsonObject {
         put("type", "display-settings"); put("resolution", resolution); put("screenWidth", screenWidth); put("videoCodec", videoCodec)
+        put("frameRate", frameRate.name)
     }
 }
-/** Callbacks run after publishing the new current value; closing removes the listener. */
+/**
+ * The relay owns frame rate when this port is configured; hello frame-rate preferences are ignored.
+ * Callbacks run after publishing the new current value; closing removes the listener.
+ */
 public interface DisplaySettingsPort {
     public fun current(): DisplaySettings
     public fun set(settings: DisplaySettings, origin: Origin)

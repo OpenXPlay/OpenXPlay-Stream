@@ -313,7 +313,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                 displays.putIfAbsent(ScreenId(d.int("screen")), DisplayInfo(d.int("width"), d.int("height"),
                     (d["dpr"]!!.jsonPrimitive.double * 160).coerceAtMost(Int.MAX_VALUE.toDouble()).roundToInt(),
                     d["refreshHz"]!!.jsonPrimitive.double, SafeArea(px("left"), px("top"), px("right"), px("bottom")),
-                    d["frameRate"]?.let { FrameRatePreference.valueOf(it.jsonPrimitive.content) } ?: FrameRatePreference.AUTO,
+                    if (config.displaySettings != null) FrameRatePreference.AUTO else
+                        d["frameRate"]?.let { FrameRatePreference.valueOf(it.jsonPrimitive.content) } ?: FrameRatePreference.AUTO,
                     d["sustainedFps"]?.jsonPrimitive?.double,
                     d["viewport"]?.jsonObject?.let { Viewport(it.int("width"), it.int("height")) },
                     d["fullscreen"]?.jsonPrimitive?.boolean, d["fullscreenPreferred"]?.jsonPrimitive?.boolean))
@@ -600,7 +601,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     if (primary === this && (run.lastRestartNanos == null || now - run.lastRestartNanos!! >= TimeUnit.SECONDS.toNanos(10))) {
                         run.lastRestartNanos = now
                         run.host { port.set(DisplaySettings(message.getValue("resolution").jsonPrimitive.content,
-                            message.getValue("screenWidth").jsonPrimitive.int, message["videoCodec"]?.jsonPrimitive?.content ?: port.current().videoCodec), origin) }
+                            message.getValue("screenWidth").jsonPrimitive.int, message["videoCodec"]?.jsonPrimitive?.content ?: port.current().videoCodec,
+                            message["frameRate"]?.let { FrameRatePreference.valueOf(it.jsonPrimitive.content) } ?: port.current().frameRate), origin) }
                     }
                 }
                 "restart" -> synchronized(lock) {

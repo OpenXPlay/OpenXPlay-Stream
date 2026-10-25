@@ -103,11 +103,12 @@ public object WebJsonCodec {
         } catch (_: Exception) { false }
     }
     private val audioCodec = literal("AAC_LC", "OPUS", "PCM_S16LE")
+    private val frameRate = literal("AUTO", "FPS_30", "FPS_35", "FPS_40", "FPS_45", "FPS_50", "FPS_55", "FPS_60")
     private val sessionSchema = obj("id" to i64, "phase" to literal("CONNECTING", "ACTIVE", "RECONNECTING", "ENDED"), "reason" to optional(string))
     private val display = obj("screen" to range(255), "width" to positiveInt, "height" to positiveInt,
         "dpr" to positive, "refreshHz" to positive,
         "viewport" to optional(obj("width" to positiveInt, "height" to positiveInt)), "fullscreen" to optional(bool), "fullscreenPreferred" to optional(bool),
-        "frameRate" to optional(literal("AUTO", "FPS_30", "FPS_35", "FPS_40", "FPS_45", "FPS_50", "FPS_55", "FPS_60")), "sustainedFps" to optional(positive), "safeArea" to obj("top" to number, "right" to number, "bottom" to number, "left" to number))
+        "frameRate" to optional(frameRate), "sustainedFps" to optional(positive), "safeArea" to obj("top" to number, "right" to number, "bottom" to number, "left" to number))
     private val videoSchema = obj("codec" to literal("H264", "H265"), "codecString" to nonempty,
         "config" to { nonempty(it) && base64(it) }, "width" to positiveInt, "height" to positiveInt, "fpsHint" to optional(positive))
     private val audio = obj("role" to literal("MEDIA", "ALERT", "VOICE", "TELEPHONY", "OTHER"), "codec" to audioCodec,
@@ -123,7 +124,7 @@ public object WebJsonCodec {
                 it.getValue("y").jsonPrimitive.double + it.getValue("height").jsonPrimitive.double <= it.getValue("canvasHeight").jsonPrimitive.double } },
         message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display, "autoRestore" to optional(literal("restored", "denied", "off"))),
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
-        message("display-settings", "videoCodec" to optional(literal("auto", "h265", "h264")), "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "screenWidth" to { integer(it) && (it as JsonPrimitive).intOrNull in setOf(125, 200, 250, 300) }),
+        message("display-settings", "frameRate" to optional(frameRate), "videoCodec" to optional(literal("auto", "h265", "h264")), "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "screenWidth" to { integer(it) && (it as JsonPrimitive).intOrNull in setOf(125, 200, 250, 300) }),
         message("restart"),
         message("hello", "videoCodec" to optional(literal("AUTO", "H264")), "playback" to optional(literal("SMART", "QUALITY", "SPEED")), "version" to { integer(it) && (it as JsonPrimitive).double == 0.0 }, "token" to string,
             "decoders" to array(obj("codecString" to nonempty, "hardware" to bool)), "displays" to array(display),

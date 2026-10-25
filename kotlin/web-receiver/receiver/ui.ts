@@ -17,7 +17,7 @@ export function selectLanguage(languages: readonly string[]): Language {
 export const strings = {
   en: {
     resolution: 'Resolution', native: 'Native', nativeHint: 'Native: sharpest picture; needs more Wi-Fi bandwidth.', screenWidth: 'CarPlay screen width', screenWidthHint: 'Larger values show more icons on one page.', wholeScreen: 'Whole screen', picture: 'Picture', windowSize: 'Window',
-    frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying… CarPlay reconnects in a few seconds',
+    frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying. CarPlay reconnects in a few seconds',
     videoCodec: 'Video codec', codecAuto: 'Automatic (recommended)', codecH264: 'Force H.264', codecH265: 'Force H.265',
     codecHint: 'Automatic uses H.265 when this browser can decode it in hardware and falls back to H.264 if it fails. The forced choices are for testing.',
     codecInUseH264: 'Now using H.264.', codecInUseH265: 'Now using H.265.',
@@ -51,7 +51,7 @@ export const strings = {
   },
   'zh-CN': {
     resolution: '分辨率', native: '原画', nativeHint: '原画：画面最清晰，需要更多 Wi-Fi 带宽。', screenWidth: 'CarPlay 屏幕宽度', screenWidthHint: '数值越大，一页显示的图标越多。', wholeScreen: '整屏', picture: '画面', windowSize: '窗口',
-    frameRate: '帧率', automatic: '自动', applying: '正在应用… CarPlay 将在几秒后重新连接',
+    frameRate: '帧率', automatic: '自动', applying: '正在应用，CarPlay 将在几秒后重新连接',
     videoCodec: '视频编码', codecAuto: '自动（推荐）', codecH264: '强制 H.264', codecH265: '强制 H.265',
     codecHint: '自动：这个浏览器能硬件解码 H.265 时使用 H.265，出问题时自动改用 H.264。强制选项用于测试。',
     codecInUseH264: '当前使用 H.264。', codecInUseH265: '当前使用 H.265。',

@@ -33,7 +33,7 @@ export interface Stats {
   type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
   decodedLatencyMs: number | null; renderedLatencyMs: number | null; clockOffsetUs: I64 | null; rttUs: I64 | null;
 }
-export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264' }
+export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264'; frameRate?: FrameRatePreference }
 export type ClientDisplaySettings = Omit<DisplaySettings, 'videoCodec'> & { videoCodec?: DisplaySettings['videoCodec'] };
 export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
 export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
@@ -75,10 +75,11 @@ function object(fields: Record<string, Validator>): Validator {
     Object.keys(x).every(k => Object.hasOwn(fields, k)) && Object.entries(fields).every(([k, v]) => v((x as Record<string, unknown>)[k]));
 }
 const audioCodec = literal('AAC_LC', 'OPUS', 'PCM_S16LE');
+const frameRate = literal('AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60');
 const session = object({ id: i64, phase: literal('CONNECTING', 'ACTIVE', 'RECONNECTING', 'ENDED'), reason: optional(str) });
 const display = object({ screen: range(255), width: x => int(x) && positive(x), height: x => int(x) && positive(x), dpr: positive, refreshHz: positive,
   viewport: optional(object({ width: x => int(x) && positive(x), height: x => int(x) && positive(x) })), fullscreen: optional(bool), fullscreenPreferred: optional(bool),
-  frameRate: optional(literal('AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60')), sustainedFps: optional(positive),
+  frameRate: optional(frameRate), sustainedFps: optional(positive),
   safeArea: object({ top: num, right: num, bottom: num, left: num }) });
 const video = object({ codec: literal('H264', 'H265'), codecString: nonempty, config: x => nonempty(x) && base64(x),
   width: x => int(x) && positive(x), height: x => int(x) && positive(x), fpsHint: optional(positive) });
@@ -104,7 +105,7 @@ const schemas: Record<string, Validator> = {
       const a = x as ViewArea; return a.x + a.width <= a.canvasWidth && a.y + a.height <= a.canvasHeight;
     })(),
   'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
-  'display-settings': object({ type: literal('display-settings'), videoCodec: optional(literal('auto', 'h265', 'h264')), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300) }),
+  'display-settings': object({ type: literal('display-settings'), frameRate: optional(frameRate), videoCodec: optional(literal('auto', 'h265', 'h264')), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300) }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),

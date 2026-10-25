@@ -45,7 +45,7 @@ class DisplaySettingsTest {
                 primary.send(1, vector("hello-viewport").toByteArray())
                 val welcome = primary.json()
                 assertEquals(listOf("display-settings"), welcome["features"]!!.jsonArray.map { it.jsonPrimitive.content })
-                assertEquals(WebJsonCodec.parse(vector("display-settings-relay")), primary.json())
+                assertEquals(DisplaySettings().message(), primary.json())
                 eventually { caps.lastOrNull()?.displays?.get(ScreenId.MAIN)?.viewport == Viewport(1533, 906) }
                 assertEquals(false, caps.last().displays.getValue(ScreenId.MAIN).fullscreen)
                 assertEquals(1, port.listeners.size)
@@ -88,7 +88,7 @@ class DisplaySettingsTest {
         for (name in listOf("display-settings-client-codec", "display-settings-relay", "display-settings-native")) {
             for (direction in WebJsonCodec.Direction.entries) WebJsonCodec.parse(vector(name), direction)
         }
-        assertEquals(WebJsonCodec.parse(vector("display-settings-native")), DisplaySettings("native").message())
+        assertEquals(JsonObject(WebJsonCodec.parse(vector("display-settings-native")) + ("frameRate" to JsonPrimitive("AUTO"))), DisplaySettings("native").message())
         val hello = WebJsonCodec.parse(vector("hello-viewport"))
         val display = hello["displays"]!!.jsonArray[0].jsonObject
         for ((field, bad) in listOf("viewport" to JsonNull, "fullscreen" to JsonPrimitive("false"),
@@ -106,14 +106,15 @@ class DisplaySettingsTest {
         assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(welcome + ("features" to JsonPrimitive("display-settings")))) }
     }
     @Test fun legacyClientKeepsTheCurrentCodecAndNewClientChangesItWithoutAnotherHello() {
-        val port = Port().apply { value = DisplaySettings(videoCodec = "h265") }
+        val port = Port().apply { value = DisplaySettings(videoCodec = "h265", frameRate = FrameRatePreference.FPS_55) }
         val output = output(port); output.open(NoopHost)
         try {
             TestClient(Socket("127.0.0.1", output.awaitListening())).use { client ->
                 client.hello(); client.json(); client.json()
                 client.send(1, vector("display-settings-client").toByteArray())
-                assertEquals(DisplaySettings("720p", 125, "h265").message(), client.json())
+                assertEquals(DisplaySettings("720p", 125, "h265", FrameRatePreference.FPS_55).message(), client.json())
                 assertEquals("h265", port.current().videoCodec)
+                assertEquals(FrameRatePreference.FPS_55, port.current().frameRate)
             }
         } finally { output.close() }
         val nextPort = Port()
@@ -126,6 +127,70 @@ class DisplaySettingsTest {
                 assertEquals("h265", nextPort.current().videoCodec)
             }
         } finally { next.close() }
+    }
+
+    @Test fun frameRateRoundTripsThroughThePortAndKeepsPrimaryAndRestartLimits() {
+        val port = Port()
+        val output = output(port); output.open(NoopHost)
+        try {
+            TestClient(Socket("127.0.0.1", output.awaitListening())).use { primary ->
+                primary.hello(); primary.json(); assertEquals(DisplaySettings().message(), primary.json())
+                TestClient(Socket("127.0.0.1", output.awaitListening())).use { secondary ->
+                    secondary.hello(); secondary.json(); secondary.json()
+                    secondary.send(1, vector("display-settings-client-frame-rate").toByteArray())
+                    secondary.send(1, vector("ping").toByteArray()); secondary.json()
+                    output.awaitHostIdle(); assertTrue(port.changes.isEmpty())
+                    primary.send(1, vector("display-settings-client-frame-rate").toByteArray())
+                    val expected = DisplaySettings("720p", 125, "h265", FrameRatePreference.FPS_45)
+                    assertEquals(expected.message(), primary.json()); assertEquals(expected.message(), secondary.json())
+                    assertEquals(expected, port.current())
+                    primary.send(1, vector("display-settings-client").toByteArray())
+                    primary.send(1, vector("restart").toByteArray())
+                    primary.send(1, vector("ping").toByteArray()); primary.json()
+                    output.awaitHostIdle(); assertEquals(listOf(expected), port.changes.toList())
+                }
+            }
+        } finally { output.close() }
+    }
+
+    @Test fun helloFrameRatesAreIgnoredForEveryDisplayOnlyWithAPort() {
+        for (port in listOf(null, Port())) {
+            val reports = CopyOnWriteArrayList<OutputCapabilities>()
+            val output = output(port)
+            output.open(object : OutputHost {
+                override fun capabilities(capabilities: OutputCapabilities) { reports.add(capabilities) }
+                override fun control(event: ControlEvent) = Unit
+                override fun stats(stats: OutputStats) = Unit
+            })
+            try {
+                TestClient(Socket("127.0.0.1", output.awaitListening())).use { client ->
+                    for (rate in listOf(FrameRatePreference.FPS_45, FrameRatePreference.FPS_35)) {
+                        val hello = WebJsonCodec.parse(vector("hello"))
+                        val display = hello["displays"]!!.jsonArray[0].jsonObject
+                        val displays = JsonArray((0..1).map { screen -> JsonObject(display + mapOf(
+                            "screen" to JsonPrimitive(screen), "frameRate" to JsonPrimitive(rate.name))) })
+                        client.send(1, JsonObject(hello + ("displays" to displays)).toString().toByteArray())
+                        client.send(1, vector("ping").toByteArray())
+                        while (client.json()["type"]!!.jsonPrimitive.content != "pong") { }
+                        output.awaitHostIdle()
+                        assertEquals(2, reports.last().displays.size)
+                        assertTrue(reports.last().displays.values.all { it.frameRate == if (port == null) rate else FrameRatePreference.AUTO })
+                    }
+                }
+            } finally { output.close() }
+        }
+    }
+
+    @Test fun frameRateIsAlwaysEmittedAndOptionalButStrictInBothDirections() {
+        for (rate in FrameRatePreference.entries) for (direction in WebJsonCodec.Direction.entries) {
+            val message = DisplaySettings(frameRate = rate).message()
+            assertEquals(rate.name, message["frameRate"]!!.jsonPrimitive.content)
+            assertEquals(message, WebJsonCodec.parse(WebJsonCodec.encode(message, direction), direction))
+            WebJsonCodec.validate(JsonObject(message - "frameRate"), direction)
+            for (bad in listOf(JsonNull, JsonPrimitive("auto"), JsonPrimitive("FPS_120"), JsonPrimitive(30), JsonPrimitive(true)))
+                assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(message + ("frameRate" to bad)), direction) }
+        }
+        assertEquals("AUTO", DisplaySettings().message()["frameRate"]!!.jsonPrimitive.content)
     }
     @Test fun codecIsRequiredOnlyFromTheRelayAndStrictWhenPresent() {
         val old = WebJsonCodec.parse(vector("display-settings-client"), WebJsonCodec.Direction.CLIENT_TO_RELAY)
