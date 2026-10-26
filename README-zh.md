@@ -36,7 +36,7 @@ Android 中继打包 `kotlin/web-receiver/dist`，Linux 中继打包 `rust/web-r
 
 ## 参与贡献
 
-贡献须遵循[贡献者许可协议](./CLA.md)（协议文本为英文）。每个 pull request 上的 CLA Assistant 检查会记录你对协议的接受。
+贡献须遵循 [OpenXPlay 贡献者许可协议](https://github.com/OpenXPlay/OpenXPlay/blob/main/CLA.md)（协议文本为英文）。在任意一个 OpenXPlay 仓库的 pull request 里按提示回复一次即可，之后所有仓库的 CLA 检查都会通过。
 
 ## 许可证
 
