@@ -317,12 +317,12 @@ internal class Plugins(val config: PluginsConfig, private val timing: ChannelTim
 
 }
 
-internal fun receiverWelcome(clientId: String, state: org.openxplay.stream.core.SessionState, sourceUrl: String, plugins: Boolean = false, displaySettings: Boolean = false, relay: RelayInfo? = null, viewArea: Boolean = false, receiverBuild: String? = null): JsonObject = buildJsonObject {
+internal fun receiverWelcome(clientId: String, state: org.openxplay.stream.core.SessionState, sourceUrl: String, plugins: Boolean = false, displaySettings: Boolean = false, relay: RelayInfo? = null, viewArea: Boolean = false, receiverBuild: String? = null, hostUi: Boolean = false): JsonObject = buildJsonObject {
     put("type", "welcome"); put("version", 0); put("clientId", clientId)
     put("session", WebJsonCodec.session(state)); put("sourceUrl", sourceUrl)
     put("attribution", "Powered by OpenXPlay."); put("projectUrl", "https://github.com/OpenXPlay/OpenXPlay-Stream")
     if (receiverBuild != null) put("receiverBuild", receiverBuild)
-    if (displaySettings || viewArea) put("features", buildJsonArray { if (displaySettings) add("display-settings"); if (viewArea) add("view-area") })
+    if (displaySettings || viewArea || hostUi) put("features", buildJsonArray { if (displaySettings) add("display-settings"); if (viewArea) add("view-area"); if (hostUi) add("host-ui") })
     if (relay != null) put("relay", buildJsonObject { put("name", relay.name); put("version", relay.version) })
     if (plugins) put("plugins", buildJsonObject { put("host", "/plugins/host/index.html") })
 }

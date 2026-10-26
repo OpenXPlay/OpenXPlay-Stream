@@ -48,6 +48,7 @@ public data class WebOutputConfig(
     /** The shell serving this output, shown on the head-unit page next to the page's own version. */
     public val relay: RelayInfo? = null,
     public val viewArea: ViewAreaPort? = null,
+    public val hostUi: Boolean = false,
 ) {
     init {
         require(port in 0..65535 && maxClients > 0 && queueDurationUs >= 0 && sendBufferBytes >= 0 && writeTimeoutMillis > 0)
@@ -85,7 +86,11 @@ private const val PROJECT_URL = "https://github.com/OpenXPlay/OpenXPlay-Stream"
 private const val HOST_QUEUE_CAPACITY = 256
 
 /** Socket I/O runs on owned threads. Model callbacks only retain state and enqueue borrowed frames. */
-public class WebOutput(private val config: WebOutputConfig, override val id: String = "web") : ProjectionOutput {
+public class WebOutput(
+    private val config: WebOutputConfig,
+    override val id: String = "web",
+    private val clock: MonotonicClock = MonotonicClock.system,
+) : ProjectionOutput {
     @Volatile private var tlsContext = config.sslContext
 
     /** Existing connections retain their TLS session; new connections use this context. */
@@ -142,6 +147,19 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         if (!areaRetained) areaListener?.close()
         run.reportCapabilities()
         thread("accept") { run.accept() }
+    }
+
+    override fun onHostUiRequested() {
+        if (!config.hostUi) return
+        synchronized(lock) {
+            val run = runtime ?: return
+            val target = run.lastTouch?.takeIf {
+                it.hello != null && !it.closing && clock.nowNanos() - run.lastTouchNanos <= TimeUnit.SECONDS.toNanos(5)
+            }
+            val clients = if (target != null) listOf(target) else run.clients.values.filter { it.hello != null && !it.closing }
+            val message = buildJsonObject { put("type", "host-ui") }
+            clients.forEach { it.json(message) }
+        }
     }
 
     override fun onSession(state: SessionState, config: SessionConfig) {
@@ -258,6 +276,8 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
         }
         val hostQueue = HostQueue("oxp-$id-host", HOST_QUEUE_CAPACITY)
         val clients = linkedMapOf<String, Client>()
+        var lastTouch: Client? = null
+        var lastTouchNanos = 0L
         val sockets = mutableSetOf<Socket>()
         val pluginSockets = mutableSetOf<Socket>()
         val mediaConnections = java.util.concurrent.atomic.AtomicInteger()
@@ -489,6 +509,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                     return
                 }
                 closing = true
+                if (run.lastTouch === this) run.lastTouch = null
                 queues.clear(); audio.clear(); messages.clear()
                 messages.addLast(WebSocketMessage(8, payload)); wake.release()
                 if (hello != null) {
@@ -536,7 +557,11 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                                     }
                                     else -> throw WebSocketFailure(1008, "Client media unsupported in v0")
                                 }
-                                if (event is ControlEvent.Touch) touched.add(event.screen)
+                                if (event is ControlEvent.Touch) {
+                                    touched.add(event.screen)
+                                    run.lastTouch = this
+                                    run.lastTouchNanos = clock.nowNanos()
+                                }
                                 run.host { it.control(event) }
                             }
                         }
@@ -556,7 +581,7 @@ public class WebOutput(private val config: WebOutputConfig, override val id: Str
                         queueDurationUs = playbackQueueDurationUs(message["playback"]?.jsonPrimitive?.content, config.queueDurationUs)
                         queues.values.forEach { it.maxDurationUs = queueDurationUs }
                         if (first) {
-                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay, config.viewArea != null, receiverBuild))
+                            json(receiverWelcome(clientId, state, config.sourceUrl, plugins != null, config.displaySettings != null, config.relay, config.viewArea != null, receiverBuild, config.hostUi))
                             config.displaySettings?.let { json(it.current().message()) }
                             config.viewArea?.current()?.let { json(it.message()) }
                         }
