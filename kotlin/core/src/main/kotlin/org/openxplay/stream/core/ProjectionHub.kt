@@ -193,6 +193,16 @@ public class ProjectionHub(
         outputs.values.forEach { it.contextDelivery?.offer(update) }
     }
 
+    override fun hostUiRequested(): Unit = hostUiRequested(null)
+
+    private fun hostUiRequested(epoch: Long?) {
+        synchronized(lock) {
+            if (!accept(epoch)) return
+            broadcast { it.onHostUiRequested() }
+        }
+        drain()
+    }
+
     override fun session(state: SessionState): Unit = acceptSession(state, null)
 
     private fun acceptSession(value: SessionState, epoch: Long?) {
@@ -395,6 +405,7 @@ public class ProjectionHub(
     private fun fencedSink(epoch: Long): InputSink = object : InputSink {
         override fun inputCapabilities(capabilities: InputCapabilities): Unit = this@ProjectionHub.inputCapabilities(capabilities, epoch)
         override fun context(update: ContextUpdate): Unit = this@ProjectionHub.context(update, epoch)
+        override fun hostUiRequested(): Unit = this@ProjectionHub.hostUiRequested(epoch)
         override fun session(state: SessionState): Unit = acceptSession(state, epoch)
         override fun videoFormat(screen: ScreenId, format: VideoFormat?): Unit = this@ProjectionHub.format(screen, format, epoch)
         override fun videoFrame(frame: VideoFrame): Unit = this@ProjectionHub.frame(frame, epoch)
