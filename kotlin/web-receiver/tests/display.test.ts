@@ -59,15 +59,15 @@ it('accepts the exact vectors and rejects malformed viewport, feature and settin
 it('provides hidden settings rows, bilingual labels and canvas/window ratios', () => {
   const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
   expect(html).toContain('id="display-settings" hidden');
-  const options = [...html.matchAll(/<option value="(auto|native|1080p|720p|screen)" data-text="(?:automatic|native|wholeScreen)"|<option value="(1080p|720p)"/g)].map(match => match[1] ?? match[2]);
+  const options = [...html.matchAll(/data-choice="resolution" data-value="([^"]+)"/g)].map(match => match[1]);
   expect(options).toEqual(['auto', 'native', '1080p', '720p', 'screen']);
-  expect(html).toContain('value="native" data-text="native"');
+  expect(html).toContain('data-text="native"');
   expect(html).toContain('data-text="nativeHint"');
   expect(strings.en.native).toBe('Native'); expect(strings['zh-CN'].native).toBe('原画');
   expect(strings.en.nativeHint).toContain('sharpest'); expect(strings.en.nativeHint).toContain('Wi-Fi bandwidth');
   expect(strings['zh-CN'].nativeHint).toContain('最清晰'); expect(strings['zh-CN'].nativeHint).toContain('Wi-Fi 带宽');
   for (const id of ['resolution', 'screen-width', 'picture-size', 'relay-video-codec', 'video-codec-current']) expect(html).toContain('id="' + id + '"');
-  const widths = [...html.matchAll(/<option value="(125|200|250|300)"/g)].map(match => Number(match[1]));
+  const widths = [...html.matchAll(/data-choice="screen-width" data-value="(125|200|250|300)"/g)].map(match => Number(match[1]));
   expect(widths).toEqual([125, 200, 250, 300]);
   expect(html).toContain('data-text="screenWidthHint"');
   expect(strings.en.screenWidth).toBe('CarPlay screen width');

@@ -24,7 +24,7 @@ export const strings = {
     playback: 'Playback', smart: 'Smart', quality: 'Quality', speed: 'Speed',
     smartHint: 'Balances smoothness and delay for your network.', qualityHint: 'Smoothest motion, with a little more delay.',
     speedHint: 'Lowest delay; frames may be skipped.',
-    resetPositions: 'Reset button positions', settings: 'Settings', close: 'Close', sound: 'Sound', microphone: 'Microphone', fit: 'Picture fit',
+    soundAndMicrophone: 'Sound and microphone', plugins: 'Plugins', back: 'Back', resetPluginPositions: 'Reset plugin positions', settings: 'Settings', close: 'Close', sound: 'Sound', microphone: 'Microphone', fit: 'Picture fit',
     contain: 'Fit', fill: 'Fill', fullscreen: 'Full screen', developer: 'Developer mode', about: 'About',
     source: 'Source', version: 'Web version', relayVersion: 'version', powered: 'Powered by OpenXPlay.', soundHint: 'Tap for sound',
     retryIn: 'Trying again in {seconds} s. Check your relay and network.', connecting: 'Connecting', connectingHint: 'Connecting to your relay…',
@@ -57,7 +57,7 @@ export const strings = {
     codecInUseH264: '当前使用 H.264。', codecInUseH265: '当前使用 H.265。',
     playback: '播放模式', smart: '智能', quality: '质量优先', speed: '速度优先',
     smartHint: '根据网络自动平衡流畅度和延迟。', qualityHint: '画面最流畅，延迟略高。', speedHint: '延迟最低，可能跳过部分画面。',
-    resetPositions: '重置按钮位置', settings: '设置', close: '关闭', sound: '声音', microphone: '麦克风', fit: '画面适配',
+    soundAndMicrophone: '声音与麦克风', plugins: '插件', back: '返回', resetPluginPositions: '重置插件位置', settings: '设置', close: '关闭', sound: '声音', microphone: '麦克风', fit: '画面适配',
     contain: '适应', fill: '填满', fullscreen: '全屏', developer: '开发者模式', about: '关于',
     source: '源代码', version: '网页版本', relayVersion: '版本', powered: 'Powered by OpenXPlay.', soundHint: '轻触开启声音',
     retryIn: '{seconds} 秒后重试。请检查中继设备和网络。', connecting: '正在连接', connectingHint: '正在连接中继设备…',
@@ -91,7 +91,7 @@ export function statusCard(state: StatusState): { headline: TextKey; subline: Te
   const subline: TextKey = `${state}Hint`;
   return { headline, subline, hidden: state === 'playing' };
 }
-export interface Preferences { frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean; gear: GearPosition }
+export interface Preferences { frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean }
 export interface Store { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void }
 export class ReceiverPreferences {
   constructor(private readonly storage: () => Store) {}
@@ -100,11 +100,12 @@ export class ReceiverPreferences {
     try { if (value === null) this.storage().removeItem(`oxp.${key}`); else this.storage().setItem(`oxp.${key}`, value); } catch { }
   }
   load(fragment: URLSearchParams): Preferences {
+    if (this.read('gear') !== null) this.write('gear', null);
     return { frameRate: frameRatePreference(this.read('frameRate')), playback: playbackMode(this.read('playback')), sound: this.read('sound') !== 'false', microphone: this.read('microphone') !== 'false',
-      fit: this.read('fit') === 'fill' ? 'fill' : 'fit', developer: fragment.has('debug') || this.read('developer') === 'true', gear: parseGearPosition(this.read('gear')) };
+      fit: this.read('fit') === 'fill' ? 'fill' : 'fit', developer: fragment.has('debug') || this.read('developer') === 'true' };
   }
   save(preferences: Preferences): void {
-    for (const [key, value] of Object.entries(preferences)) this.write(key, key === 'gear' ? JSON.stringify(value) : String(value));
+    for (const [key, value] of Object.entries(preferences)) this.write(key, String(value));
   }
 }
 
@@ -131,41 +132,4 @@ export function applyReducedMotion(target: { classList: { toggle(name: string, f
 /** Choose one audio action according to the visible video, independently of protocol status. */
 export function soundPrompt(playing: boolean, enabled: boolean, audioState: string | undefined, audioActive = true): 'pill' | 'card' | null {
   return enabled && audioActive && audioState === 'suspended' ? playing ? 'pill' : 'card' : null;
-}
-
-export interface FreeGearPosition { x: number; y: number }
-export type GearPosition = FreeGearPosition | { side: 'left' | 'right'; y: number };
-export interface GearBounds { width: number; height: number; size: number; top: number; right: number; bottom: number; left: number }
-export function parseGearPosition(value: unknown): GearPosition {
-  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { value = null; } }
-  const position = value as { x?: number; y?: number; side?: string } | null;
-  if (position && typeof position.x === 'number' && Number.isFinite(position.x) && typeof position.y === 'number' && Number.isFinite(position.y)) return { x: position.x, y: position.y };
-  return position && (position.side === 'left' || position.side === 'right') && typeof position.y === 'number' && Number.isFinite(position.y) && position.y >= 0 && position.y <= 1 ?
-    { side: position.side, y: position.y } : { side: 'right', y: 0 };
-}
-export function gearDragged(dx: number, dy: number): boolean { return Math.hypot(dx, dy) > 8; }
-/** Resolve legacy side/fraction preferences once, then keep absolute CSS coordinates. */
-export function gearOffset(position: GearPosition, bounds: GearBounds): FreeGearPosition {
-  if ('x' in position) return clampGear(position, bounds);
-  return clampGear({ x: position.side === 'left' ? bounds.left : bounds.width - bounds.right - bounds.size,
-    y: bounds.top + position.y * Math.max(0, bounds.height - bounds.top - bounds.bottom - bounds.size) }, bounds);
-}
-export function clampGear(position: FreeGearPosition, bounds: GearBounds): FreeGearPosition {
-  const axis = (value: number, length: number, low: number, high: number) => {
-    const space = Math.max(0, length - bounds.size);
-    const min = Math.min(Math.max(24, low), space / 2), max = Math.max(min, space - Math.max(24, high));
-    return Math.max(min, Math.min(max, value));
-  };
-  return { x: axis(position.x, bounds.width, bounds.left, bounds.right), y: axis(position.y, bounds.height, bounds.top, bounds.bottom) };
-}
-
-/** Movement past the tolerance starts a drag; stationary presses remain taps. */
-export class GearGesture {
-  active = false;
-  suppressed = false;
-  private finished = false;
-  move(dx: number, dy: number): void {
-    if (!this.finished && gearDragged(dx, dy)) { this.active = true; this.suppressed = true; }
-  }
-  finish(cancelled = false): void { if (cancelled) this.suppressed = true; this.finished = true; this.active = false; }
 }

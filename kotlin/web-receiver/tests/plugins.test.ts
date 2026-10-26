@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { PluginPolicy, resetHostPositions, area, clipPath, discover, validHostMessage, validHostPrefs, readHostPrefs, saveHostPrefs, HOST_PREFS_KEY, type Geometry } from '../receiver/plugin-policy';
 import { PluginSlot } from '../receiver/plugin-slot';
+import { settingsAnchor } from '../receiver/drawer-core';
 import { parseMessage } from '../protocol/json';
 const geometry: Geometry = { locale: 'en', theme: 'dark', reducedMotion: false, viewport: { w: 1000, h: 500 }, video: { x: 0, y: 0, w: 1000, h: 500 }, gear: { x: 920, y: 400, w: 56, h: 56, side: 'right' }, channel: '/plugins/channel' };
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -126,6 +127,35 @@ it('stores only bounded JSON objects and tolerates unavailable or corrupt storag
   const blocked = () => { throw new Error('Storage blocked'); };
   expect(readHostPrefs(blocked)).toEqual({}); expect(saveHostPrefs(blocked, {})).toBe(false);
   expect(saveHostPrefs(storage, {})).toBe(true); expect(readHostPrefs(storage)).toEqual({});
+});
+
+it.each(['disable', 'capabilities', 'watchdog'])('reports cover changes synchronously and clears the escape rectangle on %s', cleanup => {
+  vi.useFakeTimers();
+  let now = 0, shown = false, message: (event: unknown) => void = () => {};
+  vi.stubGlobal('performance', { now: () => now });
+  const post = vi.fn(), frame = { setAttribute() {}, contentWindow: { postMessage: post }, style: {} as Record<string, string>, remove() {} };
+  vi.stubGlobal('document', { createElement: () => frame, body: { append() {} }, addEventListener() {}, hidden: false });
+  vi.stubGlobal('window', { addEventListener: (type: string, fn: typeof message) => { if (type === 'message') message = fn; } });
+  vi.stubGlobal('location', { href: 'https://relay/' }); vi.stubGlobal('localStorage', { getItem: () => null, setItem() {} });
+  const anchor = settingsAnchor(1000, 24, 24, 8);
+  const changed = vi.fn(() => { shown = slot.cover !== 'none'; slot.refresh(); });
+  const slot = new PluginSlot(() => ({ ...geometry, gear: shown ? geometry.gear : anchor }), vi.fn(), vi.fn(), changed);
+  slot.configure({ plugins: { host: '/plugins/host/index.html' } });
+  const layout = (cover: string) => message({ source: frame.contentWindow, data: { oxp: 'host/0', type: 'layout', cover, regions: [{ x: 0, y: 0, w: 1000, h: 500 }] } });
+  expect(slot.cover).toBe('none');
+  layout('fullscreen'); expect(shown).toBe(true); expect(slot.cover).toBe('fullscreen');
+  expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'geometry', gear: geometry.gear }), '*');
+  layout('fullscreen'); expect(changed).toHaveBeenCalledOnce();
+  layout('none'); expect(shown).toBe(false);
+  expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'geometry', gear: anchor }), '*');
+  layout('panel'); expect(slot.collapse()).toBe(true); expect(shown).toBe(false); expect(slot.cover).toBe('none');
+  expect(post).toHaveBeenCalledWith({ oxp: 'host/0', type: 'collapse' }, '*');
+  expect(slot.collapse()).toBe(false);
+  layout('fullscreen');
+  if (cleanup === 'disable') slot.enable(false);
+  else if (cleanup === 'capabilities') slot.configure({});
+  else { now = 6000; vi.advanceTimersByTime(6000); }
+  expect(shown).toBe(false); expect(slot.cover).toBe('none');
 });
 
 it('clears host geometry but retains selected surfaces and unrelated preferences', () => {

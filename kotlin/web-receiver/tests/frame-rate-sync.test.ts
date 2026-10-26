@@ -11,17 +11,26 @@ vi.mock('../shared/capabilities', () => ({
   estimateRefreshHz: async () => 60, audioCapabilities: () => ({ audio: [], microphone: false }),
 }));
 vi.mock('../shared/receiver-info', () => ({ collectReceiverInfo: async () => ({}), codecPowerEfficient: async () => false }));
-vi.mock('../receiver/sheet', () => ({ bindSheet: () => ({ open() {}, close() {} }) }));
+const drawerOpen = vi.hoisted(() => vi.fn());
+const plugin = vi.hoisted(() => ({ current: undefined as any }));
+vi.mock('../receiver/drawer', () => ({ bindDrawer: (_dialog: unknown, _reduced: unknown, visibility: (open: boolean) => void, beforeOpen: () => void) => {
+  drawerOpen.mockImplementation(() => { beforeOpen(); visibility(true); });
+  return { open: drawerOpen, close() { visibility(false); } };
+}, syncChoices() {} }));
 vi.mock('../receiver/plugin-slot', () => ({ PluginSlot: class {
-  preference = false;
-  refresh() {} receiverState() {} configure() {} visibility() {} enable() {} resetPositions() {}
+  preference = false; cover = 'none';
+  constructor(public geometry: () => unknown, _diagnostic: unknown, public wake: () => void, private changed: () => void) { plugin.current = this; }
+  layout(cover: string) { this.cover = cover; this.changed(); }
+  collapse = vi.fn(() => { if (this.cover === 'none') return false; this.layout('none'); return true; });
+  visibility = vi.fn();
+  refresh() {} receiverState() {} configure() {} enable() {} resetPositions() {}
 } }));
 vi.mock('../receiver/version', () => ({ version: 'test', shouldReload: () => false }));
 
 class Element {
   value = ''; hidden = false; disabled = false; checked = false; textContent = ''; open = false;
   dataset: Record<string, string> = {};
-  style: Record<string, string> = {};
+  style = { setProperty() {} };
   offsetHeight = 48;
   onchange?: (event: { target: Element }) => void;
   onclick?: () => void;
@@ -32,6 +41,9 @@ class Element {
     toggle: (name: string, on: boolean) => { if (on) this.classes.add(name); else this.classes.delete(name); },
   };
   addEventListener() {} setAttribute() {} toggleAttribute() {}
+  querySelector(selector: string) { return element(selector.slice(1)); }
+  querySelectorAll() { return []; }
+  click() { if (!this.disabled) this.onclick?.(); }
   getBoundingClientRect() { return { x: 0, y: 0, left: 0, top: 0, width: 800, height: 480 }; }
   transferControlToOffscreen() { return {}; }
 }
@@ -65,7 +77,7 @@ function hello(): Hello {
   return command.hello;
 }
 beforeEach(() => {
-  vi.resetModules(); vi.useFakeTimers(); now = 0;
+  vi.resetModules(); drawerOpen.mockClear(); vi.useFakeTimers(); now = 0;
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   elements = new Map(); values = new Map();
   vi.stubGlobal('localStorage', {
@@ -74,7 +86,7 @@ beforeEach(() => {
   });
   vi.stubGlobal('document', {
     documentElement: new Element(), hidden: false, fullscreenEnabled: false,
-    getElementById: element, querySelector: () => element('video'), querySelectorAll: () => [],
+    getElementById: element, querySelector: (selector: string) => element(selector.slice(1)), querySelectorAll: () => [],
     addEventListener() {}, getAnimations: () => [],
   });
   vi.stubGlobal('window', { addEventListener() {} });
@@ -84,7 +96,7 @@ beforeEach(() => {
   vi.stubGlobal('innerWidth', 800); vi.stubGlobal('innerHeight', 480); vi.stubGlobal('devicePixelRatio', 1);
   vi.stubGlobal('isSecureContext', true); vi.stubGlobal('Worker', Worker); vi.stubGlobal('VideoDecoder', class {});
   vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {} }));
-  vi.stubGlobal('getComputedStyle', () => ({ marginTop: '0', marginRight: '0', marginBottom: '0', marginLeft: '0', fontSize: '16px', getPropertyValue: () => '0' }));
+  vi.stubGlobal('getComputedStyle', () => ({ right: '12px', top: '12px', marginTop: '0', marginRight: '0', marginBottom: '0', marginLeft: '0', fontSize: '16px', getPropertyValue: () => '0' }));
   vi.stubGlobal('ResizeObserver', class { observe() {} });
   vi.stubGlobal('PerformanceObserver', class { observe() {} });
 });
@@ -132,10 +144,10 @@ it('shares the ten-second gate with the other settings and preserves the relay f
   expect(Worker.current.commands).toEqual([{ ...settings('AUTO'), resolution: 'native' }]);
   choose('frame-rate', 'FPS_30');
   expect(Worker.current.commands).toHaveLength(1); expect(element('frame-rate').value).toBe('AUTO');
-  now = 10_000; choose('frame-rate', 'FPS_30');
+  await vi.advanceTimersByTimeAsync(10_000); now = 10_000; Worker.current.commands = []; choose('frame-rate', 'FPS_30');
   expect(Worker.current.commands.at(-1)).toEqual(settings('FPS_30'));
   choose('screen-width', '300');
-  expect(Worker.current.commands).toHaveLength(2); expect(element('screen-width').value).toBe('250');
+  expect(Worker.current.commands).toHaveLength(1); expect(element('screen-width').value).toBe('250');
 });
 
 it('keeps hello and restart behavior when the relay omits frame rate', async () => {
@@ -164,4 +176,74 @@ it('restores legacy preference reporting after disconnect and adopts the next re
   expect(helloFromCommands().displays[0].frameRate).toBe('FPS_30');
   const update = Worker.current.commands.at(-1);
   expect(update?.type === 'hello' && update.hello.displays[0].frameRate).toBeUndefined();
+});
+
+it('opens from the host event and shows the fallback only without the feature', async () => {
+  await start();
+  Worker.current.receive({ type: 'welcome', features: ['host-ui'], sourceUrl: 'https://example.org/source' });
+  expect(element('gear').hidden).toBe(true);
+  Worker.current.receive({ type: 'host-ui' }); expect(drawerOpen).toHaveBeenCalledOnce();
+  Worker.current.receive({ type: 'welcome', sourceUrl: 'https://example.org/source' });
+  expect(element('gear').hidden).toBe(false);
+});
+
+it.each(['panel', 'fullscreen'])('keeps the escape button and its rectangle while a %s plugin covers CarPlay', async cover => {
+  await start();
+  Worker.current.receive({ type: 'welcome', features: ['host-ui'], sourceUrl: 'https://example.org/source' });
+  const slot = plugin.current;
+  expect(slot.geometry().gear).toEqual({ x: 788, y: 12, w: 0, h: 0, side: 'right', faded: true, gap: 8 });
+  Worker.current.receive({ type: 'playing' }); slot.layout(cover);
+  expect(element('gear').hidden).toBe(false);
+  expect(slot.geometry().gear).toEqual({ x: 0, y: 0, w: 800, h: 480, side: 'right', faded: false, gap: 8 });
+  await vi.advanceTimersByTimeAsync(3000); expect(element('gear').classList.contains('faded')).toBe(false);
+  element('gear').click(); expect(slot.cover).toBe('none'); expect(element('gear').hidden).toBe(true);
+  expect(drawerOpen).not.toHaveBeenCalled();
+  expect(slot.geometry().gear).toEqual({ x: 788, y: 12, w: 0, h: 0, side: 'right', faded: true, gap: 8 });
+  slot.layout(cover); slot.layout('none'); expect(element('gear').hidden).toBe(true);
+});
+it('keeps the fallback visible, fades it after three seconds of playing and wakes it', async () => {
+  await start(); Worker.current.receive({ type: 'playing' });
+  await vi.advanceTimersByTimeAsync(2999); expect(element('gear').classList.contains('faded')).toBe(false);
+  await vi.advanceTimersByTimeAsync(1); expect(element('gear').classList.contains('faded')).toBe(true);
+  expect(plugin.current.geometry().gear.faded).toBe(true);
+  plugin.current.wake(); expect(element('gear').classList.contains('faded')).toBe(false);
+  expect(element('gear').hidden).toBe(false);
+});
+it.each(['host-ui', 'card-settings', 'gear'])('collapses before hiding plugin surfaces when %s opens the drawer', async entry => {
+  await start(); const slot = plugin.current;
+  slot.layout('fullscreen');
+  if (entry === 'host-ui') Worker.current.receive({ type: 'host-ui' });
+  else if (entry === 'gear') {
+    element('gear').click(); expect(drawerOpen).not.toHaveBeenCalled(); element('gear').click();
+  } else element(entry).click();
+  expect(drawerOpen).toHaveBeenCalledOnce(); expect(slot.cover).toBe('none');
+  expect(slot.visibility).toHaveBeenLastCalledWith(false);
+  expect(slot.collapse.mock.invocationCallOrder.at(-1)).toBeLessThan(slot.visibility.mock.invocationCallOrder.at(-1));
+});
+it.each([undefined, 'FPS_60'] as const)('unlocks frame rate and clears both applying lines on a relay confirmation (%s)', async rate => {
+  await start(); Worker.current.receive(settings(rate)); choose('frame-rate', 'FPS_45');
+  expect(element('frame-rate').disabled).toBe(true);
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(false);
+  Worker.current.receive(settings(rate === undefined ? undefined : 'FPS_45'));
+  expect(element('frame-rate').disabled).toBe(false);
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(true);
+});
+it('unlocks frame rate and clears applying on disconnect or the ten-second timeout', async () => {
+  await start(); Worker.current.receive(settings('FPS_60')); choose('frame-rate', 'FPS_45');
+  Worker.current.receive({ type: 'display-disconnected' }); expect(element('frame-rate').disabled).toBe(false);
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(true);
+  now = 10_000; choose('frame-rate', 'FPS_30');
+  await vi.advanceTimersByTimeAsync(9999); expect(element('frame-rate').disabled).toBe(true);
+  await vi.advanceTimersByTimeAsync(1); expect(element('frame-rate').disabled).toBe(false);
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(true);
+});
+it('cancels the old deadline so it cannot unlock a later frame-rate request', async () => {
+  await start(); Worker.current.receive(settings('FPS_60')); choose('frame-rate', 'FPS_45');
+  await vi.advanceTimersByTimeAsync(1000); Worker.current.receive(settings('FPS_45'));
+  now = 10_000; choose('frame-rate', 'FPS_30');
+  await vi.advanceTimersByTimeAsync(9000);
+  expect(element('frame-rate').disabled).toBe(true);
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(false);
+  await vi.advanceTimersByTimeAsync(1000); expect(element('frame-rate').disabled).toBe(false);
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(true);
 });
