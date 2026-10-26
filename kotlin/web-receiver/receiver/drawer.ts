@@ -29,7 +29,7 @@ export function bindChoices(root: HTMLElement): void {
   });
 }
 
-export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, visibility: (open: boolean) => void) {
+export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, visibility: (open: boolean) => void, beforeOpen: () => void = () => {}) {
   const doc = dialog.ownerDocument, win = doc.defaultView!;
   const panel = dialog.querySelector<HTMLElement>('.panel')!, scrim = dialog.querySelector<HTMLElement>('.scrim')!;
   const pages = [...dialog.querySelectorAll<HTMLElement>('[data-drawer-page]')];
@@ -41,7 +41,7 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
   let opener: HTMLElement | null = null, closing = false, moving = false;
   let timer: ReturnType<typeof setTimeout> | undefined, frame = 0, gestureFrame = 0;
   let finishMotion: (() => void) | undefined, motionTarget: HTMLElement | undefined;
-  let drag: { id: number; x: number; y: number; width: number; rem: number; offset: number; lastX: number; time: number; velocity: number; active: boolean } | undefined;
+  let drag: { id: number; x: number; y: number; width: number; rem: number; opening: boolean; startOffset: number; startOpacity: number; offset: number; lastX: number; time: number; velocity: number; active: boolean } | undefined;
   let suppressClick = false, keyboard = false;
   // Focus a control only for keyboard and D-pad use; a touch-opened drawer focuses the page so no ring appears.
   doc.addEventListener('keydown', () => { keyboard = true; }, true);
@@ -61,8 +61,11 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
       }
     }
   };
+  function cancelMotion(): void {
+    win.cancelAnimationFrame(frame); clearTimeout(timer); finishMotion = undefined; motionTarget = undefined;
+  }
   function clean(): void {
-    clearTimeout(timer); moving = false; finishMotion = undefined; motionTarget = undefined;
+    cancelMotion(); moving = false;
     dialog.classList.remove('is-moving', 'settling', 'is-dragging', 'is-opening');
     panel.style.removeProperty('--motion-duration');
     panel.style.removeProperty('--motion-curve');
@@ -104,11 +107,16 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     header();
   }
   function navigate(next: DrawerPage | undefined, trigger?: HTMLElement, interactive = false): void {
-    if (closing || moving && next && !interactive) return;
-    const interrupted = moving;
+    const opening = dialog.classList.contains('is-opening');
+    if (closing || moving && next && !interactive && !opening) return;
+    const interrupted = moving && !opening;
     const outgoing = page(), previous = stack.current;
     if (next ? !stack.push(next) : !stack.pop()) return;
-    win.cancelAnimationFrame(frame); clearTimeout(timer); finishMotion = undefined; motionTarget = undefined;
+    cancelMotion();
+    if (opening) {
+      stopDrag(); dialog.classList.add('is-open'); dialog.classList.remove('is-opening');
+      panel.style.removeProperty('transform'); scrim.style.removeProperty('opacity');
+    }
     if (next && trigger) openers.set(next, trigger);
     const incoming = page();
     dialog.classList.toggle('popping', !next);
@@ -140,7 +148,8 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
   function open(): void {
     if (dialog.open && !closing) return;
     const reversing = closing;
-    win.cancelAnimationFrame(frame); clearTimeout(timer); closing = false; panel.style.removeProperty('--motion-duration'); panel.style.removeProperty('--motion-curve');
+    cancelMotion(); closing = false; moving = true; panel.style.removeProperty('--motion-duration'); panel.style.removeProperty('--motion-curve');
+    beforeOpen();
     if (!reversing) { opener = doc.activeElement as HTMLElement; stack.close(); states(); resize(); dialog.showModal(); visibility(true); }
     dialog.classList.remove('is-closing'); dialog.classList.add('is-moving', 'is-opening');
     void panel.offsetWidth;
@@ -165,14 +174,29 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     sheetKey(event, controls, event.target as HTMLElement, pop);
   });
   panel.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || !event.isPrimary || closing || moving || drag) return;
+    const opening = dialog.classList.contains('is-opening');
+    if (event.button !== 0 || !event.isPrimary || closing || moving && !opening || drag) return;
+    const holdOpening = opening && stack.depth === 1;
+    const transform = holdOpening ? win.getComputedStyle(panel).transform : 'none';
+    const startOffset = transform && transform !== 'none' ? new DOMMatrixReadOnly(transform).m41 : 0;
+    const startOpacity = holdOpening ? parseFloat(win.getComputedStyle(scrim).opacity) : 1;
     drag = { id: event.pointerId, x: event.clientX, y: event.clientY, width: panel.getBoundingClientRect().width,
-      rem: parseFloat(win.getComputedStyle(doc.documentElement).fontSize), offset: 0, lastX: event.clientX, time: event.timeStamp, velocity: 0, active: false };
+      rem: parseFloat(win.getComputedStyle(doc.documentElement).fontSize), opening: holdOpening, startOffset, startOpacity, offset: startOffset, lastX: event.clientX, time: event.timeStamp, velocity: 0, active: false };
+    if (holdOpening) { cancelMotion(); dialog.classList.add('is-open'); gestureFrame = win.requestAnimationFrame(paintDrag); }
   });
+  function resumeOpening(): void {
+    win.cancelAnimationFrame(gestureFrame); gestureFrame = 0; dialog.classList.remove('is-dragging');
+    panel.style.removeProperty('transform'); scrim.style.removeProperty('opacity');
+    movement(440);
+  }
   function paintDrag(): void {
-    gestureFrame = 0; if (!drag?.active) return;
+    gestureFrame = 0; if (!drag || !drag.active && !drag.opening) return;
+    dialog.classList.add('is-dragging');
     const offset = drag.offset;
-    if (stack.depth === 1) { panel.style.transform = `translate3d(${offset}px,0,0)`; scrim.style.opacity = String(1 - Math.max(0, offset) / drag.width); }
+    if (stack.depth === 1) {
+      panel.style.transform = `translate3d(${offset}px,0,0)`;
+      scrim.style.opacity = String(Math.max(0, Math.min(1, drag.startOpacity - (Math.max(0, offset) - drag.startOffset) / drag.width)));
+    }
     else {
       page().style.transform = `translate3d(${offset}px,0,0)`;
       page(stack.previous).style.transform = `translate3d(${-drag.width * .25 + offset * .25}px,0,0)`;
@@ -183,8 +207,11 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     if (!drag || drag.id !== event.pointerId) return;
     const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
     if (!drag.active) {
-      if (Math.abs(dy) > 10 && !horizontalPan(dx, dy)) { drag = undefined; return; }
+      if (Math.abs(dy) > 10 && !horizontalPan(dx, dy)) { const opening = drag.opening; drag = undefined; if (opening) resumeOpening(); return; }
       if (!horizontalPan(dx, dy)) return;
+      if (dialog.classList.contains('is-opening')) {
+        cancelMotion(); dialog.classList.remove('is-opening'); dialog.classList.add('is-open');
+      }
       drag.active = true; suppressClick = true; panel.setPointerCapture(event.pointerId);
       dialog.classList.add('is-dragging', 'is-moving');
       if (stack.previous) page(stack.previous).classList.add('participating');
@@ -193,15 +220,15 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     const elapsed = event.timeStamp - drag.time;
     if (elapsed > 0) drag.velocity = (event.clientX - drag.lastX) / elapsed;
     drag.lastX = event.clientX; drag.time = event.timeStamp;
-    drag.offset = dragOffset(dx, drag.width, drag.rem);
+    drag.offset = dragOffset(drag.startOffset + dx, drag.width, drag.rem);
     if (!gestureFrame) gestureFrame = win.requestAnimationFrame(paintDrag);
   });
   function release(event: PointerEvent, cancelled: boolean): void {
     if (!drag || drag.id !== event.pointerId) return;
     const gesture = drag;
-    win.cancelAnimationFrame(gestureFrame); paintDrag(); drag = undefined;
+    win.cancelAnimationFrame(gestureFrame); if (gesture.active) paintDrag(); drag = undefined;
     if (panel.hasPointerCapture(event.pointerId)) panel.releasePointerCapture(event.pointerId);
-    if (!gesture.active) return;
+    if (!gesture.active) { if (gesture.opening) resumeOpening(); return; }
     const decision = drawerRelease(gesture.offset, gesture.width, event.timeStamp - gesture.time > 100 ? 0 : gesture.velocity);
     dialog.classList.remove('is-dragging');
     if (!cancelled && decision.complete) {

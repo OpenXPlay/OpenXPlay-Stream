@@ -4,8 +4,11 @@
 
 import markup from './receiver/index.html?raw';
 import css from './receiver/style.css?raw';
-import { strings, statusCard, microphoneStatus, applyReducedMotion, soundPrompt, type Language, type StatusState, type TextKey } from './receiver/ui';
-import { bindDrawer, syncChoices } from './receiver/drawer';
+import { strings, statusCard, microphoneStatus, applyReducedMotion, soundPrompt, type Language, type StatusState, type TextKey, type Preferences } from './receiver/ui';
+import { bindDrawer } from './receiver/drawer';
+import { bindQuickTiles, syncSettings, syncPlugins, syncFullscreen } from './receiver/drawer-settings';
+import { frameRatePreference } from './receiver/frame-rate';
+import { playbackMode } from './shared/playback';
 import type { DrawerPage } from './receiver/drawer-core';
 import { version } from './receiver/version';
 import { previewOptions, previewStates } from './preview-options';
@@ -42,8 +45,6 @@ function paint(frame: HTMLIFrameElement): void {
   const prompt = soundPrompt(state === 'playing', true, fixture === 'soundBlocked' || fixture === 'playingSoundBlocked' ? 'suspended' : 'running');
   el('sound-hint').hidden = prompt !== 'pill'; el('card-sound').hidden = prompt !== 'card';
   el('gear').hidden = !$<HTMLInputElement>('fallback').checked;
-  el('fullscreen-state').textContent = '';
-  el('plugins-value').textContent = text.off;
   el('picture-size').textContent = `${text.picture} 1920 × 720 · ${text.windowSize} ${frame.width} × ${frame.height}`;
   const mic = microphoneStatus(state === 'microphoneDenied' ? 'denied' : state === 'playing' ? 'capturing' : 'idle');
   el('mic-state').textContent = text[mic.label]; el('sound-value').textContent = text[mic.label]; el('mic-hint').textContent = text[mic.hint]; el('mic-retry').hidden = !mic.retry;
@@ -52,26 +53,21 @@ function paint(frame: HTMLIFrameElement): void {
   for (const [id, value] of Object.entries({ resolution: 'auto', 'screen-width': '200', 'relay-video-codec': 'auto', 'frame-rate': 'AUTO', playback: 'SMART' })) el<HTMLInputElement>(id).value = value;
   el('video-codec-current').hidden = false; el('video-codec-current').textContent = text.codecInUseH264;
   const dialog = el<HTMLDialogElement>('settings');
+  const preferences: Preferences = { sound: true, developer: false, microphone: true, fit: 'fit', frameRate: 'AUTO', playback: 'SMART' };
+  let fullscreenOn = false;
   const drawer = bindDrawer(dialog, () => doc.documentElement.classList.contains('reduced-motion') || frame.contentWindow!.matchMedia('(prefers-reduced-motion: reduce)').matches, () => {});
   for (const id of ['gear', 'card-settings']) el(id).onclick = drawer.open;
   const update = () => {
-    syncChoices(dialog); el('picture-value').textContent = el('resolution-value').textContent;
-    el('quick-sound').setAttribute('aria-pressed', String(el<HTMLInputElement>('sound').checked));
-    const plugins = el<HTMLInputElement>('plugins-enabled').checked;
-    el('plugins-value').textContent = text[plugins ? 'enabled' : 'off']; el('reset-plugin-positions').hidden = !plugins;
-    const mode = el<HTMLInputElement>('playback').value;
-    el('playback-hint').textContent = text[mode === 'QUALITY' ? 'qualityHint' : mode === 'SPEED' ? 'speedHint' : 'smartHint'];
+    preferences.sound = el<HTMLInputElement>('sound').checked; preferences.developer = el<HTMLInputElement>('developer').checked;
+    preferences.frameRate = frameRatePreference(el<HTMLInputElement>('frame-rate').value); preferences.playback = playbackMode(el<HTMLInputElement>('playback').value);
+    syncSettings(dialog, preferences, !el('display-settings').hidden, text);
+    syncPlugins(dialog, el<HTMLInputElement>('plugins-enabled').checked, text);
+    syncFullscreen(doc, true, fullscreenOn, false, text);
   };
   dialog.addEventListener('change', update);
-  el('quick-sound').onclick = () => el('sound').click();
-  el('fullscreen').onclick = () => { const on = el('fullscreen').getAttribute('aria-pressed') !== 'true'; for (const id of ['fullscreen', 'quick-fullscreen']) el(id).setAttribute('aria-pressed', String(on)); el('fullscreen-state').textContent = text[on ? 'enabled' : 'off']; };
-  el('quick-fullscreen').onclick = () => el('fullscreen').click();
-  for (const fit of ['fit', 'fill']) el(fit).onclick = () => {
-    for (const id of ['fit', 'fill', 'quick-fill']) el(id).setAttribute('aria-pressed', String(id === fit || id === 'quick-fill' && fit === 'fill'));
-    el('fit-segments').style.setProperty('--index', fit === 'fill' ? '1' : '0');
-  };
-  el('quick-fill').onclick = () => el(el('fill').getAttribute('aria-pressed') === 'true' ? 'fit' : 'fill').click();
-  el('fit').click(); update();
+  el('fullscreen').onclick = () => { fullscreenOn = !fullscreenOn; update(); };
+  for (const fit of ['fit', 'fill'] as const) el(fit).onclick = () => { preferences.fit = fit; update(); };
+  bindQuickTiles(dialog, () => preferences.fit); update();
   const selected = $<HTMLSelectElement>('sheet').value as DrawerPage | '';
   if (selected) {
     drawer.open();

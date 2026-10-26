@@ -65,6 +65,11 @@ it('moves arrows in order, wraps, and confines horizontal arrows to the picture-
   sheetKey(key('ArrowRight'), controls, controls[2], close); expect(controls[1].focus).toHaveBeenCalledTimes(2);
   sheetKey(key('ArrowLeft'), controls, controls[1], close); expect(controls[2].focus).toHaveBeenCalledOnce();
 });
+it.each(['Escape', 'BrowserBack', 'GoBack', 'Backspace'])('handles %s through the shared drawer Back-key classification', name => {
+  const close = vi.fn(), event = key(name), target = control();
+  sheetKey(event, [target], target, close);
+  expect(close).toHaveBeenCalledOnce(); expect(event.preventDefault).toHaveBeenCalledOnce();
+});
 
 it('keeps the preview out of production inputs and builds all drawer pages once', () => {
   const config = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');

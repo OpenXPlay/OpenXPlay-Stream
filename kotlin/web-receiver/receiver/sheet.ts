@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-15
 
+import { drawerKey } from './drawer-core';
+
 /** Native modal semantics keep the page inert; this also supports head-unit D-pads. */
 export function sheetKey(event: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'preventDefault'>, controls: HTMLElement[], target: HTMLElement, close: () => void): void {
-  if (['Escape', 'BrowserBack', 'GoBack', 'Backspace'].includes(event.key)) { event.preventDefault(); close(); return; }
+  if (drawerKey(event.key) === 'back') { event.preventDefault(); close(); return; }
   if (event.key === 'Enter' && target.matches('input[type=checkbox]')) { event.preventDefault(); target.click(); return; }
   const index = controls.indexOf(target);
   if (event.key === 'Tab') {

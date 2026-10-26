@@ -60,7 +60,7 @@ function fixture(reduced = false) {
   const events = new Node(), winEvents = new Node();
   const doc: any = { addEventListener: events.addEventListener.bind(events), activeElement: undefined, documentElement: new Node() };
   const win = { innerWidth: 1280, innerHeight: 720, setTimeout, requestAnimationFrame: (fn: () => void) => setTimeout(fn, 16), cancelAnimationFrame: clearTimeout,
-    addEventListener: winEvents.addEventListener.bind(winEvents), getComputedStyle: () => ({ fontSize: '16' }) };
+    addEventListener: winEvents.addEventListener.bind(winEvents), getComputedStyle: () => ({ fontSize: '16', opacity: '1', transform: 'none' }) };
   doc.defaultView = win;
   const make = (tag = 'section', id = '') => new Node(tag, id, doc);
   const dialog = make('dialog'), panel = make(), scrim = make(), back = make('button', 'drawer-back'), close = make('button', 'close-settings');
@@ -70,14 +70,14 @@ function fixture(reduced = false) {
   const titles = drawerPages.map(name => { const node = make(); node.dataset.title = name; return node; });
   const row = make('button'); row.dataset.page = 'picture'; pages[0].append(row, make('div', 'last-item'));
   panel.append(back, close, ...titles, ...pages); dialog.append(scrim, panel);
-  const visibility = vi.fn(); const drawer = bindDrawer(dialog as unknown as HTMLDialogElement, () => reduced, visibility);
+  const visibility = vi.fn(), beforeOpen = vi.fn(); const drawer = bindDrawer(dialog as unknown as HTMLDialogElement, () => reduced, visibility, beforeOpen);
   const pointer = (type: string, x: number, y = 20, timeStamp = 1) => panel.emit(type, { pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: y, timeStamp, preventDefault() {} });
   const key = (key: string) => events.emit('keydown', { key, shiftKey: false, target: doc.activeElement, preventDefault() {} });
   const pointerDown = () => events.emit('pointerdown', { target: doc.documentElement });
-  return { pointerDown, dialog, panel, scrim, back, close, drawer, pages, doc, opener, row, visibility, pointer, key, win, winEvents };
+  return { pointerDown, dialog, panel, scrim, back, close, drawer, pages, doc, opener, row, visibility, beforeOpen, pointer, key, win, winEvents };
 }
 beforeEach(() => vi.useFakeTimers());
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it('starts within one frame, keeps an already-open subpage, and resets only after closing', () => {
   const f = fixture(); f.drawer.open(); expect(f.dialog.open).toBe(true);
@@ -113,6 +113,79 @@ it('reverses a closing drawer and ignores stale close timers', () => {
   vi.advanceTimersByTime(100); f.drawer.open(); vi.advanceTimersByTime(600);
   expect(f.dialog.open).toBe(true); expect(f.dialog.classList.contains('is-open')).toBe(true);
   expect(f.visibility.mock.calls).toEqual([[true]]); expect(f.dialog.classList.contains('is-moving')).toBe(false);
+});
+it('invalidates the close finish before the reopening frame or a queued transitionend', () => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(600);
+  f.drawer.push('picture'); vi.advanceTimersByTime(500); f.drawer.close();
+  vi.advanceTimersByTime(100); f.drawer.open();
+  f.panel.emit('transitionend', { target: f.panel, propertyName: 'transform' });
+  expect(f.dialog.open).toBe(true); expect(f.pages[1].classList.contains('active')).toBe(true);
+  expect(f.visibility.mock.calls).toEqual([[true]]);
+  vi.advanceTimersByTime(600);
+  expect(f.dialog.open).toBe(true); expect(f.dialog.classList.contains('is-open')).toBe(true);
+  expect(f.dialog.classList.contains('is-moving')).toBe(false); expect(f.dialog.classList.contains('is-opening')).toBe(false);
+  f.drawer.close(); vi.advanceTimersByTime(400); expect(f.pages[0].classList.contains('active')).toBe(true);
+});
+it.each([0, 16, 100, 450])('accepts a menu tap %s ms into opening and cleans the interrupted motion', elapsed => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(elapsed);
+  f.dialog.emit('click', { target: f.row }); vi.advanceTimersByTime(16);
+  expect(f.pages[1].classList.contains('active')).toBe(true); expect(f.dialog.classList.contains('is-open')).toBe(true);
+  expect(f.dialog.classList.contains('is-opening')).toBe(false);
+  f.panel.emit('transitionend', { target: f.pages[0], propertyName: 'transform' });
+  expect(f.dialog.classList.contains('is-moving')).toBe(false);
+  vi.advanceTimersByTime(600);
+  expect(f.pages[1].classList.contains('active')).toBe(true); expect(f.panel.style.transform).toBeUndefined();
+  expect(f.pages.every(page => !page.classList.contains('participating') && page.style.transform === undefined)).toBe(true);
+});
+it.each([false, true])('lets a drag interrupt opening and %s complete without stale motion', complete => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(100);
+  f.win.getComputedStyle = () => ({ fontSize: '16', opacity: '.9', transform: 'matrix(1,0,0,1,120,0)' });
+  vi.stubGlobal('DOMMatrixReadOnly', class { m41 = 120; });
+  f.pointer('pointerdown', 10); f.pointer('pointermove', complete ? 250 : 50, 20, 200); vi.advanceTimersByTime(16);
+  expect(f.panel.style.transform).toBe(`translate3d(${complete ? 360 : 160}px,0,0)`);
+  expect(f.panel.getBoundingClientRect).toHaveBeenCalledOnce(); expect(f.dialog.classList.contains('is-opening')).toBe(false);
+  // The cancelled opening deadline must not clean an ongoing drag.
+  vi.advanceTimersByTime(600); expect(f.panel.style.transform).toBe(`translate3d(${complete ? 360 : 160}px,0,0)`);
+  f.pointer('pointerup', complete ? 250 : 50, 20, 400); vi.advanceTimersByTime(450);
+  expect(f.dialog.open).toBe(!complete); expect(f.panel.style.transform).toBeUndefined(); expect(f.scrim.style.opacity).toBeUndefined();
+  for (const name of ['is-moving', 'is-opening', 'is-dragging']) expect(f.dialog.classList.contains(name)).toBe(false);
+});
+it('keeps opening after a tap or native vertical scroll starts on the panel', () => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(100);
+  f.pointer('pointerdown', 10); f.pointer('pointerup', 10);
+  expect(f.dialog.classList.contains('is-opening')).toBe(true);
+  f.pointer('pointerdown', 10); f.pointer('pointermove', 15, 100);
+  vi.advanceTimersByTime(600); expect(f.dialog.classList.contains('is-open')).toBe(true);
+  expect(f.dialog.classList.contains('is-moving')).toBe(false); expect(f.panel.style.transform).toBeUndefined();
+});
+it('holds the opening position during a press, then accepts the menu tap on release', () => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(100);
+  f.win.getComputedStyle = () => ({ fontSize: '16', opacity: '.9', transform: 'matrix(1,0,0,1,120,0)' });
+  vi.stubGlobal('DOMMatrixReadOnly', class { m41 = 120; });
+  f.pointer('pointerdown', 10); vi.advanceTimersByTime(600);
+  expect(f.panel.style.transform).toBe('translate3d(120px,0,0)'); expect(f.scrim.style.opacity).toBe('0.9');
+  f.pointer('pointerup', 10); f.dialog.emit('click', { target: f.row }); vi.advanceTimersByTime(600);
+  expect(f.pages[1].classList.contains('active')).toBe(true); expect(f.panel.style.transform).toBeUndefined();
+  expect(f.dialog.classList.contains('is-moving')).toBe(false); expect(f.dialog.classList.contains('is-opening')).toBe(false);
+});
+it('pops the page when a swipe interrupts reopening a subpage', () => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(600); f.drawer.push('picture'); vi.advanceTimersByTime(600);
+  f.drawer.close(); vi.advanceTimersByTime(100); f.drawer.open(); vi.advanceTimersByTime(100);
+  f.pointer('pointerdown', 10); f.pointer('pointermove', 250, 20, 200); vi.advanceTimersByTime(16);
+  expect(f.pages[1].style.transform).toBe('translate3d(240px,0,0)'); expect(f.panel.style.transform).toBeUndefined();
+  f.pointer('pointerup', 250, 20, 201); vi.advanceTimersByTime(600);
+  expect(f.dialog.open).toBe(true); expect(f.pages[0].classList.contains('active')).toBe(true);
+  expect(f.dialog.classList.contains('is-moving')).toBe(false); expect(f.dialog.classList.contains('is-opening')).toBe(false);
+});
+it('runs the pre-open hook for direct and key opens, including a reversed close', () => {
+  const f = fixture(); f.drawer.open();
+  expect(f.beforeOpen).toHaveBeenCalledOnce();
+  expect(f.beforeOpen.mock.invocationCallOrder[0]).toBeLessThan(f.visibility.mock.invocationCallOrder[0]);
+  f.drawer.open(); expect(f.beforeOpen).toHaveBeenCalledOnce();
+  vi.advanceTimersByTime(600); f.key('ContextMenu'); f.key('Settings');
+  expect(f.beforeOpen).toHaveBeenCalledTimes(2);
+  vi.advanceTimersByTime(600); f.drawer.close(); vi.advanceTimersByTime(400);
+  f.key('Settings'); expect(f.beforeOpen).toHaveBeenCalledTimes(3);
 });
 it('coalesces drag writes, reads panel geometry only at pointerdown and settles a cancelled swipe', () => {
   const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(600);
