@@ -35,6 +35,6 @@ export default defineConfig({
     } },
   }],
   worker: { format: 'es' },
-  build: { outDir: 'dist', rollupOptions: { input: { receiver: 'receiver/index.html', probe: 'probe/index.html' } } },
+  build: { target: 'chrome94', outDir: 'dist', rollupOptions: { input: { receiver: 'receiver/index.html', probe: 'probe/index.html' } } },
   test: { environment: 'node', include: ['tests/**/*.test.ts'] },
 });

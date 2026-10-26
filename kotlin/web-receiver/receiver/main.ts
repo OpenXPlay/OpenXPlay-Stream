@@ -12,8 +12,9 @@ import type { TouchContact } from '../protocol/binary';
 import type { PageCommand, WorkerNotice } from './messages';
 import workletUrl from './audio-worklet.ts?worker&url';
 import type { MicFormat } from '../protocol/json';
-import { ReceiverPreferences, playbackHint, selectLanguage, strings, statusCard, soundPrompt, gearOffset, clampGear, GearGesture, type GearBounds, type StatusState, type TextKey } from './ui';
-import { bindSheet } from './sheet';
+import { ReceiverPreferences, playbackHint, selectLanguage, strings, statusCard, soundPrompt, type StatusState, type TextKey } from './ui';
+import { bindDrawer, syncChoices } from './drawer';
+import { fallbackSettings, settingsAnchor } from './drawer-core';
 import { PluginSlot } from './plugin-slot';
 import { microphoneStatus, applyReducedMotion } from './ui';
 import { CaptureLifecycle } from './capture-lifecycle';
@@ -36,29 +37,39 @@ const language = selectLanguage(navigator.languages);
 const text = strings[language];
 document.documentElement.lang = language;
 for (const node of document.querySelectorAll<HTMLElement>('[data-text]')) node.textContent = text[node.dataset.text as TextKey];
+for (const node of document.querySelectorAll<HTMLElement>('[data-label]')) node.setAttribute('aria-label', text[node.dataset.label as TextKey]);
 canvas.setAttribute('aria-label', text.projection);
 const gear = element<HTMLButtonElement>('gear'); gear.setAttribute('aria-label', text.settings);
+element('card-settings').setAttribute('aria-label', text.settings);
+element('drawer-back').setAttribute('aria-label', text.back);
 const settings = element<HTMLDialogElement>('settings');
 let viewArea: ViewArea | undefined;
 let uiState: StatusState = 'connecting';
 const pluginSlot = new PluginSlot(() => {
   const box = canvas.getBoundingClientRect(), g = gear.getBoundingClientRect();
+  const style = getComputedStyle(element('controls')), gap = parseFloat(getComputedStyle(document.documentElement).fontSize) * .5;
   const r = videoRect(box.width, box.height, videoWidth, videoHeight, preferences.fit, viewArea);
   return { locale: language, developer: preferences.developer, theme: 'dark', reducedMotion: reducedMotion(), viewport: { w: innerWidth, h: innerHeight },
     video: { x: box.x + r.x, y: box.y + r.y, w: r.width, h: r.height },
-    gear: { gap: parseFloat(getComputedStyle(document.documentElement).fontSize) * .5, x: g.x, y: g.y, w: g.width, h: g.height, faded: gear.classList.contains('faded'), side: g.x + g.width / 2 < innerWidth / 2 ? 'left' : 'right' }, channel: '/plugins/channel' };
+    gear: gear.hidden ? settingsAnchor(innerWidth, parseFloat(style.right), parseFloat(style.top), gap) : { gap, x: g.x, y: g.y, w: g.width, h: g.height, faded: gear.classList.contains('faded'), side: 'right' }, channel: '/plugins/channel' };
 }, (code, detail) => { console.warn(code, detail ?? ''); }, wakeGear);
 const pluginSwitch = element<HTMLInputElement>('plugins-enabled');
 pluginSwitch.checked = pluginSlot.preference;
-pluginSwitch.onchange = () => pluginSlot.enable(pluginSwitch.checked);
+function updatePlugins(): void {
+  element('plugins-value').textContent = text[pluginSwitch.checked ? 'enabled' : 'off'];
+  element('reset-plugin-positions').hidden = !pluginSwitch.checked;
+}
+pluginSwitch.onchange = () => { pluginSlot.enable(pluginSwitch.checked); updatePlugins(); };
+updatePlugins();
 
 const displayGate = new DisplaySettingsGate(), displayDebounce = new DisplayDebounce();
 let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', screenWidth: 200, videoCodec: 'auto' };
 function updateDisplaySettings(): void {
   element('display-settings').hidden = !displayGate.supported;
-  element<HTMLSelectElement>('resolution').value = currentDisplaySettings.resolution;
-  element<HTMLSelectElement>('screen-width').value = String(currentDisplaySettings.screenWidth);
-  element<HTMLSelectElement>('relay-video-codec').value = currentDisplaySettings.videoCodec;
+  element<HTMLInputElement>('resolution').value = currentDisplaySettings.resolution;
+  element<HTMLInputElement>('screen-width').value = String(currentDisplaySettings.screenWidth);
+  element<HTMLInputElement>('relay-video-codec').value = currentDisplaySettings.videoCodec;
+  syncChoices(settings); updatePictureValue();
 }
 function updatePictureSize(): void {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
@@ -80,16 +91,16 @@ function syncSound(): void {
   soundHint.hidden = prompt !== 'pill';
   element('card-sound').hidden = prompt !== 'card';
   element('controls').classList.toggle('playing', uiState === 'playing');
-  placeGear();
+  pluginSlot.refresh();
 }
-const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const reducedMotion = () => document.documentElement.classList.contains('reduced-motion') || matchMedia('(prefers-reduced-motion: reduce)').matches;
 const motion = matchMedia('(prefers-reduced-motion: reduce)');
 const syncMotion = () => {
   applyReducedMotion(document.documentElement, motion.matches);
   if (motion.matches) { document.getAnimations().forEach(animation => animation.cancel()); element('headline').textContent = text[statusCard(uiState).headline]; }
 };
 motion.addEventListener('change', syncMotion); syncMotion();
-element('version').textContent = version;
+element('version').textContent = version; element('about-value').textContent = version;
 element('close-settings').setAttribute('aria-label', text.close);
 let cardTimer: ReturnType<typeof setTimeout>;
 let countdown: ReturnType<typeof setInterval> | undefined;
@@ -123,12 +134,14 @@ function setGearFaded(faded: boolean): void {
   gear.classList.toggle('faded', faded); pluginSlot.refresh();
 }
 function wakeGear(): void {
+  if (gear.hidden) return;
   setGearFaded(false); clearTimeout(fadeTimer);
   fadeTimer = setTimeout(() => { if (uiState === 'playing' && !settings.open) setGearFaded(true); }, 3000);
 }
 function showMic(state: TextKey): void {
   micState = state; const status = microphoneStatus(state);
   element('mic-state').textContent = text[status.label];
+  element('sound-value').textContent = text[status.label];
   element('mic-hint').textContent = text[status.hint];
   element('mic-retry').hidden = !status.retry || !requestedMic?.request;
 }
@@ -141,19 +154,26 @@ function showCodecInUse(codec: 'H264' | 'H265' | undefined): void {
 function updateSettings(): void {
   for (const key of ['sound', 'developer'] as const) element<HTMLInputElement>(key).checked = preferences[key];
   debug.hidden = !preferences.developer;
-  element<HTMLSelectElement>('frame-rate').value = preferences.frameRate;
-  element<HTMLSelectElement>('playback').value = preferences.playback;
+  element<HTMLInputElement>('frame-rate').value = preferences.frameRate;
+  element<HTMLInputElement>('playback').value = preferences.playback;
   element('playback-hint').textContent = text[playbackHint(preferences.playback)];
   element('fit').setAttribute('aria-pressed', String(preferences.fit === 'fit'));
   element('fill').setAttribute('aria-pressed', String(preferences.fit === 'fill'));
+  element('quick-fill').setAttribute('aria-pressed', String(preferences.fit === 'fill'));
+  element('quick-sound').setAttribute('aria-pressed', String(preferences.sound));
+  element('fit-segments').style.setProperty('--index', preferences.fit === 'fill' ? '1' : '0');
+  syncChoices(settings); updatePictureValue();
 }
-const sheet = bindSheet(settings, gear, element('close-settings'), element('sheet-backdrop'), reducedMotion);
-element('reset-positions').onclick = () => {
-  finishGearDrag(true); preferences.gear = { side: 'right', y: 0 }; storage.write('gear', null);
-  pluginSlot.resetPositions(); placeGear(); wakeGear();
-};
-gear.onclick = event => { if (suppressGearClick && event.detail !== 0) { suppressGearClick = false; return; } if (pluginSlot.collapse()) { wakeGear(); return; } releaseAll(); sheet.open(); pluginSlot.visibility(false); wakeGear(); };
-settings.addEventListener('close', () => { pluginSlot.visibility(true); wakeGear(); });
+function updatePictureValue(): void {
+  element('picture-value').textContent = element(displayGate.supported ? 'resolution-value' : 'frame-rate-value').textContent;
+}
+const drawer = bindDrawer(settings, reducedMotion, open => {
+  if (open) releaseAll();
+  pluginSlot.visibility(!open); wakeGear();
+});
+element('reset-plugin-positions').onclick = () => pluginSlot.resetPositions();
+gear.onclick = () => { if (pluginSlot.collapse()) { wakeGear(); return; } drawer.open(); };
+element('card-settings').onclick = () => drawer.open();
 document.addEventListener('pointerdown', event => { if (event.target !== canvas) wakeGear(); }, { passive: true });
 const fullscreen = new FullscreenIntent(!!document.fullscreenEnabled, () => localStorage);
 const fullscreenHint = element('fullscreen-hint');
@@ -188,9 +208,13 @@ document.addEventListener('pointerdown', event => {
 function fullscreenState(): void {
   const on = fullscreen.intent;
   document.querySelectorAll<SVGElement>('[data-fullscreen]').forEach(icon => { icon.toggleAttribute('hidden', (icon.dataset.fullscreen === 'on') !== on); });
-  element('fullscreen').setAttribute('aria-pressed', String(fullscreen.intent));
+  for (const id of ['fullscreen', 'quick-fullscreen']) {
+    element<HTMLButtonElement>(id).disabled = !document.fullscreenEnabled;
+    element(id).setAttribute('aria-pressed', String(on));
+  }
   fullscreenHint.hidden = !fullscreen.pending;
-  element('fullscreen-state').textContent = !document.fullscreenEnabled ? text.fullscreenUnavailable : on ? text.enabled : text.off;
+  // The switch shows on and off; only an unavailable browser needs words.
+  element('fullscreen-state').textContent = !document.fullscreenEnabled ? text.fullscreenUnavailable : '';
 }
 document.addEventListener('fullscreenchange', () => {
   if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) {
@@ -202,6 +226,9 @@ element('fullscreen').onclick = () => {
   fullscreen.toggle(requestFullscreen, () => { void document.exitFullscreen().catch(() => {}); });
   fullscreenState();
 };
+element('quick-fullscreen').onclick = () => element('fullscreen').click();
+element('quick-sound').onclick = () => element('sound').click();
+element('quick-fill').onclick = () => element(preferences.fit === 'fill' ? 'fit' : 'fill').click();
 for (const key of ['sound', 'developer'] as const) {
   element<HTMLInputElement>(key).onchange = event => {
     preferences[key] = (event.target as HTMLInputElement).checked; storage.save(preferences); updateSettings();
@@ -218,20 +245,28 @@ for (const fit of ['fit', 'fill'] as const) element(fit).onclick = () => {
   releaseAll(); preferences.fit = fit; storage.save(preferences); updateSettings(); post({ type: 'fit', fit });
 };
 const restartGate = new RestartGate();
-for (const id of ['resolution', 'screen-width', 'relay-video-codec']) element<HTMLSelectElement>(id).onchange = () => {
+function applying(value: boolean): void {
+  element('frame-rate-status').hidden = !value; element('frame-rate-choice-status').hidden = !value;
+}
+function lockFrameRate(): void {
+  element<HTMLInputElement>('frame-rate').disabled = true; syncChoices(settings);
+  setTimeout(() => { element<HTMLInputElement>('frame-rate').disabled = false; syncChoices(settings); }, 10_000);
+}
+for (const id of ['resolution', 'screen-width', 'relay-video-codec']) element<HTMLInputElement>(id).onchange = () => {
   if (!initialized || !displayGate.supported || !restartGate.allow(performance.now())) { updateDisplaySettings(); return; }
-  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLSelectElement>('relay-video-codec').value as DisplaySettings['videoCodec'], currentDisplaySettings.frameRate);
+  const message = displayGate.message(element<HTMLInputElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLInputElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLInputElement>('relay-video-codec').value as DisplaySettings['videoCodec'], currentDisplaySettings.frameRate);
   if (message) post(message);
   updateDisplaySettings();
 };
-element<HTMLSelectElement>('frame-rate').onchange = event => {
-  const choice = event.target as HTMLSelectElement;
+element<HTMLInputElement>('frame-rate').onchange = event => {
+  const choice = event.target as HTMLInputElement;
+  if (choice.disabled) { updateSettings(); return; }
   const preference = frameRatePreference(choice.value);
   if (preference === preferences.frameRate) return;
   if (currentDisplaySettings.frameRate !== undefined) {
     if (initialized && displayGate.supported && restartGate.allow(performance.now())) {
       const message = displayGate.message(currentDisplaySettings.resolution, currentDisplaySettings.screenWidth, currentDisplaySettings.videoCodec, preference);
-      if (message) { post(message); element('frame-rate-status').hidden = false; }
+      if (message) { post(message); applying(true); lockFrameRate(); }
     }
     updateSettings(); return;
   }
@@ -240,13 +275,11 @@ element<HTMLSelectElement>('frame-rate').onchange = event => {
   if (!initialized) return;
   hello = withFrameRate(hello, preference);
   post({ type: 'hello', hello }); post({ type: 'restart' });
-  element('frame-rate-status').hidden = false;
-  choice.disabled = true;
-  setTimeout(() => { choice.disabled = false; }, 10_000);
+  applying(true); lockFrameRate();
 };
 // The mode applies without a restart: the receiver and the relay's queue for this client follow the repeated hello.
-element<HTMLSelectElement>('playback').onchange = event => {
-  const mode = playbackMode((event.target as HTMLSelectElement).value);
+element<HTMLInputElement>('playback').onchange = event => {
+  const mode = playbackMode((event.target as HTMLInputElement).value);
   if (mode === preferences.playback) return;
   preferences.playback = mode; storage.save(preferences); updateSettings();
   if (!initialized) return;
@@ -270,53 +303,6 @@ function statistics(message: Extract<WorkerNotice, { type: 'stats' }>): void {
   for (const [label, value] of rows) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = label; dd.textContent = String(value); list.append(dt, dd); }
   element('statistics').replaceChildren(list);
 }
-const controls = element('controls');
-let suppressGearClick = false;
-let gearDrag: { id: number; x: number; y: number; origin: { x: number; y: number }; gesture: GearGesture } | undefined;
-function gearBounds(): GearBounds {
-  const style = getComputedStyle(controls);
-  return { width: innerWidth, height: innerHeight, size: gear.offsetHeight,
-    top: parseFloat(style.marginTop), right: parseFloat(style.marginRight), bottom: parseFloat(style.marginBottom), left: parseFloat(style.marginLeft) };
-}
-function placeGear(): void {
-  const bounds = gearBounds(), offset = gearOffset(preferences.gear, bounds);
-  controls.dataset.side = offset.x + bounds.size / 2 < innerWidth / 2 ? 'left' : 'right';
-  controls.style.transform = `translate(${offset.x - bounds.left}px, ${offset.y - bounds.top}px)`;
-  pluginSlot.refresh();
-}
-gear.addEventListener('pointerdown', event => {
-  if (event.button !== 0 || event.isPrimary === false || gearDrag) return;
-  suppressGearClick = false;
-  const box = gear.getBoundingClientRect(), gesture = new GearGesture();
-  gearDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, origin: { x: box.left, y: box.top }, gesture };
-  gear.setPointerCapture(event.pointerId); wakeGear();
-});
-gear.addEventListener('pointermove', event => {
-  const drag = gearDrag; if (!drag || drag.id !== event.pointerId) return;
-  const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
-  const wasActive = drag.gesture.active;
-  drag.gesture.move(dx, dy);
-  if (!wasActive && drag.gesture.active) { releaseAll(); controls.classList.add('dragging'); }
-  if (!drag.gesture.active) return;
-  event.preventDefault(); wakeGear();
-  preferences.gear = clampGear({ x: drag.origin.x + dx, y: drag.origin.y + dy }, gearBounds());
-  placeGear();
-});
-function finishGearDrag(cancelled = false): void {
-  const drag = gearDrag; if (!drag) return;
-  gearDrag = undefined;
-  if (drag.gesture.active) storage.write('gear', JSON.stringify(preferences.gear));
-  controls.classList.remove('dragging');
-  drag.gesture.finish(cancelled); suppressGearClick = drag.gesture.suppressed;
-  if (gear.hasPointerCapture(drag.id)) gear.releasePointerCapture(drag.id);
-  placeGear();
-}
-for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) gear.addEventListener(type, event => {
-  if ((event as PointerEvent).pointerId === gearDrag?.id) finishGearDrag(type !== 'pointerup');
-});
-gear.addEventListener('contextmenu', event => event.preventDefault());
-for (const type of ['resize', 'orientationchange']) window.addEventListener(type, () => { finishGearDrag(true); placeGear(); });
-placeGear();
 setState(uiState); updateSettings(); showMic('idle');
 // Read permission state without prompting or starting a microphone stream.
 void navigator.permissions?.query({ name: 'microphone' as PermissionName }).then(permission => {
@@ -389,7 +375,6 @@ function safeArea(dpr: number) {
 function post(message: PageCommand): void { worker?.postMessage(message); }
 function releaseAll(): void { contacts.clear(); post({ type: 'touch', contacts: [] }); }
 function resize(): void {
-  finishGearDrag(); placeGear();
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   const width = Math.max(1, Math.round(box.width * dpr)), height = Math.max(1, Math.round(box.height * dpr));
   if (worker) post({ type: 'resize', width, height }); else { canvas.width = width; canvas.height = height; }
@@ -483,6 +468,7 @@ async function start(): Promise<void> {
     worker.onmessage = (event: MessageEvent<WorkerNotice>) => {
       const message = event.data;
       switch (message.type) {
+        case 'host-ui': drawer.open(); break;
         case 'audio-support': supportResult?.(message.aac); supportResult = null; break;
         case 'audio-active': audioActive = message.active; syncSound(); break;
         case 'mic': requestedMic = message; void microphone(message.request, message.token); break;
@@ -496,7 +482,7 @@ async function start(): Promise<void> {
         }
         case 'hold': updatePlayback(message); break;
         case 'ended': updatePlayback(message); break;
-        case 'playing': if (currentDisplaySettings.frameRate === undefined) element('frame-rate-status').hidden = true; updatePlayback(message); wakeGear(); break;
+        case 'playing': if (currentDisplaySettings.frameRate === undefined) applying(false); updatePlayback(message); wakeGear(); break;
         case 'view-area': releaseAll(); viewArea = message.area; break;
         case 'display-disconnected': {
           fullscreen.viewAreas = false; displayGate.welcome();
@@ -505,7 +491,7 @@ async function start(): Promise<void> {
             currentDisplaySettings = legacySettings;
             hello = withFrameRate(hello, preferences.frameRate); post({ type: 'hello', hello });
           }
-          element('frame-rate-status').hidden = true; updateDisplaySettings(); break;
+          applying(false); updateDisplaySettings(); break;
         }
         case 'display-settings':
           currentDisplaySettings = message; updateDisplaySettings();
@@ -514,11 +500,12 @@ async function start(): Promise<void> {
             if (hello.displays.some(display => display.frameRate !== undefined)) {
               hello = withFrameRate(hello, 'AUTO'); post({ type: 'hello', hello });
             }
-            element('frame-rate-status').hidden = true;
+            applying(false);
           }
           break;
         case 'welcome':
           if (shouldReload(message.receiverBuild, () => sessionStorage)) { location.reload(); break; }
+          gear.hidden = !fallbackSettings(message.features); wakeGear(); pluginSlot.refresh();
           fullscreen.viewAreas = message.features?.includes('view-area') ?? false;
           displayGate.welcome(message.features); updateDisplaySettings();
           pluginSlot.configure(message);

@@ -315,6 +315,7 @@ function session(next: import('../protocol/json').SessionState): void {
 }
 function control(message: JsonMessage): void {
   switch (message.type) {
+    case 'host-ui': notice(message); break;
     case 'welcome':
       viewAreaSupported = message.features?.includes('view-area') ?? false;
       displaySettingsSupported = message.features?.includes('display-settings') ?? false;

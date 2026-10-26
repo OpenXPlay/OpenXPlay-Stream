@@ -5,7 +5,7 @@
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { applyReducedMotion, microphoneStatus, statusCard, strings, type StatusState } from '../receiver/ui';
-import { bindSheet, sheetKey } from '../receiver/sheet';
+import { sheetKey } from '../receiver/sheet';
 import { version } from '../receiver/version';
 
 it('injects the package version, and the build commit when known, into the module used by About', () => {
@@ -51,7 +51,7 @@ it('traps Tab and Shift+Tab at sheet boundaries, preserves internal order and cl
   const controls = [control(), control(true), control(), control()]; const close = vi.fn();
   let event = key('Tab'); sheetKey(event, controls, controls[3], close); expect(controls[0].focus).toHaveBeenCalledOnce(); expect(event.preventDefault).toHaveBeenCalledOnce();
   event = key('Tab', true); sheetKey(event, controls, controls[0], close); expect(controls[3].focus).toHaveBeenCalledOnce();
-  event = key('Tab'); sheetKey(event, controls, controls[1], close); expect(event.preventDefault).not.toHaveBeenCalled();
+  event = key('Tab'); sheetKey(event, controls, controls[1], close); expect(event.preventDefault).toHaveBeenCalledOnce(); expect(controls[2].focus).toHaveBeenCalledOnce();
   sheetKey(key('Enter'), controls, controls[1], close); expect(controls[1].click).toHaveBeenCalledOnce();
   for (const name of ['Escape', 'BrowserBack', 'GoBack', 'Backspace']) sheetKey(key(name), controls, controls[0], close);
   expect(close).toHaveBeenCalledTimes(4);
@@ -66,52 +66,12 @@ it('moves arrows in order, wraps, and confines horizontal arrows to the picture-
   sheetKey(key('ArrowLeft'), controls, controls[1], close); expect(controls[2].focus).toHaveBeenCalledOnce();
 });
 
-function sheetFixture(reduced: boolean) {
-  const handlers = new Map<string, (event: any) => void>();
-  const classes = new Set<string>();
-  const close = control(), sound = control(true);
-  for (const item of [close, sound]) { item.closest = (() => null) as HTMLElement['closest']; item.getClientRects = (() => [1]) as unknown as HTMLElement['getClientRects']; item.matches = (() => false); }
-  const sheet = {
-    open: false, classList: { add: (s: string) => classes.add(s), remove: (s: string) => classes.delete(s), contains: (s: string) => classes.has(s) },
-    querySelectorAll: () => [close, sound],
-    querySelector: () => ({ addEventListener: (type: string, handler: (event: any) => void) => handlers.set(`header:${type}`, handler), setPointerCapture: vi.fn() }),
-    showModal() { this.open = true; }, close() { this.open = false; },
-    addEventListener: (type: string, handler: (event: any) => void) => handlers.set(type, handler),
-  };
-  const opener = control(); const backdropClasses = new Set();
-  const backdrop = { hidden: true, classList: { add: (s: string) => backdropClasses.add(s), remove: (s: string) => backdropClasses.delete(s) } };
-  const binding = bindSheet(sheet as unknown as HTMLDialogElement, opener, close, backdrop as unknown as HTMLElement, () => reduced);
-  return { binding, sheet, opener, close, sound, backdrop, handlers };
-}
-it('opens a modal with Close focused first and restores focus after its exit animation', () => {
-  vi.useFakeTimers();
-  try {
-    const fixture = sheetFixture(false); fixture.binding.open();
-    expect(fixture.sheet.open).toBe(true); expect(fixture.close.focus).toHaveBeenCalledOnce(); expect(fixture.backdrop.hidden).toBe(false);
-    fixture.binding.close(); expect(fixture.sheet.open).toBe(true);
-    vi.advanceTimersByTime(300); expect(fixture.sheet.open).toBe(false); expect(fixture.opener.focus).toHaveBeenCalledOnce(); expect(fixture.backdrop.hidden).toBe(true);
-  } finally { vi.useRealTimers(); }
-});
-it('closes immediately with reduced motion and handles native Escape cancellation', () => {
-  const fixture = sheetFixture(true); fixture.binding.open();
-  const event = { preventDefault: vi.fn() }; fixture.handlers.get('cancel')!(event);
-  expect(event.preventDefault).toHaveBeenCalledOnce(); expect(fixture.sheet.open).toBe(false); expect(fixture.opener.focus).toHaveBeenCalledOnce();
-});
-it('closes on a deliberate downward touch swipe, preserving taps and horizontal gestures', () => {
-  const fixture = sheetFixture(true);
-  const swipe = (x: number, y: number) => {
-    fixture.binding.open();
-    fixture.handlers.get('header:pointerdown')!({ pointerType: 'touch', pointerId: 1, clientX: 100, clientY: 10, target: { closest: () => null } });
-    fixture.handlers.get('header:pointerup')!({ pointerId: 1, clientX: x, clientY: y });
-    return fixture.sheet.open;
-  };
-  expect(swipe(100, 30)).toBe(true); expect(swipe(200, 100)).toBe(true); expect(swipe(105, 100)).toBe(false);
-});
-it('keeps the preview out of production inputs and preserves the sheet DOM focus order', () => {
+it('keeps the preview out of production inputs and builds all drawer pages once', () => {
   const config = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
   expect(config).toContain("receiver: 'receiver/index.html', probe: 'probe/index.html'");
-  const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8').split('<dialog')[1];
-  const ids = ['close-settings', 'sound', 'mic-retry', 'fit', 'fill', 'fullscreen', 'developer', 'source'];
-  const positions = ids.map(id => html.indexOf(`id="${id}"`));
-  expect(positions.every(n => n >= 0)).toBe(true); expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  const html = readFileSync(new URL('../receiver/index.html', import.meta.url), 'utf8');
+  expect(html.match(/<dialog/g)).toHaveLength(1);
+  expect(html).not.toContain('<select');
+  expect(html).not.toContain('reset-positions');
+  for (const page of ['root', 'picture', 'resolution', 'frame-rate', 'codec', 'sound', 'plugins', 'about']) expect(html).toContain(`data-drawer-page="${page}"`);
 });

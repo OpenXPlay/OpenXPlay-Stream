@@ -11,7 +11,8 @@ vi.mock('../shared/capabilities', () => ({
   estimateRefreshHz: async () => 60, audioCapabilities: () => ({ audio: [], microphone: false }),
 }));
 vi.mock('../shared/receiver-info', () => ({ collectReceiverInfo: async () => ({}), codecPowerEfficient: async () => false }));
-vi.mock('../receiver/sheet', () => ({ bindSheet: () => ({ open() {}, close() {} }) }));
+const drawerOpen = vi.hoisted(() => vi.fn());
+vi.mock('../receiver/drawer', () => ({ bindDrawer: () => ({ open: drawerOpen, close() {} }), syncChoices() {} }));
 vi.mock('../receiver/plugin-slot', () => ({ PluginSlot: class {
   preference = false;
   refresh() {} receiverState() {} configure() {} visibility() {} enable() {} resetPositions() {}
@@ -21,7 +22,7 @@ vi.mock('../receiver/version', () => ({ version: 'test', shouldReload: () => fal
 class Element {
   value = ''; hidden = false; disabled = false; checked = false; textContent = ''; open = false;
   dataset: Record<string, string> = {};
-  style: Record<string, string> = {};
+  style = { setProperty() {} };
   offsetHeight = 48;
   onchange?: (event: { target: Element }) => void;
   onclick?: () => void;
@@ -65,7 +66,7 @@ function hello(): Hello {
   return command.hello;
 }
 beforeEach(() => {
-  vi.resetModules(); vi.useFakeTimers(); now = 0;
+  vi.resetModules(); drawerOpen.mockClear(); vi.useFakeTimers(); now = 0;
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   elements = new Map(); values = new Map();
   vi.stubGlobal('localStorage', {
@@ -132,10 +133,10 @@ it('shares the ten-second gate with the other settings and preserves the relay f
   expect(Worker.current.commands).toEqual([{ ...settings('AUTO'), resolution: 'native' }]);
   choose('frame-rate', 'FPS_30');
   expect(Worker.current.commands).toHaveLength(1); expect(element('frame-rate').value).toBe('AUTO');
-  now = 10_000; choose('frame-rate', 'FPS_30');
+  await vi.advanceTimersByTimeAsync(10_000); now = 10_000; Worker.current.commands = []; choose('frame-rate', 'FPS_30');
   expect(Worker.current.commands.at(-1)).toEqual(settings('FPS_30'));
   choose('screen-width', '300');
-  expect(Worker.current.commands).toHaveLength(2); expect(element('screen-width').value).toBe('250');
+  expect(Worker.current.commands).toHaveLength(1); expect(element('screen-width').value).toBe('250');
 });
 
 it('keeps hello and restart behavior when the relay omits frame rate', async () => {
@@ -164,4 +165,13 @@ it('restores legacy preference reporting after disconnect and adopts the next re
   expect(helloFromCommands().displays[0].frameRate).toBe('FPS_30');
   const update = Worker.current.commands.at(-1);
   expect(update?.type === 'hello' && update.hello.displays[0].frameRate).toBeUndefined();
+});
+
+it('opens from the host event and shows the fallback only without the feature', async () => {
+  await start();
+  Worker.current.receive({ type: 'welcome', features: ['host-ui'], sourceUrl: 'https://example.org/source' });
+  expect(element('gear').hidden).toBe(true);
+  Worker.current.receive({ type: 'host-ui' }); expect(drawerOpen).toHaveBeenCalledOnce();
+  Worker.current.receive({ type: 'welcome', sourceUrl: 'https://example.org/source' });
+  expect(element('gear').hidden).toBe(false);
 });

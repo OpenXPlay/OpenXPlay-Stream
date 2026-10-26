@@ -37,7 +37,7 @@ export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' 
 export type ClientDisplaySettings = Omit<DisplaySettings, 'videoCodec'> & { videoCodec?: DisplaySettings['videoCodec'] };
 export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
 export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
-export type JsonMessage = ViewArea | FullscreenExit | ClientDisplaySettings | Hello | { type: 'restart' } |
+export type JsonMessage = { type: 'host-ui' } | ViewArea | FullscreenExit | ClientDisplaySettings | Hello | { type: 'restart' } |
   { type: 'welcome'; receiverBuild?: string; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
@@ -106,6 +106,7 @@ const schemas: Record<string, Validator> = {
     })(),
   'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
   'display-settings': object({ type: literal('display-settings'), frameRate: optional(frameRate), videoCodec: optional(literal('auto', 'h265', 'h264')), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300) }),
+  'host-ui': object({ type: literal('host-ui') }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
@@ -124,7 +125,7 @@ const schemas: Record<string, Validator> = {
   error: object({ type: literal('error'), code: nonempty, message: str }),
 };
 const clientTypes = ['fullscreen-exit', 'display-settings', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
-const relayTypes = ['view-area', 'display-settings', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
+const relayTypes = ['host-ui', 'view-area', 'display-settings', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
 export function parseMessage(input: string | unknown, direction?: Direction): JsonMessage {
   let x: unknown = input;
   if (typeof input === 'string') {

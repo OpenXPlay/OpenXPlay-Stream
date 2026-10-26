@@ -26,7 +26,7 @@ export type PageCommand = import('../protocol/json').FullscreenExit | import('..
   { type: 'restart' } |
   { type: 'fit'; fit: 'fit' | 'fill' } |
   { type: 'stop' };
-export type WorkerNotice = { type: 'view-area'; area: import('../protocol/json').ViewArea | undefined } | { type: 'display-disconnected' } | import('../protocol/json').DisplaySettings |
+export type WorkerNotice = { type: 'host-ui' } | { type: 'view-area'; area: import('../protocol/json').ViewArea | undefined } | { type: 'display-disconnected' } | import('../protocol/json').DisplaySettings |
   { type: 'retry'; delayMs: number; attempt: number } |
   { type: 'playing' } |
   { type: 'hold'; active: boolean } |
