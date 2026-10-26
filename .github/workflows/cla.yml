@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Created by riko chen on 2026-10-14
 
+# Every OpenXPlay repository runs this check against one signature list (OpenXPlay/cla-signatures),
+# so a contributor accepts the CLA once, by replying on any pull request, for all of them.
+
 name: CLA
 
 on:
@@ -12,7 +15,7 @@ on:
 
 permissions:
   actions: write
-  contents: write
+  contents: read
   pull-requests: write
   statuses: write
 
@@ -28,8 +31,12 @@ jobs:
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Organization secret: a fine-grained token with Contents read/write on cla-signatures only.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
         with:
-          path-to-document: https://github.com/OpenXPlay/OpenXPlay-Stream/blob/main/CLA.md
-          path-to-signatures: signatures/v1/cla.json
-          branch: cla-signatures
+          path-to-document: https://github.com/OpenXPlay/OpenXPlay/blob/main/CLA.md
+          remote-organization-name: OpenXPlay
+          remote-repository-name: cla-signatures
+          path-to-signatures: signatures/cla.json
+          branch: main
           allowlist: riko2chen,dependabot[bot]
