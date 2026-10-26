@@ -28,7 +28,7 @@ public object WebJsonCodec {
         if (type == null || schemas[type]?.invoke(obj) != true) throw WireFormatException("Invalid JSON message")
         val allowed = when (direction) {
             Direction.CLIENT_TO_RELAY -> setOf("fullscreen-exit", "display-settings", "hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info")
-            Direction.RELAY_TO_CLIENT -> setOf("view-area", "display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
+            Direction.RELAY_TO_CLIENT -> setOf("host-ui", "view-area", "display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
             null -> schemas.keys
         }
         if (type == "display-settings" && direction == Direction.RELAY_TO_CLIENT && "videoCodec" !in obj) throw WireFormatException("Missing video codec")
@@ -117,6 +117,7 @@ public object WebJsonCodec {
     private fun message(type: String, vararg fields: Pair<String, (JsonElement?) -> Boolean>): Pair<String, (JsonElement?) -> Boolean> =
         type to obj("type" to literal(type), *fields)
     private val schemas = mapOf(
+        message("host-ui"),
         "view-area" to { value: JsonElement? ->
             obj("type" to literal("view-area"), "x" to integer, "y" to integer, "width" to positiveInt, "height" to positiveInt,
                 "canvasWidth" to positiveInt, "canvasHeight" to positiveInt)(value) && (value as JsonObject).let {

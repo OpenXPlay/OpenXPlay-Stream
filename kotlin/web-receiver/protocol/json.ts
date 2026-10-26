@@ -39,6 +39,7 @@ export interface ViewArea { type: 'view-area'; x: number; y: number; width: numb
 export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
 export type JsonMessage = ViewArea | FullscreenExit | ClientDisplaySettings | Hello | { type: 'restart' } |
   { type: 'welcome'; receiverBuild?: string; features?: string[]; relay?: { name: string; version: string }; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string } |
+  { type: 'host-ui' } |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
   { type: 'audio-format'; stream: number; format: AudioFormat | null } |
@@ -122,9 +123,10 @@ const schemas: Record<string, Validator> = {
   stats: extensible(object({ audioBufferedMs: optional(nullable(num)), audioUnderruns: optional(int), type: literal('stats'), screen: range(255), decodeMs: nullable(num), decodeQueue: int, dropped: int, rendered: int,
     decodedLatencyMs: nullable(num), renderedLatencyMs: nullable(num), clockOffsetUs: nullable(i64), rttUs: nullable(i64) })),
   error: object({ type: literal('error'), code: nonempty, message: str }),
+  'host-ui': object({ type: literal('host-ui') }),
 };
 const clientTypes = ['fullscreen-exit', 'display-settings', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
-const relayTypes = ['view-area', 'display-settings', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
+const relayTypes = ['host-ui', 'view-area', 'display-settings', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
 export function parseMessage(input: string | unknown, direction?: Direction): JsonMessage {
   let x: unknown = input;
   if (typeof input === 'string') {

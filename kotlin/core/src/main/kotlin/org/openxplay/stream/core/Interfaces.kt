@@ -34,6 +34,8 @@ public interface InputSink {
      */
     public fun inputCapabilities(capabilities: InputCapabilities): Unit = Unit
     public fun context(update: ContextUpdate): Unit = Unit
+    /** One-shot request to show the receiver's own UI; never retained or replayed. */
+    public fun hostUiRequested(): Unit = Unit
     public fun session(state: SessionState)
     /** A null format ends the stream. */
     public fun videoFormat(screen: ScreenId, format: VideoFormat?)
@@ -55,6 +57,8 @@ public interface ProjectionOutput {
     /** Opts into asynchronous context replay and updates when attached to a hub. */
     public fun wantsContext(): Boolean = false
     public fun onContext(update: ContextUpdate): Unit = Unit
+    /** Shows the receiver's own UI for a one-shot request; never replayed to later outputs. */
+    public fun onHostUiRequested(): Unit = Unit
     public fun onSession(state: SessionState, config: SessionConfig)
     public fun onVideoFormat(screen: ScreenId, format: VideoFormat?)
     public fun onVideoFrame(frame: VideoFrame)
