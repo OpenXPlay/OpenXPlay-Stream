@@ -17,16 +17,16 @@ it('chooses exactly one blocked audio action and clears it when audio resumes or
   expect([false, true, false].map(playing => soundPrompt(playing, true, 'suspended'))).toEqual(['card', 'pill', 'card']);
 });
 it('defaults to the complete viewport matrix and validates screenshot parameters', () => {
-  expect(previewOptions(new URLSearchParams())).toEqual({ state: 'connecting', language: 'en', gear: { side: 'right', y: 0 }, sheet: false, large: false, motion: false, sizes: previewSizes });
-  expect(previewOptions(new URLSearchParams('state=playingSoundBlocked&lang=zh-CN&sheet=true&large=1&motion=reduce&size=1920x720'))).toEqual({ state: 'playingSoundBlocked', language: 'zh-CN', gear: { side: 'right', y: 0 }, sheet: true, large: true, motion: true, sizes: [[1920, 720]] });
+  expect(previewOptions(new URLSearchParams())).toEqual({ state: 'connecting', language: 'en', sheet: '', fallback: false, large: false, motion: false, sizes: previewSizes });
+  expect(previewOptions(new URLSearchParams('state=playingSoundBlocked&lang=zh-CN&sheet=true&large=1&motion=reduce&size=1920x720'))).toEqual({ state: 'playingSoundBlocked', language: 'zh-CN', sheet: 'root', fallback: false, large: true, motion: true, sizes: [[1920, 720]] });
   for (const state of previewStates) expect(previewOptions(new URLSearchParams({ state })).state).toBe(state);
   expect(previewOptions(new URLSearchParams('state=unknown&lang=fr&sheet=0&large=false&motion=off')).state).toBe('connecting');
-  expect(previewOptions(new URLSearchParams('sheet=0&large=false&motion=off'))).toMatchObject({ sheet: false, large: false, motion: false });
+  expect(previewOptions(new URLSearchParams('sheet=0&large=false&motion=off'))).toMatchObject({ sheet: '', fallback: false, large: false, motion: false });
   for (const size of ['0x480', '800x0', '-800x480', '800x480x2', '9999x720', 'all']) expect(previewOptions(new URLSearchParams({ size })).sizes).toEqual(previewSizes);
   expect(previewOptions(new URLSearchParams('size=800X480&sheet&large&motion')).sizes).toEqual([[800, 480]]);
 });
 
-it('accepts a moved playing gear and falls back for invalid preview positions', () => {
-  expect(previewOptions(new URLSearchParams('state=playing&gear=left:0.3')).gear).toEqual({ side: 'left', y: .3 });
-  for (const gear of ['left:', 'top:0.3', 'left:-1', 'right:2', 'left:NaN']) expect(previewOptions(new URLSearchParams({ gear })).gear).toEqual({ side: 'right', y: 0 });
+it('accepts every drawer fixture and ignores obsolete gear positions', () => {
+  for (const sheet of ['root', 'picture', 'resolution', 'frame-rate', 'codec', 'sound', 'plugins', 'about']) expect(previewOptions(new URLSearchParams({ sheet })).sheet).toBe(sheet);
+  expect(previewOptions(new URLSearchParams('gear=left:0.3&fallback')).fallback).toBe(true);
 });

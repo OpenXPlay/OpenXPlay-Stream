@@ -609,3 +609,14 @@ it('negotiates view-area, crops decoded frames and clears the crop on disconnect
   expect((socket.json().at(-1) as any).type).toBe('fullscreen-exit');
   socket.close(); expect(scope.postMessage).toHaveBeenCalledWith({ type: 'view-area', area: undefined });
 });
+
+it('forwards each host-ui event immediately without disturbing live rendering', async () => {
+  const context = { drawImage: vi.fn(), clearRect: vi.fn(), fillRect: vi.fn() };
+  const socket = init(context); socket.open(); await welcome(socket);
+  scope.postMessage.mockClear();
+  const decoders = Decoder.instances.length, sent = socket.sent.length;
+  socket.receive(vector('host-ui')); socket.receive(vector('host-ui'));
+  expect(scope.postMessage.mock.calls.map(([message]) => message)).toEqual([{ type: 'host-ui' }, { type: 'host-ui' }]);
+  expect(Decoder.instances.length).toBe(decoders); expect(socket.sent.length).toBe(sent);
+  expect(context.clearRect).not.toHaveBeenCalled();
+});

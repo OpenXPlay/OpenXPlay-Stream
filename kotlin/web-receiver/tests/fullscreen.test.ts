@@ -55,7 +55,7 @@ it('wires the bilingual unobtrusive overlay and capture before CarPlay pointer h
   expect(html).toContain('id="fullscreen-hint" role="status" data-text="fullscreenRestore" hidden');
   expect(strings.en.fullscreenRestore).toBe('Tap to return to full screen');
   expect(strings['zh-CN'].fullscreenRestore).toBe('轻触屏幕恢复全屏');
-  expect(main).toContain('fullscreenHint.hidden = !fullscreen.pending');
+  expect(main).toContain('syncFullscreen(document, !!document.fullscreenEnabled, fullscreen.intent, fullscreen.pending, text)');
   expect(main).toContain('fullscreen.pointerDown(event, requestFullscreen)');
   expect(main).toContain('{ capture: true }');
   expect(main).toContain('fullscreen.display(measuredDisplay())');
