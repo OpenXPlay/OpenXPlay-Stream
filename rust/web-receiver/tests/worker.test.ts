@@ -597,3 +597,72 @@ it('negotiates display settings, forwards diagnostics and crops decoded frames',
   socket.close();
   expect(scope.postMessage).toHaveBeenCalledWith({ type: 'display-disconnected' });
 });
+
+it('delivers host UI only on a welcomed socket with the advertised feature', async () => {
+  const socket = init(); socket.open(); socket.receive({ type: 'host-ui' });
+  expect(notices()).not.toContainEqual({ type: 'host-ui' });
+  await welcome(socket); socket.receive({ type: 'host-ui' }); expect(notices()).not.toContainEqual({ type: 'host-ui' });
+  socket.receive({ ...vector('welcome'), features: ['host-ui', 'display-settings'] });
+  socket.receive({ type: 'host-ui' }); expect(notices().filter(n => n.type === 'host-ui')).toHaveLength(1);
+  const settings = { type: 'display-settings', resolution: 'screen', screenWidth: 300, videoCodec: 'h265', frameRate: 'FPS_50' };
+  socket.receive(settings); expect(notices()).toContainEqual(settings);
+  command(settings); expect(socket.json()).toContainEqual(settings);
+  command({ type: 'reconnect' });
+  const next = Socket.instances.at(-1)!; next.open(); await welcome(next); next.receive({ type: 'host-ui' });
+  expect(notices().filter(n => n.type === 'host-ui')).toHaveLength(1);
+});
+it.each(['connecting', 'authenticating', 'joining-network', 'waiting-media', 'failed', 'disconnected'])('forwards startup/%s without losing the session phase behavior', async reason => {
+  const socket = init(); socket.open(); await welcome(socket);
+  socket.receive({ type: 'session', session: { id: '42', phase: 'CONNECTING', reason: `startup/${reason}` } });
+  expect(notices()).toContainEqual({ type: 'status', text: `startup/${reason}` });
+  socket.receive({ type: 'session', session: { id: '42', phase: 'ACTIVE', reason: `startup/${reason}` } });
+  expect(notices().at(-1)).toEqual({ type: 'status', text: 'ACTIVE' });
+});
+const lastStats = (socket: Socket) => socket.json().filter((m: any) => m.type === 'stats').at(-1);
+it('proves a session only after drawing, rejecting decoded, hidden and old-session frames', async () => {
+  const context = { fillRect: vi.fn(), drawImage: vi.fn() }, socket = init(context); socket.open(); await welcome(socket);
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).not.toHaveProperty('session');
+  // A decoded frame is still unproven until the scheduled canvas draw.
+  video(socket, true); const oldDecoder = Decoder.instances.at(-1)!;
+  oldDecoder.callbacks.output(output(1));
+  socket.receive({ type: 'session', session: { id: '51', phase: 'ACTIVE' } });
+  socket.receive(vector('video-format')); await Promise.resolve(); await Promise.resolve();
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).not.toHaveProperty('session');
+  oldDecoder.callbacks.output(output(1));
+  command({ type: 'visibility', visible: false }); video(socket, true);
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).not.toHaveProperty('session');
+  command({ type: 'visibility', visible: true }); await picture(socket);
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).toHaveProperty('session', '51');
+  socket.receive({ type: 'session', session: { id: '51', phase: 'CONNECTING', reason: 'startup/disconnected' } });
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).not.toHaveProperty('session');
+  socket.receive({ type: 'session', session: { id: '51', phase: 'ENDED' } });
+  socket.receive({ type: 'session', session: { id: '51', phase: 'ACTIVE' } });
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).not.toHaveProperty('session');
+});
+it.each(['automatic', 'manual', 'pairing'] as const)('clears session proof on %s socket reconnect even with the same session ID', async reconnect => {
+  const { socket } = await streaming(); await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(socket)).toHaveProperty('session', '42');
+  if (reconnect === 'automatic') { socket.close(); await vi.advanceTimersByTimeAsync(1100); }
+  else if (reconnect === 'manual') command({ type: 'reconnect' });
+  else command({ type: 'pair', token: '00192837' });
+  const next = Socket.instances.at(-1)!; next.open(); await welcome(next);
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(next)).not.toHaveProperty('session');
+  await picture(next); await vi.advanceTimersByTimeAsync(1000); expect(lastStats(next)).toHaveProperty('session', '42');
+});
+
+it('does not equate decoder output with a drawn frame for session proof', async () => {
+  const draws: (() => void)[] = [];
+  (scope as any).requestAnimationFrame = (draw: () => void) => { draws.push(draw); };
+  const socket = init({ fillRect: vi.fn(), drawImage: vi.fn() }); socket.open(); await welcome(socket);
+  video(socket, true); Decoder.instances.at(-1)!.callbacks.output(output(1));
+  command({ type: 'page-metrics', metrics: { session: 'unproven' } });
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).not.toHaveProperty('session');
+  draws.shift()!(); await vi.advanceTimersByTimeAsync(1000); expect(lastStats(socket)).toHaveProperty('session', '42');
+});
+it('fences queued decoded frames during a pairing reconnect', async () => {
+  const { socket } = await streaming();
+  video(socket, true, 700n); Decoder.instances.at(-1)!.callbacks.output(output(700));
+  command({ type: 'pair', token: '00192837' });
+  const next = Socket.instances.at(-1)!; next.open(); await welcome(next);
+  await vi.advanceTimersByTimeAsync(1000); expect(lastStats(next)).not.toHaveProperty('session');
+});

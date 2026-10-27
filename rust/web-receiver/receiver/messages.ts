@@ -29,6 +29,7 @@ export type PageCommand =
   { type: 'fit'; fit: 'fit' | 'fill' } |
   { type: 'stop' };
 export type WorkerNotice =
+  { type: 'host-ui' } |
   { type: 'display-disconnected' } |
   import('../protocol/json').DisplaySettings | import('../protocol/json').ViewArea |
   { type: 'retry'; delayMs: number; attempt: number } |

@@ -30,14 +30,14 @@ export interface Stats {
   renderLatencyP50Ms?: number; renderLatencyP95Ms?: number; eventLoopLagAvgMs?: number; eventLoopLagMaxMs?: number;
   longTaskCount?: number; longTaskTotalMs?: number; usedJSHeapSize?: number; renderDepth?: number;
   audioBufferedMs?: number | null; audioUnderruns?: number;
-  type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
+  session?: I64 | number; type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
   decodedLatencyMs: number | null; renderedLatencyMs: number | null; clockOffsetUs: I64 | null; rttUs: I64 | null;
 }
-export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264' }
+export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264'; frameRate?: FrameRatePreference }
 export interface ViewArea { type: 'view-area'; x: number; y: number; width: number; height: number; canvasWidth: number; canvasHeight: number }
 export interface FullscreenExit { type: 'fullscreen-exit'; hiddenMs: number | null; display: DisplayInfo; autoRestore?: 'restored' | 'denied' | 'off' }
 export interface WelcomeDetails { features?: string[]; receiverBuild?: string; relay?: { name: string; version: string } }
-export type JsonMessage = DisplaySettings | ViewArea | FullscreenExit | Hello | { type: 'restart' } |
+export type JsonMessage = DisplaySettings | ViewArea | FullscreenExit | Hello | { type: 'restart' } | { type: 'host-ui' } |
   (WelcomeDetails & { type: 'welcome'; plugins?: { host: string }; version: 0; clientId: string; session: SessionState; sourceUrl: string; attribution: string; projectUrl: string }) |
   { type: 'session'; session: SessionState } |
   { type: 'video-format'; screen: number; format: VideoFormat | null } |
@@ -74,6 +74,8 @@ function object(fields: Record<string, Validator>): Validator {
   return x => typeof x === 'object' && x !== null && !Array.isArray(x) &&
     Object.keys(x).every(k => Object.hasOwn(fields, k)) && Object.entries(fields).every(([k, v]) => v((x as Record<string, unknown>)[k]));
 }
+const frameRate = literal('AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60');
+const sessionProof: Validator = x => i64(x) || typeof x === 'number' && Number.isSafeInteger(x);
 const audioCodec = literal('AAC_LC', 'OPUS', 'PCM_S16LE');
 const session = object({ id: i64, phase: literal('CONNECTING', 'ACTIVE', 'RECONNECTING', 'ENDED'), reason: optional(str) });
 const display = object({ screen: range(255), width: x => int(x) && positive(x), height: x => int(x) && positive(x), dpr: positive, refreshHz: positive,
@@ -88,7 +90,7 @@ const audio = object({ role: literal('MEDIA', 'ALERT', 'VOICE', 'TELEPHONY', 'OT
 const mic = object({ codec: audioCodec, sampleRate: x => int(x) && positive(x), channels: x => int(x) && positive(x), frameMs: positive });
 const extensible = (schema: Validator): Validator => x => {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return false;
-  const base = ['type', 'screen', 'decodeMs', 'decodeQueue', 'dropped', 'rendered', 'decodedLatencyMs', 'renderedLatencyMs', 'clockOffsetUs', 'rttUs', 'audioBufferedMs', 'audioUnderruns'];
+  const base = ['session', 'type', 'screen', 'decodeMs', 'decodeQueue', 'dropped', 'rendered', 'decodedLatencyMs', 'renderedLatencyMs', 'clockOffsetUs', 'rttUs', 'audioBufferedMs', 'audioUnderruns'];
   const known = Object.fromEntries(Object.entries(x).filter(([key]) => base.includes(key)));
   return schema(known) && diagnosticFields.every(key => !(key in x) || optional(num)((x as Record<string, unknown>)[key]));
 };
@@ -102,9 +104,10 @@ const diagnosticFields = [
 const boundedText: Validator = x => nonempty(x) && (x as string).length <= 128 && !/[\x00-\x1f\x7f]/.test(x as string);
 const areaShape = object({ type: literal('view-area'), x: int, y: int, width: x => int(x) && positive(x), height: x => int(x) && positive(x), canvasWidth: x => int(x) && positive(x), canvasHeight: x => int(x) && positive(x) });
 const schemas: Record<string, Validator> = {
-  'display-settings': object({ type: literal('display-settings'), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300), videoCodec: optional(literal('auto', 'h265', 'h264')) }),
+  'display-settings': object({ type: literal('display-settings'), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300), videoCodec: optional(literal('auto', 'h265', 'h264')), frameRate: optional(frameRate) }),
   'view-area': x => areaShape(x) && (() => { const a = x as ViewArea; return a.x + a.width <= a.canvasWidth && a.y + a.height <= a.canvasHeight; })(),
   'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
+  'host-ui': object({ type: literal('host-ui') }),
   restart: object({ type: literal('restart') }),
   hello: object({ videoCodec: optional(literal('AUTO', 'H264')), playback: optional(literal('SMART', 'QUALITY', 'SPEED')), type: literal('hello'), version: literal(0), token: str,
     decoders: array(object({ codecString: nonempty, hardware: bool })), displays: array(display), maxTouchContacts: range(10), audio: array(audioCodec), microphone: bool }),
@@ -118,12 +121,12 @@ const schemas: Record<string, Validator> = {
   ping: object({ type: literal('ping'), t0Us: i64 }),
   pong: object({ type: literal('pong'), t0Us: i64, t1Us: i64, t2Us: i64 }),
   'receiver-info': x => typeof x === 'object' && x !== null && !Array.isArray(x) && new TextEncoder().encode(JSON.stringify(x)).length <= 65536,
-  stats: extensible(object({ audioBufferedMs: optional(nullable(num)), audioUnderruns: optional(int), type: literal('stats'), screen: range(255), decodeMs: nullable(num), decodeQueue: int, dropped: int, rendered: int,
+  stats: extensible(object({ session: optional(sessionProof), audioBufferedMs: optional(nullable(num)), audioUnderruns: optional(int), type: literal('stats'), screen: range(255), decodeMs: nullable(num), decodeQueue: int, dropped: int, rendered: int,
     decodedLatencyMs: nullable(num), renderedLatencyMs: nullable(num), clockOffsetUs: nullable(i64), rttUs: nullable(i64) })),
   error: object({ type: literal('error'), code: nonempty, message: str }),
 };
 const clientTypes = ['display-settings', 'fullscreen-exit', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
-const relayTypes = ['display-settings', 'view-area', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
+const relayTypes = ['host-ui', 'display-settings', 'view-area', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
 export function parseMessage(input: string | unknown, direction?: Direction): JsonMessage {
   let x: unknown = input;
   if (typeof input === 'string') {

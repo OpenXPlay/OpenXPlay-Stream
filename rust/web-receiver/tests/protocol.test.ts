@@ -97,3 +97,17 @@ describe('JSON contract', () => {
     expect(() => parseMessage({ type: 'keyframe', screen: 0 }, 'relay-to-client')).toThrow(WireFormatError);
   });
 });
+
+it('accepts optional relay-owned frame rates in both directions and validates session proof', () => {
+  const settings = { type: 'display-settings', resolution: 'native', screenWidth: 125, videoCodec: 'h264' };
+  for (const direction of ['client-to-relay', 'relay-to-client'] as const) {
+    expect(parseMessage(settings, direction)).toEqual(settings);
+    for (const frameRate of ['AUTO', 'FPS_30', 'FPS_35', 'FPS_40', 'FPS_45', 'FPS_50', 'FPS_55', 'FPS_60'])
+      expect(parseMessage({ ...settings, frameRate }, direction)).toHaveProperty('frameRate', frameRate);
+    for (const frameRate of [null, '30', 60, 'FPS_25', 'FPS_42', 'auto']) expect(() => parseMessage({ ...settings, frameRate }, direction)).toThrow();
+  }
+  const stats = { type: 'stats', screen: 0, decodeMs: null, decodeQueue: 0, dropped: 0, rendered: 0, decodedLatencyMs: null, renderedLatencyMs: null, clockOffsetUs: null, rttUs: null };
+  expect(parseMessage(stats, 'client-to-relay')).not.toHaveProperty('session');
+  for (const session of [1234, -1234, '1234', '-9223372036854775808', '9223372036854775807']) expect(parseMessage({ ...stats, session })).toHaveProperty('session', session);
+  for (const session of [null, true, 1.1, Number.MAX_SAFE_INTEGER + 1, '01', '', '9223372036854775808']) expect(() => parseMessage({ ...stats, session })).toThrow();
+});
