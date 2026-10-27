@@ -7,6 +7,7 @@ use super::*;
 struct Host {
     controls: Mutex<Vec<ControlEvent>>,
     caps: Mutex<Vec<OutputCapabilities>>,
+    stats: Mutex<Vec<OutputStats>>,
 }
 impl OutputHost for Host {
     fn capabilities(&self, c: OutputCapabilities) {
@@ -15,7 +16,9 @@ impl OutputHost for Host {
     fn control(&self, e: ControlEvent) {
         self.controls.lock().unwrap().push(e);
     }
-    fn stats(&self, _: OutputStats) {}
+    fn stats(&self, value: OutputStats) {
+        self.stats.lock().unwrap().push(value);
+    }
 }
 fn fixture() -> (WebOutput, Arc<Host>) {
     let config = WebOutputConfig::new(
@@ -43,6 +46,7 @@ fn hello(web: &WebOutput, id: &str) {
 }
 fn settings() -> DisplaySettings {
     DisplaySettings {
+        frame_rate: FrameRatePreference::Auto,
         resolution: "native".into(),
         screen_width: 125,
         video_codec: "auto".into(),
@@ -219,4 +223,143 @@ fn strict_page_messages_and_directions() {
     assert!(json::validate(&v, Some(json::Direction::Client)).is_err());
     v["width"] = json!(0);
     assert!(json::validate(&v, None).is_err());
+}
+
+#[test]
+fn host_ui_targets_recent_touch_then_broadcasts_and_never_replays() {
+    let (mut web, _) = fixture();
+    hello(&web, "a");
+    hello(&web, "b");
+    web.on_host_ui_requested();
+    assert!(web
+        .state
+        .lock()
+        .unwrap()
+        .clients
+        .values()
+        .all(|c| !c.messages.iter().any(|v| v["type"] == "host-ui")));
+    web.config.host_ui = true;
+    let now = Instant::now();
+    web.state.lock().unwrap().last_touch = Some(("b".into(), now));
+    web.request_host_ui(now + Duration::from_secs(5));
+    {
+        let s = web.state.lock().unwrap();
+        assert!(!s.clients["a"]
+            .messages
+            .iter()
+            .any(|v| v["type"] == "host-ui"));
+        assert_eq!(
+            s.clients["b"].messages.back().unwrap(),
+            &json!({"type":"host-ui"})
+        );
+    }
+    web.request_host_ui(now + Duration::from_secs(6));
+    assert_eq!(
+        web.state.lock().unwrap().clients["a"]
+            .messages
+            .back()
+            .unwrap(),
+        &json!({"type":"host-ui"})
+    );
+    web.state.lock().unwrap().clients.remove("b");
+    web.request_host_ui(now);
+    hello(&web, "late");
+    let s = web.state.lock().unwrap();
+    assert_eq!(
+        s.clients["late"].messages[0]["features"],
+        json!(["host-ui"])
+    );
+    assert!(!s.clients["late"]
+        .messages
+        .iter()
+        .any(|v| v["type"] == "host-ui"));
+    for client in s.clients.values() {
+        for message in &client.messages {
+            json::validate(message, Some(json::Direction::Relay)).unwrap();
+        }
+    }
+}
+#[test]
+fn frame_rate_port_ignores_stale_hello_and_missing_edits_keep_the_relay_value() {
+    let (web, host) = fixture();
+    hello(&web, "a");
+    {
+        let mut s = web.state.lock().unwrap();
+        s.clients.get_mut("a").unwrap().hello.as_mut().unwrap()["displays"][0]["frameRate"] =
+            json!("FPS_30");
+    }
+    report_caps(&web.state);
+    assert_eq!(
+        host.caps.lock().unwrap().last().unwrap().displays[&0].frame_rate,
+        FrameRatePreference::Fps30
+    );
+    let settings = DisplaySettings {
+        frame_rate: FrameRatePreference::Fps55,
+        ..settings()
+    };
+    web.on_display_settings(settings.clone());
+    assert_eq!(
+        host.caps.lock().unwrap().last().unwrap().displays[&0].frame_rate,
+        FrameRatePreference::Auto
+    );
+    let mut request = oxp_wire::display_settings(&settings);
+    request.as_object_mut().unwrap().remove("frameRate");
+    handle(request, "a", &web.config, &web.state, 0).unwrap();
+    assert!(
+        matches!(host.controls.lock().unwrap().last().unwrap(), ControlEvent::DisplaySettings { settings: value, .. } if value.frame_rate == FrameRatePreference::Fps55)
+    );
+    let mut request = oxp_wire::display_settings(&settings);
+    request["frameRate"] = json!("FPS_35");
+    handle(request, "a", &web.config, &web.state, 0).unwrap();
+    assert!(
+        matches!(host.controls.lock().unwrap().last().unwrap(), ControlEvent::DisplaySettings { settings: value, .. } if value.frame_rate == FrameRatePreference::Fps35)
+    );
+    hello(&web, "b");
+    assert!(host
+        .caps
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .displays
+        .values()
+        .all(|d| d.frame_rate == FrameRatePreference::Auto));
+    assert!(web.state.lock().unwrap().clients["b"]
+        .messages
+        .iter()
+        .any(|v| v["type"] == "display-settings" && v["frameRate"] == "FPS_55"));
+}
+#[test]
+fn stats_session_is_optional_and_accepts_signed_strings_and_numbers() {
+    let (web, host) = fixture();
+    hello(&web, "a");
+    let mut stats: Value = serde_json::from_str(include_str!(
+        "../../../spec/vectors/wire/stats-session.json"
+    ))
+    .unwrap();
+    for session in [json!("9223372036854775807"), json!(-42), json!(42)] {
+        stats["session"] = session;
+        json::validate(&stats, Some(json::Direction::Client)).unwrap();
+        handle(stats.clone(), "a", &web.config, &web.state, 0).unwrap();
+    }
+    stats.as_object_mut().unwrap().remove("session");
+    handle(stats.clone(), "a", &web.config, &web.state, 0).unwrap();
+    assert_eq!(
+        host.stats
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.session)
+            .collect::<Vec<_>>(),
+        [Some(i64::MAX), Some(-42), Some(42), None]
+    );
+    for invalid in [
+        json!(null),
+        json!("01"),
+        json!(1.5),
+        json!("9223372036854775808"),
+    ] {
+        stats["session"] = invalid;
+        assert!(json::validate(&stats, Some(json::Direction::Client)).is_err());
+    }
 }

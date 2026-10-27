@@ -15,6 +15,8 @@ pub trait ProjectionOutput: Send + Sync {
         false
     }
     fn on_context(&self, _update: crate::ContextUpdate) {}
+    /// One-shot request to open the receiver UI; never retained or replayed.
+    fn on_host_ui_requested(&self) {}
     fn on_display_settings(&self, _settings: DisplaySettings) {}
     /// None clears the crop and declares view-area support.
     fn on_view_area(&self, _screen: u32, _area: Option<ViewArea>) {}
@@ -29,6 +31,7 @@ pub trait ProjectionOutput: Send + Sync {
 
 /// In-process destination for a producer, independent of the selected outputs.
 pub trait InputSink: Send + Sync {
+    fn host_ui_requested(&self) {}
     fn display_settings(&self, _settings: DisplaySettings) {}
     fn view_area(&self, _screen: u32, _area: Option<ViewArea>) {}
     fn context(&self, _update: crate::ContextUpdate) {}
@@ -41,6 +44,9 @@ pub trait InputSink: Send + Sync {
     fn microphone(&self, stream: u32, request: Option<MicRequest>);
 }
 impl<T: ProjectionOutput + ?Sized> InputSink for T {
+    fn host_ui_requested(&self) {
+        self.on_host_ui_requested();
+    }
     fn display_settings(&self, settings: DisplaySettings) {
         self.on_display_settings(settings);
     }

@@ -1128,6 +1128,7 @@ fn media_worker(
             listener.statistics(statistics.snapshot(dropped, path.send_stalls));
             with_sink(run, |sink| {
                 sink.stats(OutputStats {
+                    session: None,
                     origin,
                     screen: 0,
                     decode_time_us: None,

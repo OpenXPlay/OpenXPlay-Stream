@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-14
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 pub mod ble;
+#[cfg(unix)]
+#[allow(unsafe_code)]
+mod bound_socket;
 pub mod interfaces;
 pub mod media;
 pub mod model;

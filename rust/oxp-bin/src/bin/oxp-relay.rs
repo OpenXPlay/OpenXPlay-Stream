@@ -25,7 +25,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off] [--clink-trace DIR] [--control-stdin]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture commands and requires --unix.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off] [--clink-trace DIR] [--control-stdin]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to a 5 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture commands and requires --unix.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -59,6 +59,7 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--token",
             "--pairing",
             "--source-url",
+            "--host-ui",
             "--relay-name",
             "--relay-version",
             "--tls-cert",
@@ -78,6 +79,9 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--clink-model",
             "--clink-id",
             "--clink-band",
+            "--clink-state-dir",
+            "--clink-scan",
+            "--clink-phone-mac",
             "--state-dir",
             "--port",
             "--clink-transcode",
@@ -130,6 +134,9 @@ fn clink_link_traced(
         "--clink-model",
         "--clink-id",
         "--clink-band",
+        "--clink-state-dir",
+        "--clink-scan",
+        "--clink-phone-mac",
     ];
     if mode == "static" && ble_options.iter().any(|k| args.get(k).is_some()) {
         return Err("BLE options require --clink-link ble".into());
@@ -212,13 +219,30 @@ fn clink_link_traced(
             _ => return Err("--clink-band must be 0 (2.4 GHz) or 1 (5 GHz)".into()),
         };
     }
+    config.state_dir = args.get("--clink-state-dir").map(Into::into);
+    if config
+        .state_dir
+        .as_ref()
+        .is_some_and(|p| p.as_os_str().is_empty())
+    {
+        return Err("--clink-state-dir requires a nonempty directory".into());
+    }
+    config.scan_mode =
+        oxp_link_linux::ScanMode::parse(args.get("--clink-scan").unwrap_or("window"))?;
+    config.phone_mac = args
+        .get("--clink-phone-mac")
+        .map(oxp_link_linux::normalized_bluetooth_address)
+        .transpose()?;
+    config.trace_advertisements = trace.is_some();
     let mut link = oxp_link_linux::LinuxClinkLink::new(config)
         .map_err(|_| "Invalid BLE adapter, interface, or relay identity")?
         .with_listener(Arc::new(move |state| {
             if let Some(trace) = &trace {
                 trace_link(trace.as_ref(), &state);
             }
-            event(link_event(state));
+            if !matches!(state, oxp_link_linux::LinkEvent::Advertisement { .. }) {
+                event(link_event(state));
+            }
         }));
     if let Some(address) = args.get("--clink-address") {
         link = link
@@ -232,6 +256,21 @@ fn trace_link(trace: &dyn ClinkTrace, event: &oxp_link_linux::LinkEvent) {
     use oxp_link_linux::LinkEvent;
     let (stage, fields): (&str, std::collections::BTreeMap<String, String>) = match event {
         LinkEvent::Scanning => ("link_scanning", Default::default()),
+        LinkEvent::Advertisement {
+            advertisement: a,
+            serial_same,
+        } => (
+            "ble_advertisement",
+            [
+                ("major".into(), a.major.to_string()),
+                ("minor".into(), a.minor.to_string()),
+                ("serial".into(), a.serial.to_string()),
+                ("carId".into(), a.car_id.clone()),
+                ("modelId".into(), a.model_id.clone()),
+                ("serialSame".into(), serial_same.to_string()),
+            ]
+            .into(),
+        ),
         LinkEvent::Connecting { address, name } => (
             "link_connecting",
             [
@@ -639,6 +678,7 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
         if let Some(url) = args.get("--source-url") {
             config.source_url = url.into();
         }
+        config.host_ui = args.get("--host-ui").is_some();
         config.relay = args.get("--relay-name").map(|name| oxp_web::RelayInfo {
             name: name.into(),
             version: args.get("--relay-version").unwrap().into(),
@@ -1605,6 +1645,77 @@ malformed",
                 "usb0 Link encap:Ethernet\n          inet addr:192.168.68.1 Bcast:192.168.68.255\nwlan0: flags=8863<UP>\n\tinet 192.168.5.173 netmask 0xffffff00"
             ),
             expected
+        );
+    }
+    #[test]
+    fn quick_connect_flags_are_validated_and_documented() {
+        for (flag, good, bad) in [
+            ("--clink-state-dir", "/tmp/state", ""),
+            ("--clink-scan", "continuous", "forever"),
+            (
+                "--clink-phone-mac",
+                "AA:BB:CC:DD:EE:FF",
+                "02:00:00:00:00:00",
+            ),
+        ] {
+            assert!(USAGE.contains(flag));
+            assert!(clink_link(&args(&[
+                "--clink-link",
+                "ble",
+                "--state-dir",
+                "/tmp/auth",
+                flag,
+                good
+            ]))
+            .unwrap()
+            .is_some());
+            assert!(clink_link(&args(&[
+                "--clink-link",
+                "ble",
+                "--state-dir",
+                "/tmp/auth",
+                flag,
+                bad
+            ]))
+            .is_err());
+            assert!(clink_link(&args(&[flag, good])).is_err());
+            assert!(parse_arguments([flag.to_owned()]).is_err());
+        }
+    }
+    #[test]
+    fn host_ui_flag_is_boolean_and_documented() {
+        assert!(args(&["--host-ui"]).get("--host-ui").is_some());
+        assert!(USAGE.contains("--host-ui"));
+    }
+    #[test]
+    fn advertisement_trace_has_only_decoded_contract_fields() {
+        struct Collect(Mutex<Vec<serde_json::Value>>);
+        impl ClinkTrace for Collect {
+            fn record(&self, event: ClinkTraceEvent) {
+                self.0.lock().unwrap().push(event.to_json());
+            }
+        }
+        let trace = Collect(Mutex::default());
+        trace_link(
+            &trace,
+            &oxp_link_linux::LinkEvent::Advertisement {
+                advertisement: oxp_clink::ble::Advertisement {
+                    major: 1,
+                    minor: 2,
+                    serial: 3,
+                    car_id: "car".into(),
+                    model_id: "model".into(),
+                    vendor_data: "private".into(),
+                    name: "unit".into(),
+                },
+                serial_same: true,
+            },
+        );
+        let values = trace.0.lock().unwrap();
+        assert_eq!(values[0]["stage"], "ble_advertisement");
+        assert_eq!(
+            values[0]["fields"],
+            json!({"major":"1","minor":"2","serial":"3","carId":"car","modelId":"model","serialSame":"true"})
         );
     }
 }

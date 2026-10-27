@@ -105,6 +105,7 @@ public object StreamWireCodec {
             is WireMessage.DisplaySettings -> {
                 put("type", "display-settings"); put("resolution", message.resolution)
                 put("screenWidth", message.screenWidth); put("videoCodec", message.videoCodec)
+                message.frameRate?.let { put("frameRate", it.name) }
             }
             is WireMessage.ViewAreaMessage -> {
                 put("type", "view-area"); put("screen", message.screen.value)
@@ -181,11 +182,13 @@ public object StreamWireCodec {
                 put("keyFrameRequests", c.keyFrameRequests); put("reconfigure", c.reconfigure.name)
             }
             is WireMessage.Client -> { put("type", "client"); put("client", message.client) }
+            WireMessage.HostUi -> put("type", "host-ui")
             WireMessage.Restart -> put("type", "restart")
             is WireMessage.Keyframe -> { put("type", "keyframe"); put("screen", message.screen.value) }
             is WireMessage.Stats -> {
                 val s = message.value
                 put("type", "stats"); put("screen", s.screen.value)
+                s.session?.let { put("session", it.value.toString()) }
                 put("decodeMs", message.decodeMs?.let { JsonPrimitive(it) } ?: JsonNull)
                 put("decodeQueue", s.decodeQueue); put("dropped", s.dropped); put("rendered", s.rendered)
                 put("decodedLatencyMs", message.decodedLatencyMs?.let { JsonPrimitive(it) } ?: JsonNull)
@@ -206,11 +209,11 @@ public object StreamWireCodec {
 
     private fun parse(o: JsonObject, allowUnknown: Boolean): WireMessage = when (o.string("type")) {
         "display-settings" -> {
-            o.fields("resolution", "screenWidth", "videoCodec")
+            o.fields("resolution", "screenWidth", "videoCodec", optional = setOf("frameRate"))
             val resolution = o.string("resolution"); val width = o.int("screenWidth"); val codec = o.string("videoCodec")
             check(resolution in setOf("auto", "native", "1080p", "720p", "screen") && width in setOf(125, 200, 250, 300)
                 && codec in setOf("auto", "h265", "h264"), "Invalid display settings")
-            WireMessage.DisplaySettings(resolution, width, codec)
+            WireMessage.DisplaySettings(resolution, width, codec, o["frameRate"]?.let { FrameRatePreference.valueOf(o.string("frameRate")) })
         }
         "view-area" -> {
             o.fields("screen", "area")
@@ -320,18 +323,24 @@ public object StreamWireCodec {
                 ReconfigureCost.valueOf(o.string("reconfigure"))))
         }
         "client" -> { o.fields("client"); WireMessage.Client(o.string("client", true)) }
+        "host-ui" -> { o.fields(); WireMessage.HostUi }
         "restart" -> { o.fields(); WireMessage.Restart }
         "keyframe" -> { o.fields("screen"); WireMessage.Keyframe(ScreenId(o.int("screen", 0, 255))) }
         "stats" -> {
             o.fields("screen", "decodeMs", "decodeQueue", "dropped", "rendered", "decodedLatencyMs",
-                "renderedLatencyMs", "clockOffsetUs", "rttUs", optional = setOf("audioBufferedMs", "audioUnderruns"))
+                "renderedLatencyMs", "clockOffsetUs", "rttUs", optional = setOf("audioBufferedMs", "audioUnderruns", "session"))
             check(o.containsKey("audioBufferedMs") == o.containsKey("audioUnderruns"), "Incomplete audio stats")
             o.us("decodedLatencyMs")
             listOf("clockOffsetUs", "rttUs").forEach { if (o[it] != JsonNull) {
                 val s = o.string(it); check(Regex("^(0|-?[1-9][0-9]*)$").matches(s) && s.toLongOrNull() != null, "Invalid clock")
             } }
             WireMessage.Stats(OutputStats(Origin("", ""), ScreenId(o.int("screen", 0, 255)), o.us("decodeMs"),
-                o.int("decodeQueue"), o.counter("dropped"), o.counter("rendered"), o.us("renderedLatencyMs")),
+                o.int("decodeQueue"), o.counter("dropped"), o.counter("rendered"), o.us("renderedLatencyMs"),
+                session = o["session"]?.let {
+                    val value = it.jsonPrimitive.content
+                    check(Regex("^(0|-?[1-9][0-9]*)$").matches(value) && value.toLongOrNull() != null, "Invalid session")
+                    SessionId(value.toLong())
+                }),
                 decodeMs = if (o["decodeMs"] == JsonNull) null else o.number("decodeMs"),
                 renderedLatencyMs = if (o["renderedLatencyMs"] == JsonNull) null else o.number("renderedLatencyMs"),
                 decodedLatencyMs = if (o["decodedLatencyMs"] == JsonNull) null else o.number("decodedLatencyMs"),

@@ -30,6 +30,7 @@ fn declarations_are_forwarded_without_requiring_a_video_session() {
     let sink = Sink::default();
     let mut consumer = oxp_bin::Consumer::default();
     let settings = DisplaySettings {
+        frame_rate: FrameRatePreference::Auto,
         resolution: "auto".into(),
         screen_width: 200,
         video_codec: "h265".into(),
@@ -79,6 +80,7 @@ fn output_settings_request_has_client_origin_then_wire_message() {
         log: oxp_bin::EventLog::global().clone(),
     };
     let settings = DisplaySettings {
+        frame_rate: FrameRatePreference::Auto,
         resolution: "native".into(),
         screen_width: 125,
         video_codec: "h264".into(),

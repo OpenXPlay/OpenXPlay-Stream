@@ -71,6 +71,9 @@ impl Output {
     }
 }
 impl ProjectionOutput for Output {
+    fn on_host_ui_requested(&self) {
+        self.events.lock().unwrap().push("host-ui".into());
+    }
     fn on_display_settings(&self, settings: DisplaySettings) {
         self.settings.lock().unwrap().push(settings);
     }
@@ -876,6 +879,7 @@ fn settings_and_per_screen_areas_fanout_clear_and_replay() {
     let first = Output::new("first");
     hub.add_output(first.clone()).unwrap();
     let settings = DisplaySettings {
+        frame_rate: FrameRatePreference::Auto,
         resolution: "native".into(),
         screen_width: 125,
         video_codec: "h265".into(),
@@ -962,5 +966,154 @@ fn primary_main_screen_display_wins_as_a_complete_report() {
         host.caps.lock().unwrap().last().unwrap().displays[&0].fullscreen,
         Some(true)
     );
+    hub.close();
+}
+
+#[test]
+fn host_ui_is_one_shot_only_for_attached_outputs() {
+    let hub = Hub::new(Arc::new(Host::default()));
+    hub.host_ui_requested();
+    let first = Output::new("first");
+    let second = Output::new("second");
+    hub.add_output(first.clone()).unwrap();
+    hub.add_output(second.clone()).unwrap();
+    let count = |o: &Output| {
+        o.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| *v == "host-ui")
+            .count()
+    };
+    assert_eq!(count(&first), 0);
+    hub.host_ui_requested();
+    hub.host_ui_requested();
+    assert_eq!(count(&first), 2);
+    assert_eq!(count(&second), 2);
+    let late = Output::new("late");
+    hub.add_output(late.clone()).unwrap();
+    assert_eq!(count(&late), 0);
+    hub.remove_output("first");
+    hub.host_ui_requested();
+    assert_eq!(count(&first), 2);
+    assert_eq!(count(&second), 3);
+    assert_eq!(count(&late), 1);
+    hub.close();
+    hub.host_ui_requested();
+    assert_eq!(count(&late), 1);
+}
+
+#[test]
+fn queued_host_ui_waits_for_open_and_is_fenced_by_session_epoch() {
+    use std::sync::mpsc;
+    struct Opening {
+        entered: mpsc::SyncSender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        count: std::sync::atomic::AtomicUsize,
+    }
+    impl ProjectionOutput for Opening {
+        fn id(&self) -> &str {
+            "opening"
+        }
+        fn open(&self, _: Arc<dyn OutputHost>) -> Result<()> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(())
+        }
+        fn on_host_ui_requested(&self) {
+            self.count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn on_session(&self, _: &SessionState, _: &SessionConfig) {}
+        fn on_video_format(&self, _: u32, _: Option<Arc<VideoFormat>>) {}
+        fn on_video_frame(&self, _: VideoFrame) {}
+        fn close(&self) {}
+    }
+    for invalidate in [false, true] {
+        let hub = Hub::new(Arc::new(Host::default()));
+        let (entered, wait) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let output = Arc::new(Opening {
+            entered,
+            release: Mutex::new(released),
+            count: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let thread_hub = hub.clone();
+        let thread_output = output.clone();
+        let worker = std::thread::spawn(move || thread_hub.add_output(thread_output).unwrap());
+        wait.recv_timeout(Duration::from_secs(1)).unwrap();
+        hub.host_ui_requested();
+        assert_eq!(output.count.load(std::sync::atomic::Ordering::Relaxed), 0);
+        if invalidate {
+            hub.session(&SessionState {
+                id: 2,
+                phase: SessionPhase::Connecting,
+                reason: None,
+            });
+        }
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            output.count.load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(!invalidate)
+        );
+        hub.host_ui_requested();
+        assert_eq!(
+            output.count.load(std::sync::atomic::Ordering::Relaxed),
+            usize::from(!invalidate) + 1
+        );
+        hub.close();
+    }
+}
+
+#[test]
+fn host_ui_callback_failure_is_isolated_and_reentrant_close_follows_delivery() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct UiOutput {
+        name: &'static str,
+        hub: std::sync::Weak<Hub>,
+        closed: AtomicBool,
+        calls: AtomicUsize,
+        fail: bool,
+    }
+    impl ProjectionOutput for UiOutput {
+        fn id(&self) -> &str {
+            self.name
+        }
+        fn open(&self, _: Arc<dyn OutputHost>) -> Result<()> {
+            Ok(())
+        }
+        fn on_host_ui_requested(&self) {
+            assert!(!self.closed.load(Ordering::Acquire));
+            assert!(!self.fail, "host UI failed");
+            self.hub.upgrade().unwrap().remove_output(self.name);
+            assert!(!self.closed.load(Ordering::Acquire));
+            self.calls.fetch_add(1, Ordering::AcqRel);
+        }
+        fn on_session(&self, _: &SessionState, _: &SessionConfig) {}
+        fn on_video_format(&self, _: u32, _: Option<Arc<VideoFormat>>) {}
+        fn on_video_frame(&self, _: VideoFrame) {}
+        fn close(&self) {
+            self.closed.store(true, Ordering::Release);
+        }
+    }
+    let hub = Hub::new(Arc::new(Host::default()));
+    let output = |name, fail| {
+        Arc::new(UiOutput {
+            name,
+            hub: Arc::downgrade(&hub),
+            closed: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            fail,
+        })
+    };
+    let bad = output("bad", true);
+    let good = output("good", false);
+    hub.add_output(bad.clone()).unwrap();
+    hub.add_output(good.clone()).unwrap();
+    hub.host_ui_requested();
+    assert!(bad.closed.load(Ordering::Acquire));
+    assert!(good.closed.load(Ordering::Acquire));
+    assert_eq!(good.calls.load(Ordering::Acquire), 1);
     hub.close();
 }

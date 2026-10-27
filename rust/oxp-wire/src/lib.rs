@@ -230,6 +230,7 @@ fn known_json_type(t: &str) -> bool {
     matches!(
         t,
         "display-settings"
+            | "host-ui"
             | "view-area"
             | "context"
             | "hello"
@@ -465,6 +466,14 @@ fn set(v: &Value, mut check: impl FnMut(&Value) -> Result<()>) -> Result<()> {
 fn keys(v: &Value) -> Result<()> {
     set(v, |e| integer(e, 10).map(|_| ()))
 }
+/// Stats accept a signed session identifier as a canonical string or JSON integer.
+pub fn decode_session_id(v: &Value) -> Result<oxp_core::model::SessionId> {
+    if v.is_string() {
+        signed(v)
+    } else {
+        v.as_i64().ok_or_else(|| "Invalid session id".into())
+    }
+}
 fn signed(v: &Value) -> Result<i64> {
     let s = string(v, false)?;
     let n = s.parse::<i64>()?;
@@ -656,6 +665,7 @@ pub fn validate_json(v: &Value) -> Result<()> {
             fields(v, &["type", "client"], &[])?;
             string(&v["client"], true)?;
         }
+        "host-ui" => fields(v, &["type"], &[])?,
         "restart" => fields(v, &["type"], &[])?,
         "keyframe" => {
             fields(v, &["type", "screen"], &[])?;
@@ -677,6 +687,7 @@ pub fn validate_json(v: &Value) -> Result<()> {
                     "rttUs",
                 ],
                 &[
+                    "session",
                     "audioBufferedMs",
                     "audioUnderruns",
                     "wsBytesPerSecond",
@@ -701,6 +712,9 @@ pub fn validate_json(v: &Value) -> Result<()> {
                     "renderDepth",
                 ],
             )?;
+            if let Some(session) = v.get("session") {
+                decode_session_id(session)?;
+            }
             require(
                 v.get("audioBufferedMs").is_some() == v.get("audioUnderruns").is_some(),
                 "Incomplete audio stats",
@@ -775,9 +789,21 @@ pub fn validate_json(v: &Value) -> Result<()> {
 }
 
 pub fn decode_display_settings(v: &Value) -> Result<oxp_core::model::DisplaySettings> {
-    fields(v, &["type", "resolution", "screenWidth", "videoCodec"], &[])?;
+    fields(
+        v,
+        &["type", "resolution", "screenWidth", "videoCodec"],
+        &["frameRate"],
+    )?;
     enumeration(&v["type"], &["display-settings"])?;
     let settings = oxp_core::model::DisplaySettings {
+        frame_rate: v
+            .get("frameRate")
+            .map(|r| {
+                oxp_core::model::FrameRatePreference::from_wire(r.as_str().unwrap_or(""))
+                    .ok_or("Invalid frame rate")
+            })
+            .transpose()?
+            .unwrap_or_default(),
         resolution: string(&v["resolution"], true)?.into(),
         screen_width: positive_int(&v["screenWidth"])?,
         video_codec: string(&v["videoCodec"], true)?.into(),
@@ -787,7 +813,7 @@ pub fn decode_display_settings(v: &Value) -> Result<oxp_core::model::DisplaySett
 }
 pub fn display_settings(s: &oxp_core::model::DisplaySettings) -> Value {
     serde_json::json!({"type":"display-settings", "resolution":s.resolution,
-        "screenWidth":s.screen_width, "videoCodec":s.video_codec})
+        "screenWidth":s.screen_width, "videoCodec":s.video_codec, "frameRate":s.frame_rate.wire_name()})
 }
 pub fn area_value(a: oxp_core::model::ViewArea) -> Value {
     serde_json::json!({"x":a.x,"y":a.y,"width":a.width,"height":a.height,
