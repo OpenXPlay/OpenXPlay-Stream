@@ -140,7 +140,7 @@ public object WebJsonCodec {
         message("keyframe", "screen" to range(255)),
         message("ping", "t0Us" to i64),
         message("pong", "t0Us" to i64, "t1Us" to i64, "t2Us" to i64),
-        message("stats",
+        message("stats", "session" to optional(i64),
             "wsBytesPerSecond" to optional(number), "videoFramesPerSecond" to optional(number), "decoderSubmittedPerSecond" to optional(number),
             "decoderOutputPerSecond" to optional(number), "decodeLatencyP50Ms" to optional(number), "decodeLatencyP95Ms" to optional(number),
             "decodeLatencyMaxMs" to optional(number), "maxDecodeQueue" to optional(number), "decoderErrors" to optional(number),

@@ -64,3 +64,14 @@ it('removes the obsolete gear preference without saving it again', () => {
   expect(storage.getItem('oxp.gear')).toBeNull();
   preferences.save(loaded); expect(storage.getItem('oxp.gear')).toBeNull();
 });
+
+it('distinguishes phone setup, network join, waiting for picture and phone failure', () => {
+  for (const [reason, state] of Object.entries({ connecting: 'connectingIphone', authenticating: 'authenticating',
+    'joining-network': 'joiningNetwork', 'waiting-media': 'waitingMedia', failed: 'phoneFailed', disconnected: 'phoneFailed' })) {
+    expect(protocolStatus(`startup/${reason}`, false)).toBe(state);
+    const card = statusCard(state as StatusState);
+    expect(card.hidden).toBe(false);
+    expect(strings.en[card.headline]).toBeTruthy();
+    expect(strings['zh-CN'][card.subline]).toBeTruthy();
+  }
+});

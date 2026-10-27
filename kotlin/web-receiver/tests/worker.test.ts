@@ -620,3 +620,41 @@ it('forwards each host-ui event immediately without disturbing live rendering', 
   expect(Decoder.instances.length).toBe(decoders); expect(socket.sent.length).toBe(sent);
   expect(context.clearRect).not.toHaveBeenCalled();
 });
+
+it('confirms playback only after drawing this session and fences replacement and late decoder output', async () => {
+  const socket = init({ fillStyle: '', fillRect: vi.fn(), drawImage: vi.fn() }); socket.open(); await welcome(socket);
+  await vi.advanceTimersByTimeAsync(1000);
+  const stats = () => socket.json().filter((m: any) => m.type === 'stats').at(-1) as any;
+  expect(stats().session).toBeUndefined();
+  await picture(socket); await vi.advanceTimersByTimeAsync(1000);
+  const oldSession = stats().session;
+  expect(oldSession).toBe(vector('welcome').session.id);
+  const oldDecoder = Decoder.instances.at(-1)!;
+  const next = (BigInt(oldSession) + 1n).toString();
+  socket.receive({ type: 'session', session: { id: next, phase: 'ACTIVE' } });
+  oldDecoder.callbacks.output({ timestamp: 1, displayWidth: 800, displayHeight: 480, close: vi.fn() });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(stats().session).toBeUndefined();
+  socket.receive(vector('video-format')); await Promise.resolve(); await Promise.resolve();
+  await picture(socket); await vi.advanceTimersByTimeAsync(1000);
+  expect(stats().session).toBe(next);
+  socket.receive({ type: 'session', session: { id: next, phase: 'ENDED' } });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(stats().session).toBeUndefined();
+});
+
+it('forwards startup progress without exposing it as a media-active session', async () => {
+  const socket = init(); socket.open(); await welcome(socket);
+  socket.receive({ type: 'session', session: { id: '99', phase: 'CONNECTING', reason: 'startup/waiting-media' } });
+  expect(scope.postMessage).toHaveBeenCalledWith({ type: 'status', text: 'startup/waiting-media' });
+});
+
+it('requires a newly drawn picture after socket reconnection even when the session id is reused', async () => {
+  const { socket } = await streaming();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect((socket.json().filter((m: any) => m.type === 'stats').at(-1) as any).session).toBeDefined();
+  socket.close(); await vi.advanceTimersByTimeAsync(1000);
+  const next = Socket.instances.at(-1)!; next.open(); await welcome(next);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect((next.json().filter((m: any) => m.type === 'stats').at(-1) as any).session).toBeUndefined();
+});
