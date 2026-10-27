@@ -18,16 +18,21 @@ export function selectLanguage(languages: readonly string[]): Language {
 export const strings = {
   en: {
     resolution: 'Resolution', native: 'Native', wholeScreen: 'Whole screen', nativeHint: 'Native is sharpest and needs more Wi-Fi bandwidth.', screenWidth: 'CarPlay screen width', screenWidthHint: 'Larger values show more icons on one page.', fullscreenRestore: 'Tap to return to full screen', fullscreenHint: 'Tap to return to full screen',
-    frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying… CarPlay reconnects in a few seconds',
+    frameRate: 'Frame rate', automatic: 'Automatic', applying: 'Applying. CarPlay reconnects in a few seconds',
     videoCodec: 'Video codec', codecAuto: 'Automatic (recommended)', codecH264: 'Force H.264', codecH265: 'Force H.265',
     codecHint: 'Automatic uses H.265 when this browser can decode it in hardware and falls back to H.264 if it fails. The forced choices are for testing.',
     codecInUseH264: 'Now using H.264.', codecInUseH265: 'Now using H.265.',
     playback: 'Playback', smart: 'Smart', quality: 'Quality', speed: 'Speed',
     smartHint: 'Balances smoothness and delay for your network.', qualityHint: 'Smoothest motion, with a little more delay.',
     speedHint: 'Lowest delay; frames may be skipped.',
-    resetPositions: 'Reset button positions', settings: 'Settings', close: 'Close', sound: 'Sound', microphone: 'Microphone', fit: 'Picture fit',
+    picture: 'Picture', windowSize: 'Window', back: 'Back', soundAndMicrophone: 'Sound and microphone', plugins: 'Plugins', resetPluginPositions: 'Reset plugin positions', relayVersion: 'version',
+    connectingIphone: 'Connecting iPhone', connectingIphoneHint: 'Keep your iPhone nearby while CarPlay connects.',
+    authenticating: 'Preparing CarPlay', authenticatingHint: 'Your iPhone is being authenticated.',
+    joiningNetwork: 'Connecting iPhone to Wi-Fi', joiningNetworkHint: 'Keep the relay hotspot or car network available.',
+    waitingMedia: 'Waiting for picture', waitingMediaHint: 'Your iPhone has connected. Waiting for the CarPlay picture.',
+    phoneFailed: 'iPhone connection interrupted', phoneFailedHint: 'Check your iPhone and keep the relay on while it retries.', settings: 'Settings', close: 'Close', sound: 'Sound', microphone: 'Microphone', fit: 'Picture fit',
     contain: 'Fit', fill: 'Fill', fullscreen: 'Full screen', developer: 'Developer mode', about: 'About',
-    source: 'Source', version: 'Version', powered: 'Powered by OpenXPlay.', soundHint: 'Tap for sound',
+    source: 'Source', version: 'Web version', powered: 'Powered by OpenXPlay.', soundHint: 'Tap for sound',
     code: 'Enter pairing code', codeHint: 'Enter the 8-digit code shown on the relay.', incorrect: 'Incorrect code',
     retryIn: 'Trying again in {seconds} s. Check your relay and network.', connect: 'Connect', connecting: 'Connecting', connectingHint: 'Connecting to your relay…',
     waiting: 'Waiting for iPhone', waitingHint: 'Connect your iPhone to the relay to start CarPlay.',
@@ -52,15 +57,20 @@ export const strings = {
   },
   'zh-CN': {
     resolution: '分辨率', native: '原画', wholeScreen: '整个屏幕', nativeHint: '原画最清晰，需要更多 Wi-Fi 带宽。', screenWidth: 'CarPlay 屏幕宽度', screenWidthHint: '数值越大，一页显示的图标越多。', fullscreenRestore: '轻触恢复全屏', fullscreenHint: '轻触恢复全屏',
-    frameRate: '帧率', automatic: '自动', applying: '正在应用… CarPlay 将在几秒后重新连接',
+    frameRate: '帧率', automatic: '自动', applying: '正在应用，CarPlay 将在几秒后重新连接',
     videoCodec: '视频编码', codecAuto: '自动（推荐）', codecH264: '强制 H.264', codecH265: '强制 H.265',
     codecHint: '自动：这个浏览器能硬件解码 H.265 时使用 H.265，出问题时自动改用 H.264。强制选项用于测试。',
     codecInUseH264: '当前使用 H.264。', codecInUseH265: '当前使用 H.265。',
     playback: '播放模式', smart: '智能', quality: '质量优先', speed: '速度优先',
     smartHint: '根据网络自动平衡流畅度和延迟。', qualityHint: '画面最流畅，延迟略高。', speedHint: '延迟最低，可能跳过部分画面。',
-    resetPositions: '重置按钮位置', settings: '设置', close: '关闭', sound: '声音', microphone: '麦克风', fit: '画面适配',
+    picture: '画面', windowSize: '窗口', back: '返回', soundAndMicrophone: '声音与麦克风', plugins: '插件', resetPluginPositions: '重置插件位置', relayVersion: '版本',
+    connectingIphone: '正在连接 iPhone', connectingIphoneHint: '请将 iPhone 放在附近，正在建立 CarPlay 连接。',
+    authenticating: '正在准备 CarPlay', authenticatingHint: '正在完成 iPhone 认证。',
+    joiningNetwork: '正在连接无线网络', joiningNetworkHint: '请保持中继热点或车机网络可用。',
+    waitingMedia: '等待 CarPlay 画面', waitingMediaHint: 'iPhone 已连接，正在等待 CarPlay 传输画面。',
+    phoneFailed: 'iPhone 连接中断', phoneFailedHint: '请检查 iPhone，并保持中继设备开启以重新连接。', settings: '设置', close: '关闭', sound: '声音', microphone: '麦克风', fit: '画面适配',
     contain: '适应', fill: '填满', fullscreen: '全屏', developer: '开发者模式', about: '关于',
-    source: '源代码', version: '版本', powered: 'Powered by OpenXPlay.', soundHint: '轻触开启声音',
+    source: '源代码', version: '网页版本', powered: 'Powered by OpenXPlay.', soundHint: '轻触开启声音',
     code: '输入配对码', codeHint: '输入中继设备上显示的 8 位数字配对码。', incorrect: '配对码错误',
     retryIn: '{seconds} 秒后重试。请检查中继设备和网络。', connect: '连接', connecting: '正在连接', connectingHint: '正在连接中继设备…',
     waiting: '等待 iPhone', waitingHint: '将 iPhone 连接到中继设备以启动 CarPlay。',
@@ -86,14 +96,14 @@ export type TextKey = keyof typeof strings.en;
 export function playbackHint(mode: PlaybackMode): TextKey {
   return mode === 'QUALITY' ? 'qualityHint' : mode === 'SPEED' ? 'speedHint' : 'smartHint';
 }
-export type StatusState = 'code' | 'incorrect' | 'connecting' | 'waiting' | 'reconnecting' | 'error' | 'unsupported' | 'playing' | 'soundBlocked' | 'microphoneDenied';
+export type StatusState = 'code' | 'incorrect' | 'connecting' | 'waiting' | 'reconnecting' | 'error' | 'unsupported' | 'playing' | 'soundBlocked' | 'microphoneDenied' | 'connectingIphone' | 'authenticating' | 'joiningNetwork' | 'waitingMedia' | 'phoneFailed';
 export function statusCard(state: StatusState): { headline: TextKey; subline: TextKey; hidden: boolean } {
   const headline = state;
   const subline: TextKey = state === 'code' || state === 'incorrect' ? 'codeHint' :
     state === 'playing' ? 'playingHint' : `${state}Hint`;
   return { headline, subline, hidden: state === 'playing' };
 }
-export interface Preferences { videoCodec: VideoCodecPreference; frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean; gear: GearPosition }
+export interface Preferences { videoCodec: VideoCodecPreference; frameRate: FrameRatePreference; playback: PlaybackMode; sound: boolean; microphone: boolean; fit: 'fit' | 'fill'; developer: boolean }
 export interface Store { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void }
 export class ReceiverPreferences {
   constructor(private readonly storage: () => Store) {}
@@ -102,11 +112,12 @@ export class ReceiverPreferences {
     try { if (value === null) this.storage().removeItem(`oxp.${key}`); else this.storage().setItem(`oxp.${key}`, value); } catch { }
   }
   load(fragment: URLSearchParams): Preferences {
+    this.write('gear', null);
     return { videoCodec: videoCodecPreference(null), frameRate: frameRatePreference(this.read('frameRate')), playback: playbackMode(this.read('playback')), sound: this.read('sound') !== 'false', microphone: this.read('microphone') !== 'false',
-      fit: this.read('fit') === 'fill' ? 'fill' : 'fit', developer: fragment.has('debug') || this.read('developer') === 'true', gear: parseGearPosition(this.read('gear')) };
+      fit: this.read('fit') === 'fill' ? 'fill' : 'fit', developer: fragment.has('debug') || this.read('developer') === 'true' };
   }
   save(preferences: Preferences): void {
-    for (const [key, value] of Object.entries(preferences)) this.write(key, key === 'gear' ? JSON.stringify(value) : String(value));
+    for (const [key, value] of Object.entries(preferences)) this.write(key, String(value));
   }
 }
 export class Pairing {
@@ -124,6 +135,12 @@ export class Pairing {
 
 /** Keep protocol terminology behind developer mode and map it to one useful next step. */
 export function protocolStatus(protocol: string, playing: boolean): StatusState {
+  const startup: Record<string, StatusState> = {
+    'startup/connecting': 'connectingIphone', 'startup/authenticating': 'authenticating',
+    'startup/joining-network': 'joiningNetwork', 'startup/waiting-media': 'waitingMedia',
+    'startup/failed': 'phoneFailed', 'startup/disconnected': 'phoneFailed',
+  };
+  if (Object.hasOwn(startup, protocol)) return startup[protocol];
   if (protocol === 'ACTIVE') return playing ? 'playing' : 'waiting';
   if (protocol === 'CONNECTING' || protocol === 'ENDED') return 'waiting';
   if (protocol === 'RECONNECTING' || protocol.startsWith('Disconnected')) return 'reconnecting';
@@ -145,41 +162,4 @@ export function applyReducedMotion(target: { classList: { toggle(name: string, f
 /** Choose one audio action according to the visible video, independently of protocol status. */
 export function soundPrompt(playing: boolean, enabled: boolean, audioState: string | undefined, audioActive = true): 'pill' | 'card' | null {
   return enabled && audioActive && audioState === 'suspended' ? playing ? 'pill' : 'card' : null;
-}
-
-export interface FreeGearPosition { x: number; y: number }
-export type GearPosition = FreeGearPosition | { side: 'left' | 'right'; y: number };
-export interface GearBounds { width: number; height: number; size: number; top: number; right: number; bottom: number; left: number }
-export function parseGearPosition(value: unknown): GearPosition {
-  if (typeof value === 'string') { try { value = JSON.parse(value); } catch { value = null; } }
-  const position = value as { x?: number; y?: number; side?: string } | null;
-  if (position && typeof position.x === 'number' && Number.isFinite(position.x) && typeof position.y === 'number' && Number.isFinite(position.y)) return { x: position.x, y: position.y };
-  return position && (position.side === 'left' || position.side === 'right') && typeof position.y === 'number' && Number.isFinite(position.y) && position.y >= 0 && position.y <= 1 ?
-    { side: position.side, y: position.y } : { side: 'right', y: 0 };
-}
-export function gearDragged(dx: number, dy: number): boolean { return Math.hypot(dx, dy) > 8; }
-/** Resolve legacy side/fraction preferences once, then keep absolute CSS coordinates. */
-export function gearOffset(position: GearPosition, bounds: GearBounds): FreeGearPosition {
-  if ('x' in position) return clampGear(position, bounds);
-  return clampGear({ x: position.side === 'left' ? bounds.left : bounds.width - bounds.right - bounds.size,
-    y: bounds.top + position.y * Math.max(0, bounds.height - bounds.top - bounds.bottom - bounds.size) }, bounds);
-}
-export function clampGear(position: FreeGearPosition, bounds: GearBounds): FreeGearPosition {
-  const axis = (value: number, length: number, low: number, high: number) => {
-    const space = Math.max(0, length - bounds.size);
-    const min = Math.min(Math.max(24, low), space / 2), max = Math.max(min, space - Math.max(24, high));
-    return Math.max(min, Math.min(max, value));
-  };
-  return { x: axis(position.x, bounds.width, bounds.left, bounds.right), y: axis(position.y, bounds.height, bounds.top, bounds.bottom) };
-}
-
-/** Movement past the tolerance starts a drag; stationary presses remain taps. */
-export class GearGesture {
-  active = false;
-  suppressed = false;
-  private finished = false;
-  move(dx: number, dy: number): void {
-    if (!this.finished && gearDragged(dx, dy)) { this.active = true; this.suppressed = true; }
-  }
-  finish(cancelled = false): void { if (cancelled) this.suppressed = true; this.finished = true; this.active = false; }
 }

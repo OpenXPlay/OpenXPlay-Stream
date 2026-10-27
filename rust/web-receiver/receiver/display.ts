@@ -49,7 +49,7 @@ export class DisplayDebounce {
 export class DisplaySettingsGate {
   supported = false;
   welcome(features?: string[]): void { this.supported = features?.includes('display-settings') === true; }
-  message(resolution: DisplaySettings['resolution'], screenWidth: DisplaySettings['screenWidth'], videoCodec: DisplaySettings['videoCodec']): DisplaySettings | undefined {
-    if (this.supported) return { type: 'display-settings', resolution, screenWidth, videoCodec };
+  message(resolution: DisplaySettings['resolution'], screenWidth: DisplaySettings['screenWidth'], videoCodec: DisplaySettings['videoCodec'], frameRate?: DisplaySettings['frameRate']): DisplaySettings | undefined {
+    if (this.supported) return { type: 'display-settings', resolution, screenWidth, videoCodec, ...(frameRate === undefined ? {} : { frameRate }) };
   }
 }

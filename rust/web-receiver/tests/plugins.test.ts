@@ -68,7 +68,7 @@ it('sandboxes one frame, verifies message source, collapses before host reply, a
   const values = new Map([[HOST_PREFS_KEY, JSON.stringify({ dock: { x: 200, y: 100 } })]]);
   const setItem = vi.fn((key: string, value: string) => { values.set(key, value); });
   vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null, setItem });
-  const wake = vi.fn(), diagnostic = vi.fn(), slot = new PluginSlot(() => geometry, diagnostic, wake);
+  const wake = vi.fn(), diagnostic = vi.fn(), coverChanged = vi.fn(), slot = new PluginSlot(() => geometry, diagnostic, wake, coverChanged);
   slot.configure({ plugins: { host: '/plugins/host/index.html' } }); expect(append).toHaveBeenCalledTimes(1);
   expect(frame.setAttribute).toHaveBeenCalledWith('sandbox', 'allow-scripts'); expect(frame.setAttribute).toHaveBeenCalledWith('allow', ''); expect(frame.referrerPolicy).toBe('no-referrer');
   const message = (type: string, rest = {}, source = frame.contentWindow) => handler({ source, data: { oxp: 'host/0', type, ...rest } });
@@ -90,7 +90,9 @@ it('sandboxes one frame, verifies message source, collapses before host reply, a
   geometry.gear.faded = false;
   slot.refresh(); expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'geometry', hostPrefs: { dock: { x: 300, y: 150 } } }), '*');
   message('layout', { cover: 'fullscreen', regions: [{ x: 0, y: 0, w: 1000, h: 500 }] });
+  expect(slot.cover).toBe('fullscreen'); expect(coverChanged).toHaveBeenCalledOnce();
   const full = frame.style.clipPath; expect(slot.collapse()).toBe(true); expect(frame.style.clipPath).not.toBe(full); expect(post).toHaveBeenLastCalledWith({ oxp: 'host/0', type: 'collapse' }, '*');
+  expect(slot.cover).toBe('none'); expect(coverChanged).toHaveBeenCalledTimes(2);
   expect(slot.collapse()).toBe(false);
   slot.visibility(false);
   message('ready', { spec: 'oxp-web-plugin/0' });
@@ -104,7 +106,7 @@ it('sandboxes one frame, verifies message source, collapses before host reply, a
   expect(post).toHaveBeenLastCalledWith({oxp:'host/0',type:'visibility',visible:true}, '*');
   now = 2000; vi.advanceTimersByTime(2000); expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'ping', seq: 1 }), '*');
   now = 6000; vi.advanceTimersByTime(4000); expect(diagnostic).toHaveBeenCalledWith('plugins-host-stalled'); expect(append).toHaveBeenCalledTimes(2);
-  now = 12000; vi.advanceTimersByTime(6000); expect(append).toHaveBeenCalledTimes(2); expect(remove).toHaveBeenCalledTimes(2);
+  now = 12000; vi.advanceTimersByTime(6000); expect(append).toHaveBeenCalledTimes(2); expect(remove).toHaveBeenCalledTimes(2); expect(slot.cover).toBe('none'); expect(coverChanged).toHaveBeenCalledTimes(4);
 });
 
 it('stores only bounded JSON objects and tolerates unavailable or corrupt storage', () => {

@@ -10,8 +10,9 @@ import type { TouchContact } from '../protocol/binary';
 import type { PageCommand, WorkerNotice } from './messages';
 import workletUrl from './audio-worklet.ts?worker&url';
 import type { MicFormat } from '../protocol/json';
-import { Pairing, ReceiverPreferences, playbackHint, selectLanguage, strings, statusCard, soundPrompt, gearOffset, clampGear, GearGesture, type GearBounds, type StatusState, type TextKey } from './ui';
-import { bindSheet } from './sheet';
+import { Pairing, ReceiverPreferences, playbackHint, selectLanguage, strings, statusCard, soundPrompt, type StatusState, type TextKey } from './ui';
+import { bindDrawer, syncChoices } from './drawer';
+import { fallbackSettings, settingsAnchor } from './drawer-core';
 import { PluginSlot } from './plugin-slot';
 import { microphoneStatus, applyReducedMotion } from './ui';
 import { CaptureLifecycle } from './capture-lifecycle';
@@ -19,7 +20,7 @@ import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version, shouldReload } from './version';
 import { StableScreen, DisplayDebounce, DisplaySettingsGate } from './display';
 import { FullscreenIntent, FullscreenExitHistory, autoRestoreFullscreen } from './fullscreen';
-import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
+import { frameRatePreference, RestartGate, FrameRateSync } from './frame-rate';
 import { playbackMode, withPlayback } from '../shared/playback';
 import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#video')!;
@@ -38,33 +39,40 @@ const language = selectLanguage(navigator.languages);
 const text = strings[language];
 document.documentElement.lang = language;
 for (const node of document.querySelectorAll<HTMLElement>('[data-text]')) node.textContent = text[node.dataset.text as TextKey];
+for (const node of document.querySelectorAll<HTMLElement>('[data-label]')) node.setAttribute('aria-label', text[node.dataset.label as TextKey]);
+element('card-settings').setAttribute('aria-label', text.settings);
 canvas.setAttribute('aria-label', text.projection);
 const gear = element<HTMLButtonElement>('gear'); gear.setAttribute('aria-label', text.settings);
 const settings = element<HTMLDialogElement>('settings');
 let viewArea: ViewArea | undefined;
+let fallbackGear = true;
+const restartGate = new RestartGate(), frameRateSync = new FrameRateSync(preferences.frameRate, restartGate);
 const displayGate = new DisplaySettingsGate(), displayDebounce = new DisplayDebounce();
 let currentDisplaySettings: DisplaySettings = { type: 'display-settings', resolution: 'auto', screenWidth: 200, videoCodec: 'auto' };
 function updateDisplaySettings(): void {
   element('display-settings').hidden = !displayGate.supported;
-  element<HTMLSelectElement>('resolution').value = currentDisplaySettings.resolution;
-  element<HTMLSelectElement>('screen-width').value = String(currentDisplaySettings.screenWidth);
-  element<HTMLSelectElement>('relay-video-codec').value = currentDisplaySettings.videoCodec;
+  element<HTMLInputElement>('resolution').value = currentDisplaySettings.resolution;
+  element<HTMLInputElement>('screen-width').value = String(currentDisplaySettings.screenWidth);
+  element<HTMLInputElement>('relay-video-codec').value = currentDisplaySettings.videoCodec;
+  syncChoices(settings); updatePictureValue();
 }
-for (const id of ['resolution', 'screen-width', 'relay-video-codec']) element<HTMLSelectElement>(id).onchange = () => {
-  const message = displayGate.message(element<HTMLSelectElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLSelectElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLSelectElement>('relay-video-codec').value as DisplaySettings['videoCodec']);
-  if (initialized && message) post(message);
-};
 let uiState: StatusState = 'connecting';
 const pluginSlot = new PluginSlot(() => {
   const box = canvas.getBoundingClientRect(), g = gear.getBoundingClientRect();
+  const style = getComputedStyle(element('controls')), gap = parseFloat(getComputedStyle(document.documentElement).fontSize) * .5;
   const r = videoRect(box.width, box.height, viewArea?.width ?? videoWidth, viewArea?.height ?? videoHeight, preferences.fit);
   return { locale: language, developer: preferences.developer, theme: 'dark', reducedMotion: reducedMotion(), viewport: { w: innerWidth, h: innerHeight },
     video: { x: box.x + r.x, y: box.y + r.y, w: r.width, h: r.height },
-    gear: { gap: parseFloat(getComputedStyle(document.documentElement).fontSize) * .5, x: g.x, y: g.y, w: g.width, h: g.height, faded: gear.classList.contains('faded'), side: g.x + g.width / 2 < innerWidth / 2 ? 'left' : 'right' }, channel: '/plugins/channel' };
-}, (code, detail) => { console.warn(code, detail ?? ''); }, wakeGear);
+    gear: gear.hidden ? settingsAnchor(innerWidth, parseFloat(style.right), parseFloat(style.top), gap) : { gap, x: g.x, y: g.y, w: g.width, h: g.height, faded: gear.classList.contains('faded'), side: 'right' }, channel: '/plugins/channel' };
+}, (code, detail) => { console.warn(code, detail ?? ''); }, wakeGear, syncGear);
 const pluginSwitch = element<HTMLInputElement>('plugins-enabled');
 pluginSwitch.checked = pluginSlot.preference;
-pluginSwitch.onchange = () => pluginSlot.enable(pluginSwitch.checked);
+function updatePlugins(): void {
+  element('plugins-value').textContent = text[pluginSwitch.checked ? 'enabled' : 'off'];
+  element('reset-plugin-positions').hidden = !pluginSwitch.checked;
+}
+pluginSwitch.onchange = () => { pluginSlot.enable(pluginSwitch.checked); updatePlugins(); };
+updatePlugins();
 
 let protocolState = 'Not connected';
 let playback: PlaybackUi = { state: 'connecting', protocol: protocolState, holding: false };
@@ -82,16 +90,16 @@ function syncSound(): void {
   soundHint.hidden = prompt !== 'pill';
   element('card-sound').hidden = prompt !== 'card';
   element('controls').classList.toggle('playing', uiState === 'playing');
-  placeGear();
+  pluginSlot.refresh();
 }
-const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const reducedMotion = () => document.documentElement.classList.contains('reduced-motion') || matchMedia('(prefers-reduced-motion: reduce)').matches;
 const motion = matchMedia('(prefers-reduced-motion: reduce)');
 const syncMotion = () => {
   applyReducedMotion(document.documentElement, motion.matches);
   if (motion.matches) { document.getAnimations().forEach(animation => animation.cancel()); element('headline').textContent = text[statusCard(uiState).headline]; }
 };
 motion.addEventListener('change', syncMotion); syncMotion();
-element('version').textContent = version;
+element('version').textContent = version; element('about-value').textContent = version;
 element('close-settings').setAttribute('aria-label', text.close);
 let cardTimer: ReturnType<typeof setTimeout>;
 let countdown: ReturnType<typeof setInterval> | undefined;
@@ -135,16 +143,21 @@ function setGearFaded(faded: boolean): void {
   gear.classList.toggle('faded', faded); pluginSlot.refresh();
 }
 function wakeGear(): void {
-  setGearFaded(false); clearTimeout(fadeTimer);
-  fadeTimer = setTimeout(() => { if (uiState === 'playing' && !settings.open) setGearFaded(true); }, 3000);
+  clearTimeout(fadeTimer); if (gear.hidden) return;
+  setGearFaded(false);
+  if (fallbackGear) fadeTimer = setTimeout(() => { if (uiState === 'playing' && !settings.open) setGearFaded(true); }, 3000);
+}
+function syncGear(): void {
+  gear.hidden = !fallbackGear && pluginSlot.cover === 'none'; wakeGear(); pluginSlot.refresh();
 }
 function showMic(state: TextKey): void {
   micState = state; const status = microphoneStatus(state);
   element('mic-state').textContent = text[status.label];
+  element('sound-value').textContent = text[status.label];
   element('mic-hint').textContent = text[status.hint];
   element('mic-retry').hidden = !status.retry || !requestedMic?.request;
 }
-/** The relay decides the codec (an Android relay always uses H.264), so the settings show what is in use. */
+/** The relay decides the codec; show the active format alongside its preference. */
 function showCodecInUse(codec: 'H264' | 'H265' | undefined): void {
   const line = element('video-codec-current');
   line.hidden = !codec;
@@ -153,19 +166,32 @@ function showCodecInUse(codec: 'H264' | 'H265' | undefined): void {
 function updateSettings(): void {
   for (const key of ['sound', 'developer'] as const) element<HTMLInputElement>(key).checked = preferences[key];
   debug.hidden = !preferences.developer;
-  element<HTMLSelectElement>('frame-rate').value = preferences.frameRate;
-  element<HTMLSelectElement>('playback').value = preferences.playback;
+  element<HTMLInputElement>('frame-rate').value = preferences.frameRate;
+  element<HTMLInputElement>('playback').value = preferences.playback;
   element('playback-hint').textContent = text[playbackHint(preferences.playback)];
   element('fit').setAttribute('aria-pressed', String(preferences.fit === 'fit'));
   element('fill').setAttribute('aria-pressed', String(preferences.fit === 'fill'));
+  element('quick-fill').setAttribute('aria-pressed', String(preferences.fit === 'fill'));
+  element('quick-sound').setAttribute('aria-pressed', String(preferences.sound));
+  element('fit-segments').style.setProperty('--index', preferences.fit === 'fill' ? '1' : '0');
+  syncChoices(settings); updatePictureValue();
 }
-const sheet = bindSheet(settings, gear, element('close-settings'), element('sheet-backdrop'), reducedMotion);
-element('reset-positions').onclick = () => {
-  finishGearDrag(true); preferences.gear = { side: 'right', y: 0 }; storage.write('gear', null);
-  pluginSlot.resetPositions(); placeGear(); wakeGear();
-};
-gear.onclick = event => { if (suppressGearClick && event.detail !== 0) { suppressGearClick = false; return; } if (pluginSlot.collapse()) { wakeGear(); return; } releaseAll(); sheet.open(); pluginSlot.visibility(false); wakeGear(); };
-settings.addEventListener('close', () => { pluginSlot.visibility(true); wakeGear(); });
+function updatePictureValue(): void {
+  element('picture-value').textContent = element(displayGate.supported ? 'resolution-value' : 'frame-rate-value').textContent;
+}
+function updatePictureSize(): void {
+  const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  const size = (w: number, h: number) => w && h ? `${w} × ${h}` : '—';
+  element('picture-size').textContent = `${text.picture} ${size(videoWidth, videoHeight)} · ${text.windowSize} ${size(Math.round(box.width * dpr), Math.round(box.height * dpr))}`;
+}
+const drawer = bindDrawer(settings, reducedMotion, open => {
+  if (open) releaseAll(); pluginSlot.visibility(!open); wakeGear();
+}, () => { pluginSlot.collapse(); });
+element('reset-plugin-positions').onclick = () => pluginSlot.resetPositions();
+gear.onclick = () => { if (pluginSlot.collapse()) { wakeGear(); return; } drawer.open(); };
+element('card-settings').onclick = () => drawer.open();
+for (const id of ['sound', 'fullscreen']) element(`quick-${id}`).onclick = () => element(id).click();
+element('quick-fill').onclick = () => element(preferences.fit === 'fill' ? 'fit' : 'fill').click();
 document.addEventListener('pointerdown', event => { if (event.target !== canvas) wakeGear(); }, { passive: true });
 const fullscreen = new FullscreenIntent(!!document.fullscreenEnabled, () => localStorage);
 const fullscreenHistory = new FullscreenExitHistory();
@@ -176,7 +202,11 @@ function fullscreenState(): void {
   document.querySelectorAll<SVGElement>('[data-fullscreen]').forEach(icon => icon.toggleAttribute('hidden', (icon.dataset.fullscreen === 'on') !== fullscreen.intent));
   element('fullscreen').setAttribute('aria-pressed', String(fullscreen.intent));
   element('fullscreen-hint').hidden = !fullscreen.pending;
-  element('fullscreen-state').textContent = text[fullscreen.state];
+  element('fullscreen-state').textContent = fullscreen.state === 'fullscreenUnavailable' ? text.fullscreenUnavailable : '';
+  for (const id of ['fullscreen', 'quick-fullscreen']) {
+    element<HTMLButtonElement>(id).disabled = !document.fullscreenEnabled;
+    element(id).setAttribute('aria-pressed', String(fullscreen.intent));
+  }
 }
 async function requestFullscreen(): Promise<void> {
   try {
@@ -232,23 +262,38 @@ for (const key of ['sound', 'developer'] as const) {
 for (const fit of ['fit', 'fill'] as const) element(fit).onclick = () => {
   releaseAll(); preferences.fit = fit; storage.save(preferences); updateSettings(); post({ type: 'fit', fit });
 };
-const restartGate = new RestartGate();
-element<HTMLSelectElement>('frame-rate').onchange = event => {
-  const choice = event.target as HTMLSelectElement;
-  const preference = frameRatePreference(choice.value);
-  if (preference === preferences.frameRate) return;
-  if (initialized && !restartGate.allow(performance.now())) { updateSettings(); return; }
-  preferences.frameRate = preference; storage.save(preferences); updateSettings();
-  if (!initialized) return;
-  hello = withFrameRate(hello, preference);
-  post({ type: 'hello', hello }); post({ type: 'restart' });
-  element('frame-rate-status').hidden = false;
-  choice.disabled = true;
-  setTimeout(() => { choice.disabled = false; }, 10_000);
+let frameRateTimer: ReturnType<typeof setTimeout> | undefined;
+function applying(value: boolean): void {
+  for (const id of ['frame-rate-status', 'frame-rate-choice-status']) element(id).hidden = !value;
+}
+function unlockFrameRate(): void {
+  clearTimeout(frameRateTimer); element<HTMLInputElement>('frame-rate').disabled = false;
+  applying(false); syncChoices(settings);
+}
+function lockFrameRate(): void {
+  clearTimeout(frameRateTimer); element<HTMLInputElement>('frame-rate').disabled = true; syncChoices(settings);
+  frameRateTimer = setTimeout(unlockFrameRate, 10_000);
+}
+for (const id of ['resolution', 'screen-width', 'relay-video-codec']) element<HTMLInputElement>(id).onchange = () => {
+  if (initialized && displayGate.supported && restartGate.allow(performance.now())) {
+    const message = displayGate.message(element<HTMLInputElement>('resolution').value as DisplaySettings['resolution'], Number(element<HTMLInputElement>('screen-width').value) as DisplaySettings['screenWidth'], element<HTMLInputElement>('relay-video-codec').value as DisplaySettings['videoCodec'], currentDisplaySettings.frameRate);
+    if (message) post(message);
+  }
+  updateDisplaySettings();
+};
+element<HTMLInputElement>('frame-rate').onchange = event => {
+  const choice = event.target as HTMLInputElement;
+  if (choice.disabled) { updateSettings(); return; }
+  const change = frameRateSync.change(frameRatePreference(choice.value), hello, initialized, displayGate.supported, performance.now());
+  preferences.frameRate = frameRateSync.preference; storage.save(preferences); updateSettings();
+  if (change.displaySettings) post(change.displaySettings);
+  if (change.hello) { hello = change.hello; post({ type: 'hello', hello }); }
+  if (change.restart) post({ type: 'restart' });
+  if (change.displaySettings || change.restart) { applying(true); lockFrameRate(); }
 };
 // The mode applies without a restart: the receiver and the relay's queue for this client follow the repeated hello.
-element<HTMLSelectElement>('playback').onchange = event => {
-  const mode = playbackMode((event.target as HTMLSelectElement).value);
+element<HTMLInputElement>('playback').onchange = event => {
+  const mode = playbackMode((event.target as HTMLInputElement).value);
   if (mode === preferences.playback) return;
   preferences.playback = mode; storage.save(preferences); updateSettings();
   if (!initialized) return;
@@ -278,53 +323,7 @@ function statistics(message: Extract<WorkerNotice, { type: 'stats' }>): void {
   for (const [label, value] of rows) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = label; dd.textContent = String(value); list.append(dt, dd); }
   element('statistics').replaceChildren(list);
 }
-const controls = element('controls');
-let suppressGearClick = false;
-let gearDrag: { id: number; x: number; y: number; origin: { x: number; y: number }; gesture: GearGesture } | undefined;
-function gearBounds(): GearBounds {
-  const style = getComputedStyle(controls);
-  return { width: innerWidth, height: innerHeight, size: gear.offsetHeight,
-    top: parseFloat(style.marginTop), right: parseFloat(style.marginRight), bottom: parseFloat(style.marginBottom), left: parseFloat(style.marginLeft) };
-}
-function placeGear(): void {
-  const bounds = gearBounds(), offset = gearOffset(preferences.gear, bounds);
-  controls.dataset.side = offset.x + bounds.size / 2 < innerWidth / 2 ? 'left' : 'right';
-  controls.style.transform = `translate(${offset.x - bounds.left}px, ${offset.y - bounds.top}px)`;
-  pluginSlot.refresh();
-}
-gear.addEventListener('pointerdown', event => {
-  if (event.button !== 0 || event.isPrimary === false || gearDrag) return;
-  suppressGearClick = false;
-  const box = gear.getBoundingClientRect(), gesture = new GearGesture();
-  gearDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, origin: { x: box.left, y: box.top }, gesture };
-  gear.setPointerCapture(event.pointerId); wakeGear();
-});
-gear.addEventListener('pointermove', event => {
-  const drag = gearDrag; if (!drag || drag.id !== event.pointerId) return;
-  const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
-  const wasActive = drag.gesture.active;
-  drag.gesture.move(dx, dy);
-  if (!wasActive && drag.gesture.active) { releaseAll(); controls.classList.add('dragging'); }
-  if (!drag.gesture.active) return;
-  event.preventDefault(); wakeGear();
-  preferences.gear = clampGear({ x: drag.origin.x + dx, y: drag.origin.y + dy }, gearBounds());
-  placeGear();
-});
-function finishGearDrag(cancelled = false): void {
-  const drag = gearDrag; if (!drag) return;
-  gearDrag = undefined;
-  if (drag.gesture.active) storage.write('gear', JSON.stringify(preferences.gear));
-  controls.classList.remove('dragging');
-  drag.gesture.finish(cancelled); suppressGearClick = drag.gesture.suppressed;
-  if (gear.hasPointerCapture(drag.id)) gear.releasePointerCapture(drag.id);
-  placeGear();
-}
-for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) gear.addEventListener(type, event => {
-  if ((event as PointerEvent).pointerId === gearDrag?.id) finishGearDrag(type !== 'pointerup');
-});
-gear.addEventListener('contextmenu', event => event.preventDefault());
-for (const type of ['resize', 'orientationchange']) window.addEventListener(type, () => { finishGearDrag(true); placeGear(); });
-placeGear();
+syncGear();
 setState(uiState); updateSettings(); showMic('idle');
 // Read permission state without prompting or starting a microphone stream.
 void navigator.permissions?.query({ name: 'microphone' as PermissionName }).then(permission => {
@@ -397,7 +396,7 @@ function safeArea(dpr: number) {
 function post(message: PageCommand): void { worker?.postMessage(message); }
 function releaseAll(): void { contacts.clear(); post({ type: 'touch', contacts: [] }); }
 function resize(): void {
-  finishGearDrag(); placeGear();
+  pluginSlot.refresh(); updatePictureSize();
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   const width = Math.max(1, Math.round(box.width * dpr)), height = Math.max(1, Math.round(box.height * dpr));
   if (worker) post({ type: 'resize', width, height }); else { canvas.width = width; canvas.height = height; }
@@ -480,7 +479,7 @@ async function start(): Promise<void> {
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
       displays: [{ screen: 0, ...stableScreen.measure(screen.width, screen.height, dpr), refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
-    hello = withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback);
+    hello = withPlayback(frameRateSync.hello(hello), preferences.playback);
     hello = { ...hello, displays: [fullscreen.display(measuredDisplay())] }; displayDebounce.seed(hello.displays[0]);
     resize();
     worker?.terminate(); void audioContext?.close(); audioContext = null; gain = null;
@@ -502,7 +501,7 @@ async function start(): Promise<void> {
         }
         case 'hold': updatePlayback(message); break;
         case 'ended': updatePlayback(message); break;
-        case 'playing': element('frame-rate-status').hidden = true; updatePlayback(message); wakeGear(); break;
+        case 'playing': if (!frameRateSync.synced) applying(false); updatePlayback(message); wakeGear(); break;
         case 'rejected': {
           protocolState = 'Pairing rejected (1008)'; const rejectedState = pairing.rejected(message.token); fragment.delete('k');
           const hash = fragment.toString();
@@ -512,10 +511,24 @@ async function start(): Promise<void> {
           codeInput.focus(); break;
         }
         case 'view-area': releaseAll(); viewArea = message; pluginSlot.refresh(); break;
-        case 'display-disconnected': viewArea = undefined; fullscreen.viewAreas = false; displayGate.welcome(); updateDisplaySettings(); break;
-        case 'display-settings': currentDisplaySettings = message; updateDisplaySettings(); break;
+        case 'host-ui': if (!fallbackGear) drawer.open(); break;
+        case 'display-disconnected': {
+          viewArea = undefined; fullscreen.viewAreas = false; displayGate.welcome();
+          const wasSynced = frameRateSync.synced; frameRateSync.disconnect();
+          const { frameRate: _, ...legacy } = currentDisplaySettings; currentDisplaySettings = legacy;
+          if (wasSynced && hello) { hello = frameRateSync.hello(hello); post({ type: 'hello', hello }); }
+          unlockFrameRate(); updateDisplaySettings(); break;
+        }
+        case 'display-settings':
+          unlockFrameRate(); currentDisplaySettings = message; frameRateSync.receive(message); updateDisplaySettings();
+          if (message.frameRate !== undefined) {
+            preferences.frameRate = frameRateSync.preference; storage.save(preferences); updateSettings();
+            if (hello.displays.some(display => display.frameRate !== undefined)) { hello = frameRateSync.hello(hello); post({ type: 'hello', hello }); }
+          }
+          break;
         case 'welcome':
           if (shouldReload(message.receiverBuild, () => sessionStorage)) { location.reload(); break; }
+          fallbackGear = fallbackSettings(message.features); syncGear();
           viewArea = undefined;
           fullscreen.viewAreas = message.features?.includes('view-area') === true;
           displayGate.welcome(message.features); updateDisplaySettings();
@@ -532,7 +545,7 @@ async function start(): Promise<void> {
           break;
         case 'format':
           releaseAll(); videoWidth = message.format?.width ?? 0; videoHeight = message.format?.height ?? 0;
-          showCodecInUse(message.format?.codec);
+          showCodecInUse(message.format?.codec); updatePictureSize();
           break;
         case 'stats': statistics(message); break;
       }
