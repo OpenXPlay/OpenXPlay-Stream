@@ -13,6 +13,9 @@ mod command;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod network;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod peers;
 #[cfg(unix)]
 mod signals;
 #[cfg(target_os = "linux")]
@@ -38,6 +41,22 @@ pub enum AddressType {
     Random = 2,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanMode {
+    #[default]
+    Window,
+    Continuous,
+}
+impl ScanMode {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "window" => Ok(Self::Window),
+            "continuous" => Ok(Self::Continuous),
+            _ => Err("--clink-scan must be window or continuous".into()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bluetooth_adapter: String,
@@ -48,6 +67,10 @@ pub struct Config {
     pub device_model: String,
     pub band: i32,
     pub scan_timeout: Duration,
+    pub scan_mode: ScanMode,
+    pub state_dir: Option<std::path::PathBuf>,
+    pub phone_mac: Option<String>,
+    pub trace_advertisements: bool,
     pub connect_timeout: Duration,
     pub handoff_timeout: Duration,
     pub join_timeout: Duration,
@@ -67,6 +90,10 @@ impl Default for Config {
             device_model: "Linux adapter".into(),
             band: 1,
             scan_timeout: Duration::from_secs(5),
+            scan_mode: ScanMode::Window,
+            state_dir: None,
+            phone_mac: None,
+            trace_advertisements: false,
             connect_timeout: Duration::from_secs(3),
             handoff_timeout: Duration::from_secs(15),
             join_timeout: Duration::from_secs(15),
@@ -106,6 +133,9 @@ impl Config {
         {
             return Err("invalid_link_configuration".into());
         }
+        if let Some(mac) = &self.phone_mac {
+            normalized_bluetooth_address(mac)?;
+        }
         oxp_clink::ble::phone_request(&self.phone("00:00:00:00:00:00".into()))?;
         Ok(())
     }
@@ -115,7 +145,11 @@ impl Config {
             name: self.device_name.clone(),
             model: self.device_model.clone(),
             band: self.band,
-            mac,
+            mac: self
+                .phone_mac
+                .as_ref()
+                .map(|value| value.to_ascii_lowercase())
+                .unwrap_or(mac),
             kind: 1001,
         }
     }
@@ -132,6 +166,10 @@ pub enum LinkEvent {
         reason: String,
     },
     Scanning,
+    Advertisement {
+        advertisement: Advertisement,
+        serial_same: bool,
+    },
     Connecting {
         address: String,
         name: String,
@@ -168,9 +206,21 @@ fn select_device(devices: Vec<Device>, address: Option<&str>) -> Result<Device> 
     }
 }
 
+pub fn normalized_bluetooth_address(mac: &str) -> Result<String> {
+    let bytes = mac_bytes(mac)?;
+    if bytes[0] & 1 != 0 || bytes == [0; 6] || bytes == [2, 0, 0, 0, 0, 0] {
+        return Err("invalid_phone_bluetooth_address".into());
+    }
+    Ok(mac.to_ascii_lowercase())
+}
+
 pub(crate) fn mac_bytes(mac: &str) -> Result<[u8; 6]> {
     let parts: Vec<_> = mac.split(':').collect();
-    if parts.len() != 6 || parts.iter().any(|s| s.len() != 2) {
+    if parts.len() != 6
+        || parts
+            .iter()
+            .any(|s| s.len() != 2 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
         return Err("invalid_bluetooth_address".into());
     }
     let mut out = [0; 6];
@@ -213,11 +263,7 @@ struct HandoffPolicy {
 }
 #[cfg(any(target_os = "linux", test))]
 fn device_key(device: &Device) -> String {
-    if device.advertisement.car_id.is_empty() {
-        format!("address:{}", device.address.to_ascii_lowercase())
-    } else {
-        format!("car:{}", device.advertisement.car_id)
-    }
+    peers::key(device)
 }
 #[cfg(any(target_os = "linux", test))]
 fn exchange<S: att::Socket>(
@@ -228,31 +274,41 @@ fn exchange<S: att::Socket>(
     mut connect: impl FnMut() -> Result<S>,
     diagnostic: &mut dyn FnMut(&str),
 ) -> Result<(S, oxp_clink::ble::HeadUnitReply)> {
-    let mut phone = config.phone(mac.into());
-    phone.kind = if policy.use_1002 { 1002 } else { 1001 };
-    let payload = oxp_clink::ble::phone_request(&phone)?;
-    diagnostic(if policy.use_1002 {
-        "request_type:1002"
-    } else {
-        "request_type:1001"
-    });
+    let mut rejected = false;
     loop {
-        let mut socket = connect()?;
-        socket.set_deadline(end);
-        match att::handoff(&mut socket, &payload, policy.legacy, end, diagnostic) {
-            Ok(reply) => return Ok((socket, reply)),
-            Err(e) => {
-                // A timed out ATT request remains outstanding. Drop the bearer before retrying.
-                drop(socket);
-                if !policy.legacy && e.to_string() == "bluetooth_cccd_timeout" {
-                    diagnostic("subscription_cccd_timeout_reconnect");
-                    policy.legacy = true;
-                    continue;
+        let mut phone = config.phone(mac.into());
+        phone.kind = if policy.use_1002 { 1002 } else { 1001 };
+        let payload = oxp_clink::ble::phone_request(&phone)?;
+        diagnostic(if policy.use_1002 {
+            "request_type:1002"
+        } else {
+            "request_type:1001"
+        });
+        loop {
+            let mut socket = connect()?;
+            socket.set_deadline(end);
+            match att::handoff(&mut socket, &payload, policy.legacy, end, diagnostic) {
+                Ok(reply) => return Ok((socket, reply)),
+                Err(e) => {
+                    // A timed out ATT request remains outstanding. Drop the bearer before retrying.
+                    drop(socket);
+                    if !policy.legacy && e.to_string() == "bluetooth_cccd_timeout" {
+                        diagnostic("subscription_cccd_timeout_reconnect");
+                        policy.legacy = true;
+                        continue;
+                    }
+                    if e.to_string() == "head_unit_rejected_request" {
+                        policy.use_1002 = !policy.use_1002;
+                        if config.state_dir.is_some()
+                            && !rejected
+                            && std::time::Instant::now() < end
+                        {
+                            rejected = true;
+                            break;
+                        }
+                    }
+                    return Err(e);
                 }
-                if e.to_string() == "head_unit_rejected_request" {
-                    policy.use_1002 = true;
-                }
-                return Err(e);
             }
         }
     }
@@ -317,11 +373,32 @@ impl LinuxClinkLink {
         self.notify(LinkEvent::Scanning);
         #[cfg(target_os = "linux")]
         {
-            bluez::scan(&self.config)
+            self.scan_selected(None)
         }
         #[cfg(not(target_os = "linux"))]
         {
             Err("linux_link_unavailable".into())
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn scan_selected(&self, address: Option<&str>) -> Result<Vec<Device>> {
+        let peers = self.load_peers()?;
+        bluez::scan(&self.config, address, &mut |device| {
+            self.notify(LinkEvent::Advertisement {
+                serial_same: peers.serial_same(device),
+                advertisement: device.advertisement.clone(),
+            });
+        })
+    }
+    #[cfg(target_os = "linux")]
+    fn load_peers(&self) -> Result<peers::Peers> {
+        if let Some(directory) = &self.config.state_dir {
+            peers::Peers::load(directory)
+        } else {
+            Ok(peers::memory()
+                .lock()
+                .map_err(|_| "link_lock_poisoned")?
+                .clone())
         }
     }
     /// The address must be seen in a new scan, even when explicitly selected.
@@ -347,29 +424,38 @@ impl LinuxClinkLink {
                 mac_bytes(address)?;
             }
             network::leave(&self.config)?;
-            let devices = self.scan()?;
+            self.notify(LinkEvent::Scanning);
+            let devices = self.scan_selected(address)?;
             let device = select_device(devices, address)?;
             self.notify(LinkEvent::Connecting {
                 address: device.address.clone(),
                 name: device.advertisement.name.clone(),
             });
             let local = bluez::adapter_address(&self.config)?;
-            let mac = std::fs::read_to_string(format!(
-                "/sys/class/net/{}/address",
-                self.config.wifi_interface
-            ))?;
+            let mac = if let Some(mac) = &self.config.phone_mac {
+                normalized_bluetooth_address(mac)?
+            } else {
+                std::fs::read_to_string(format!(
+                    "/sys/class/net/{}/address",
+                    self.config.wifi_interface
+                ))?
+            };
             mac_bytes(mac.trim())?;
-            static POLICIES: std::sync::OnceLock<
-                Mutex<std::collections::HashMap<String, HandoffPolicy>>,
-            > = std::sync::OnceLock::new();
-            let policies = POLICIES.get_or_init(Mutex::default);
+            let mut peers = if self.config.state_dir.is_some() {
+                self.load_peers()?
+            } else {
+                // The static map preserves the original behaviour without a state directory.
+                peers::Peers::default()
+            };
             let key = device_key(&device);
+            let policies = peers::memory();
             let mut policy = policies
                 .lock()
                 .map_err(|_| "link_lock_poisoned")?
-                .get(&key)
-                .copied()
-                .unwrap_or_default();
+                .known_choice(&key)
+                .unwrap_or_else(|| peers.choice(&key, self.config.state_dir.is_some()));
+            let persisted_legacy = self.config.state_dir.is_some()
+                && peers.known_choice(&key).is_some_and(|choice| choice.legacy);
             let end = Instant::now() + self.config.handoff_timeout.min(Duration::from_secs(15));
             let result = exchange(
                 &self.config,
@@ -408,10 +494,37 @@ impl LinuxClinkLink {
                     })
                 },
             );
-            policies
-                .lock()
-                .map_err(|_| "link_lock_poisoned")?
-                .insert(key, policy);
+            if result.is_err() && persisted_legacy {
+                policy.legacy = false;
+            }
+            if let Some(directory) = &self.config.state_dir {
+                if result.is_ok() || persisted_legacy {
+                    // A rejection toggles only the in-process retry, never the saved successful type.
+                    let saved = if result.is_ok() {
+                        policy
+                    } else {
+                        HandoffPolicy {
+                            legacy: false,
+                            ..peers.choice(&key, true)
+                        }
+                    };
+                    peers.remember(
+                        key.clone(),
+                        saved,
+                        result.as_ref().ok().map(|_| device.advertisement.serial),
+                    );
+                    if peers.save(directory).is_err() {
+                        self.notify(LinkEvent::Diagnostic {
+                            reason: "ble_peer_save_failed".into(),
+                        });
+                    }
+                }
+            }
+            policies.lock().map_err(|_| "link_lock_poisoned")?.remember(
+                key,
+                policy,
+                result.as_ref().ok().map(|_| device.advertisement.serial),
+            );
             let (socket, reply) = result?;
             // Join immediately: the head unit's network may expire quickly.
             let (network, addresses) = join_after_handoff(&self.config, socket, &reply, || {
@@ -697,12 +810,75 @@ mod tests {
         );
     }
     #[test]
+    fn phone_mac_matches_android_validation() {
+        assert_eq!(
+            normalized_bluetooth_address("AA:BB:CC:DD:EE:FF").unwrap(),
+            "aa:bb:cc:dd:ee:ff"
+        );
+        for value in [
+            "",
+            "00:00:00:00:00:00",
+            "02:00:00:00:00:00",
+            "FF:FF:FF:FF:FF:FF",
+            "01:12:34:56:78:90",
+            "aa:bb:cc:dd:ee",
+            "aa:bb:cc:dd:ee:gg",
+            "+2:00:00:00:00:01",
+            " aa:bb:cc:dd:ee:ff",
+        ] {
+            assert!(normalized_bluetooth_address(value).is_err(), "{value}");
+        }
+        let config = Config {
+            phone_mac: Some("12:34:56:78:9a:bc".into()),
+            ..Config::default()
+        };
+        config.validate().unwrap();
+        assert_eq!(
+            config.phone("00:11:22:33:44:55".into()).mac,
+            "12:34:56:78:9a:bc"
+        );
+    }
+    #[test]
+    fn persistent_default_rejection_retries_the_other_type_once() {
+        use att::tests::{discovery, discovery_with_service_changed, Fake, JSON};
+        let mut rejected = discovery_with_service_changed();
+        rejected.push_back(vec![0x1d, 22, 0, 1, 0, 255, 255]);
+        let mut accepted = discovery(512);
+        accepted.extend([vec![0x13], [vec![0x1d, 5, 0], JSON.to_vec()].concat()]);
+        let mut scripts = [rejected, accepted].into_iter();
+        let mut choice = HandoffPolicy {
+            legacy: true,
+            use_1002: true,
+        };
+        let config = Config {
+            state_dir: Some("unused".into()),
+            ..Config::default()
+        };
+        exchange(
+            &config,
+            "aa:bb:cc:dd:ee:ff",
+            &mut choice,
+            std::time::Instant::now() + Duration::from_secs(15),
+            || {
+                Ok(Fake {
+                    replies: scripts.next().unwrap(),
+                    sent: vec![],
+                    echo: false,
+                })
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(!choice.use_1002);
+    }
+    #[test]
     fn policy_key_prefers_car_identity_over_address() {
         let mut a = device("AA:BB:CC:DD:EE:01");
         let b = device("AA:BB:CC:DD:EE:02");
         assert_eq!(device_key(&a), device_key(&b));
         a.advertisement.car_id.clear();
-        assert_eq!(device_key(&a), "address:aa:bb:cc:dd:ee:01");
+        assert_eq!(device_key(&a).len(), 64);
+        assert_ne!(device_key(&a), device_key(&b));
     }
     #[test]
     fn band_guard_disconnects_ble_before_join_and_never_joins_unsupported_groups() {

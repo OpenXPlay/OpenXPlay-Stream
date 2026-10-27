@@ -13,6 +13,9 @@ fn strict_settings_area_and_optional_display_fields() {
         ("screenWidth", json!(200.5)),
         ("videoCodec", json!("H265")),
         ("videoCodec", Value::Null),
+        ("frameRate", json!("FPS_42")),
+        ("frameRate", json!(30)),
+        ("frameRate", Value::Null),
     ] {
         let mut v = settings.clone();
         v[key] = bad;
@@ -64,6 +67,7 @@ fn strict_settings_area_and_optional_display_fields() {
 #[test]
 fn reader_dispatches_the_new_types_instead_of_skipping_them() {
     let messages = [
+        json!({"type":"host-ui"}),
         json!({"type":"display-settings","resolution":"native","screenWidth":125,"videoCodec":"h265"}),
         json!({"type":"view-area","screen":2,"area":null}),
     ];
@@ -76,4 +80,42 @@ fn reader_dispatches_the_new_types_instead_of_skipping_them() {
         assert_eq!(read(&mut reader).unwrap(), Some(Message::Json(v)));
     }
     assert!(read(&mut reader).unwrap().is_none());
+}
+
+#[test]
+fn frame_rate_defaults_and_rendered_session_validation() {
+    let mut settings = json!({"type":"display-settings","resolution":"auto","screenWidth":200,"videoCodec":"auto"});
+    assert_eq!(
+        decode_display_settings(&settings).unwrap().frame_rate,
+        oxp_core::model::FrameRatePreference::Auto
+    );
+    for rate in [
+        "AUTO", "FPS_30", "FPS_35", "FPS_40", "FPS_45", "FPS_50", "FPS_55", "FPS_60",
+    ] {
+        settings["frameRate"] = json!(rate);
+        assert_eq!(
+            display_settings(&decode_display_settings(&settings).unwrap())["frameRate"],
+            rate
+        );
+    }
+    let mut stats: Value = serde_json::from_str(include_str!(
+        "../../../spec/vectors/wire/stats-session.json"
+    ))
+    .unwrap();
+    for session in [json!("9223372036854775807"), json!(i64::MIN), json!(0)] {
+        stats["session"] = session;
+        let message = Message::json(stats.clone()).unwrap();
+        assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
+    }
+    for session in [
+        json!(null),
+        json!(true),
+        json!("01"),
+        json!(1.5),
+        json!("9223372036854775808"),
+    ] {
+        stats["session"] = session;
+        assert!(validate_json(&stats).is_err());
+    }
+    assert!(validate_json(&json!({"type":"host-ui","extra":true})).is_err());
 }

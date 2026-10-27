@@ -218,6 +218,7 @@ mod tests {
             origin: origin.clone(),
         });
         sink.stats(OutputStats {
+            session: None,
             origin,
             screen: 0,
             decode_time_us: Some(3200),

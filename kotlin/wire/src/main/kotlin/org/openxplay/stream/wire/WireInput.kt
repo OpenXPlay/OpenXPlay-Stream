@@ -43,6 +43,7 @@ public class WireInput(
                 receive@ { message, _ ->
                     val sink = targetSink ?: return@receive
                     when (message) {
+                        WireMessage.HostUi -> sink.hostUiRequested()
                         is WireMessage.Context -> sink.context(message.update)
                         is WireMessage.Unknown -> Unit
                         is WireMessage.InputCapabilitiesMessage -> {

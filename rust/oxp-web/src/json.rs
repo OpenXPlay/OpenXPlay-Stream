@@ -69,6 +69,7 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
             .contains(&t),
             Direction::Relay => [
                 "welcome",
+                "host-ui",
                 "display-settings",
                 "view-area",
                 "session",
@@ -168,7 +169,11 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
             oxp_wire::validate_json(&json!({"type":"session","session":v["session"]}))?;
         }
         "display-settings" => {
-            fields(v, &["type", "resolution", "screenWidth"], &["videoCodec"])?;
+            fields(
+                v,
+                &["type", "resolution", "screenWidth"],
+                &["videoCodec", "frameRate"],
+            )?;
             let mut complete = v.clone();
             if complete.get("videoCodec").is_none() {
                 check(!matches!(direction, Some(Direction::Relay)))?;
@@ -238,6 +243,7 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                 .filter(|(k, _)| {
                     [
                         "type",
+                        "session",
                         "screen",
                         "decodeMs",
                         "decodeQueue",
@@ -268,7 +274,7 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                     "clockOffsetUs",
                     "rttUs",
                 ],
-                &["audioBufferedMs", "audioUnderruns"],
+                &["audioBufferedMs", "audioUnderruns", "session"],
             )?;
             for key in [
                 "wsBytesPerSecond",
@@ -296,6 +302,9 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                     check(num(value, false))?;
                 }
             }
+            if let Some(session) = v.get("session") {
+                oxp_wire::decode_session_id(session)?;
+            }
             check(int(&v["screen"], 255))?;
             for k in ["decodeQueue", "dropped", "rendered"] {
                 check(int(&v[k], 9007199254740991))?;
@@ -313,9 +322,8 @@ pub fn validate(v: &Value, direction: Option<Direction>) -> Result<()> {
                 check(int(a, 9007199254740991))?;
             }
         }
-        "session" | "video-format" | "audio-format" | "mic" | "keyframe" | "restart" | "error" => {
-            oxp_wire::validate_json(v)?
-        }
+        "host-ui" | "session" | "video-format" | "audio-format" | "mic" | "keyframe"
+        | "restart" | "error" => oxp_wire::validate_json(v)?,
         _ => return Err("Unknown Web message".into()),
     }
     Ok(())

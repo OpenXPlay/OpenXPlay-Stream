@@ -32,6 +32,23 @@ class StreamWireCodecTest {
                 Json.parseToJsonElement(StreamWireCodec.encode(message).toString(Charsets.UTF_8)))
         }
     }
+    @Test fun linuxBridgeVectorsRoundTrip() {
+        listOf("host-ui", "display-settings-frame-rate-auto", "display-settings-frame-rate-fps-30", "display-settings-frame-rate-fps-35", "display-settings-frame-rate-fps-40", "display-settings-frame-rate-fps-45", "display-settings-frame-rate-fps-50", "display-settings-frame-rate-fps-55", "display-settings-frame-rate-fps-60", "stats-session", "session-startup-connecting", "session-startup-authenticating", "session-startup-joining-network", "session-startup-waiting-media", "session-startup-failed", "session-startup-disconnected").forEach { name ->
+            val text = resource("wire/$name.json")
+            val message = StreamWireCodec.decode(text.toByteArray())
+            assertEquals(Json.parseToJsonElement(text),
+                Json.parseToJsonElement(StreamWireCodec.encode(message).toString(Charsets.UTF_8)))
+        }
+        val stats = Json.parseToJsonElement(resource("wire/stats-session.json")).jsonObject
+        val numeric = JsonObject(stats + ("session" to JsonPrimitive(42)))
+        assertEquals(SessionId(42), (StreamWireCodec.decode(numeric.toString().toByteArray()) as WireMessage.Stats).value.session)
+        for (invalid in listOf(JsonNull, JsonPrimitive("01"), JsonPrimitive(1.5), JsonPrimitive("9223372036854775808"))) {
+            assertFailsWith<WireFormatException> {
+                StreamWireCodec.decode(JsonObject(stats + ("session" to invalid)).toString().toByteArray())
+            }
+        }
+    }
+
     @Test fun settingsAreasAndViewportAreStrict() {
         val settings = Json.parseToJsonElement(resource("wire/display-settings-auto.json")).jsonObject
         for ((key, bad) in listOf("resolution" to JsonPrimitive("bad"), "screenWidth" to JsonPrimitive(150),
