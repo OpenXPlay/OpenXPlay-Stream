@@ -62,6 +62,7 @@ public class WireOutput(
         }
     }
     override fun wantsContext(): Boolean = contextEnabled
+    override fun onHostUiRequested() { current()?.enqueue(WireMessage.HostUi) }
     override fun onContext(update: ContextUpdate) { current()?.context(update) }
     override fun onSession(state: SessionState, config: SessionConfig) { current()?.session(state) }
     override fun onVideoFormat(screen: ScreenId, format: VideoFormat?) { current()?.format(screen, format) }

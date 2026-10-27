@@ -391,6 +391,7 @@ dependencies = [
  "aes-gcm",
  "base64",
  "hmac",
+ "libc",
  "oxp-core",
  "oxp-media",
  "p256",
@@ -415,6 +416,7 @@ dependencies = [
  "libc",
  "oxp-clink",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

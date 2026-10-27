@@ -49,6 +49,7 @@ pub struct RelayInfo {
 pub type Diagnostics = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 #[derive(Clone)]
 pub struct WebOutputConfig {
+    pub host_ui: bool,
     pub relay: Option<RelayInfo>,
     pub diagnostics: Option<Diagnostics>,
     pub plugins: Option<PluginsConfig>,
@@ -72,6 +73,7 @@ pub struct WebOutputConfig {
 impl WebOutputConfig {
     pub fn new(bind: SocketAddr, static_root: PathBuf, pairing: Pairing, tls: Tls) -> Self {
         Self {
+            host_ui: false,
             relay: None,
             diagnostics: None,
             plugins: None,
@@ -237,6 +239,7 @@ struct State {
     audio_received: u64,
     audio_reported_at: Instant,
     last_restart: Option<Instant>,
+    last_touch: Option<(String, Instant)>,
     receiver_build: Option<String>,
     display_settings: Option<DisplaySettings>,
     view_areas: BTreeMap<u32, Option<ViewArea>>,
@@ -290,6 +293,7 @@ impl WebOutput {
                 audio_received: 0,
                 audio_reported_at: Instant::now(),
                 last_restart: None,
+                last_touch: None,
                 receiver_build,
                 display_settings: None,
                 view_areas: BTreeMap::new(),
@@ -317,8 +321,36 @@ impl WebOutput {
             None => Err("Web bind timed out".into()),
         }
     }
+    fn request_host_ui(&self, now: Instant) {
+        if !self.config.host_ui {
+            return;
+        }
+        let mut s = self.state.lock().unwrap();
+        let target = s
+            .last_touch
+            .as_ref()
+            .filter(|(id, at)| {
+                now.saturating_duration_since(*at) <= Duration::from_secs(5)
+                    && s.clients
+                        .get(id)
+                        .is_some_and(|c| c.hello.is_some() && !c.closing)
+            })
+            .map(|(id, _)| id.clone());
+        for (id, c) in s
+            .clients
+            .iter_mut()
+            .filter(|(_, c)| c.hello.is_some() && !c.closing)
+        {
+            if target.as_ref().is_none_or(|target| target == id) {
+                c.json(json!({"type":"host-ui"}));
+            }
+        }
+    }
 }
 impl ProjectionOutput for WebOutput {
+    fn on_host_ui_requested(&self) {
+        self.request_host_ui(Instant::now());
+    }
     fn on_display_settings(&self, settings: DisplaySettings) {
         if settings.validate().is_err() {
             return;
@@ -328,10 +360,14 @@ impl ProjectionOutput for WebOutput {
         s.display_settings = Some(settings.clone());
         if first {
             announce_features(&self.config, &mut s);
-            return;
+        } else {
+            for c in s.clients.values_mut().filter(|c| c.hello.is_some()) {
+                c.json(oxp_wire::display_settings(&settings));
+            }
         }
-        for c in s.clients.values_mut().filter(|c| c.hello.is_some()) {
-            c.json(oxp_wire::display_settings(&settings));
+        drop(s);
+        if first {
+            report_caps(&self.state);
         }
     }
     fn on_view_area(&self, screen: u32, area: Option<ViewArea>) {
@@ -942,6 +978,7 @@ fn client_loop<S: Read + Write>(
                         let c = s.clients.get_mut(id).ok_or("Client closed")?;
                         if header.kind == Kind::Touch {
                             c.touched.insert(header.stream as u32);
+                            s.last_touch = Some((id.into(), Instant::now()));
                         }
                         s.host.clone()
                     };
@@ -1261,6 +1298,16 @@ fn handle(
                                         .video_codec
                                 );
                             }
+                            if complete.get("frameRate").is_none() {
+                                complete["frameRate"] = json!(state
+                                    .lock()
+                                    .unwrap()
+                                    .display_settings
+                                    .as_ref()
+                                    .unwrap()
+                                    .frame_rate
+                                    .wire_name());
+                            }
                             oxp_wire::decode_display_settings(&complete)?
                         },
                         origin,
@@ -1351,6 +1398,10 @@ fn handle(
             }
             if let Some(h) = host {
                 h.stats(OutputStats {
+                    session: v
+                        .get("session")
+                        .map(oxp_wire::decode_session_id)
+                        .transpose()?,
                     origin,
                     screen: integer(&v["screen"]) as u32,
                     decode_time_us: v["decodeMs"].as_f64().map(|n| (n * 1000.0) as i64),
@@ -1464,15 +1515,19 @@ fn report_caps(state: &Arc<Mutex<State>>) {
                             .round()
                             .min(i32::MAX as f64) as u32,
                         refresh_hz: d["refreshHz"].as_f64().unwrap(),
-                        frame_rate: match d["frameRate"].as_str() {
-                            Some("FPS_30") => FrameRatePreference::Fps30,
-                            Some("FPS_35") => FrameRatePreference::Fps35,
-                            Some("FPS_40") => FrameRatePreference::Fps40,
-                            Some("FPS_45") => FrameRatePreference::Fps45,
-                            Some("FPS_50") => FrameRatePreference::Fps50,
-                            Some("FPS_55") => FrameRatePreference::Fps55,
-                            Some("FPS_60") => FrameRatePreference::Fps60,
-                            _ => FrameRatePreference::Auto,
+                        frame_rate: if s.display_settings.is_some() {
+                            FrameRatePreference::Auto
+                        } else {
+                            match d["frameRate"].as_str() {
+                                Some("FPS_30") => FrameRatePreference::Fps30,
+                                Some("FPS_35") => FrameRatePreference::Fps35,
+                                Some("FPS_40") => FrameRatePreference::Fps40,
+                                Some("FPS_45") => FrameRatePreference::Fps45,
+                                Some("FPS_50") => FrameRatePreference::Fps50,
+                                Some("FPS_55") => FrameRatePreference::Fps55,
+                                Some("FPS_60") => FrameRatePreference::Fps60,
+                                _ => FrameRatePreference::Auto,
+                            }
                         },
                         sustained_fps: d["sustainedFps"].as_f64(),
                         safe_area: SafeArea {
@@ -1554,6 +1609,10 @@ fn welcome_value(
 ) -> Value {
     let mut value = json!({"type":"welcome","version":0,"clientId":id,"session":session,
         "sourceUrl":config.source_url,"attribution":"Powered by OpenXPlay.","projectUrl":json::PROJECT_URL});
+    let mut features = features.to_vec();
+    if config.host_ui {
+        features.push("host-ui");
+    }
     if !features.is_empty() {
         value["features"] = json!(features);
     }

@@ -36,7 +36,7 @@ impl Args {
         while let Some(k) = a.next() {
             if k == "--help"
                 || k == "--stdio"
-                || (["--no-tls", "--pairing", "--control-stdin"].contains(&k.as_str())
+                || (["--no-tls", "--pairing", "--control-stdin", "--host-ui"].contains(&k.as_str())
                     && allowed.contains(&k.as_str()))
             {
                 if map.insert(k, "true".into()).is_some() {
@@ -207,6 +207,7 @@ impl Consumer {
         }
         match m {
             Message::Json(v) => match v["type"].as_str().unwrap_or("") {
+                "host-ui" => output.host_ui_requested(),
                 "display-settings" => {
                     output.display_settings(oxp_wire::decode_display_settings(&v)?)
                 }

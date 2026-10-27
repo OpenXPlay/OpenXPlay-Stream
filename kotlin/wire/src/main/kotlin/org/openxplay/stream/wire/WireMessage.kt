@@ -14,7 +14,7 @@ public sealed interface WireMessage {
     public data class Hello(public val role: WireRole, public val name: String, public val client: String,
         public val version: Int = 0) : WireMessage
     public data class DisplaySettings(public val resolution: String, public val screenWidth: Int,
-        public val videoCodec: String) : WireMessage
+        public val videoCodec: String, public val frameRate: FrameRatePreference? = null) : WireMessage
     public data class ViewAreaMessage(public val screen: ScreenId, public val area: WireViewArea?) : WireMessage
     public data class Context(public val update: ContextUpdate) : WireMessage
     public data class Unknown(public val json: kotlinx.serialization.json.JsonObject) : WireMessage
@@ -25,6 +25,7 @@ public sealed interface WireMessage {
     public data class Capabilities(public val value: OutputCapabilities) : WireMessage
     public data class InputCapabilitiesMessage(public val value: InputCapabilities) : WireMessage
     public data class Client(public val client: String) : WireMessage
+    public data object HostUi : WireMessage
     public data object Restart : WireMessage
     public data class Keyframe(public val screen: ScreenId) : WireMessage
     /** Origin is supplied by the connection on decode. */

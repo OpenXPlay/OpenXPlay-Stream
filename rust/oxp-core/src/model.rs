@@ -16,6 +16,12 @@ pub enum SessionPhase {
     Reconnecting,
     Ended,
 }
+/// Session identifiers are signed 64-bit values on every binding.
+pub type SessionId = i64;
+
+/// Startup progress reasons: startup/connecting, startup/authenticating,
+/// startup/joining-network, startup/waiting-media, startup/failed, startup/disconnected.
+/// Bindings preserve reasons verbatim so receivers can present this progress.
 #[derive(Clone, Debug)]
 pub struct SessionState {
     pub id: i64,
@@ -308,6 +314,8 @@ impl Default for OutputCapabilities {
 }
 #[derive(Clone, Debug)]
 pub struct OutputStats {
+    /// Session whose frame was rendered; absent without playback confirmation.
+    pub session: Option<SessionId>,
     pub origin: Origin,
     pub screen: u32,
     pub decode_time_us: Option<i64>,
@@ -409,11 +417,30 @@ pub struct Viewport {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplaySettings {
+    pub frame_rate: FrameRatePreference,
     pub resolution: String,
     pub screen_width: u32,
     pub video_codec: String,
 }
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            resolution: "auto".into(),
+            screen_width: 200,
+            video_codec: "auto".into(),
+            frame_rate: FrameRatePreference::Auto,
+        }
+    }
+}
 impl DisplaySettings {
+    pub fn new(resolution: String, screen_width: u32, video_codec: String) -> Self {
+        Self {
+            resolution,
+            screen_width,
+            video_codec,
+            ..Self::default()
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         require(
             ["auto", "native", "1080p", "720p", "screen"].contains(&self.resolution.as_str())

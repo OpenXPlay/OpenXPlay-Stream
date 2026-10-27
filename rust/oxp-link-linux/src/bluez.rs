@@ -4,12 +4,12 @@
 
 use crate::{
     command::{run, Process},
-    Config, Device,
+    Config, Device, ScanMode,
 };
 use oxp_clink::{ble, Result};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     io::{BufRead, BufReader, Write},
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -196,7 +196,11 @@ fn next(rx: &Receiver<Result<Value>>, wait: Duration) -> Result<Option<Value>> {
         Err(_) => Err("bluetooth_monitor_closed".into()),
     }
 }
-pub(crate) fn scan(c: &Config) -> Result<Vec<Device>> {
+pub(crate) fn scan(
+    c: &Config,
+    address: Option<&str>,
+    advertisement: &mut dyn FnMut(&Device),
+) -> Result<Vec<Device>> {
     let setup = Instant::now() + c.command_timeout;
     let mut monitor = Process(
         Command::new("busctl")
@@ -262,7 +266,7 @@ pub(crate) fn scan(c: &Config) -> Result<Vec<Device>> {
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let mut window = Window::new(&c.bluetooth_adapter, snapshot);
+    let window = Window::new(&c.bluetooth_adapter, snapshot);
     // Discard events preceding our snapshot/start boundary; cached RSSI cannot qualify.
     while rx.try_recv().is_ok() {}
     // BlueZ discovery/filter ownership follows the D-Bus client. Keep bluetoothctl
@@ -307,45 +311,144 @@ pub(crate) fn scan(c: &Config) -> Result<Vec<Device>> {
         .ok_or("bluetooth_control_unavailable")?;
     input.write_all(script.as_bytes())?;
     input.flush()?;
-    let start_deadline = Instant::now() + c.command_timeout;
+    wait_started(&started_rx, c.command_timeout)?;
+    let mut discovery = NativeDiscovery {
+        process: discovery,
+        rx,
+        started_rx,
+        overflow,
+        start: Instant::now(),
+        command_timeout: c.command_timeout,
+    };
+    scan_discovery(c, address, window, &mut discovery, advertisement)
+}
+fn wait_started(
+    rx: &Receiver<std::result::Result<(), &'static str>>,
+    timeout: Duration,
+) -> Result<()> {
+    let end = Instant::now() + timeout;
     loop {
         #[cfg(target_os = "linux")]
         crate::signals::check()?;
-        match started_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(result) => {
-                result?;
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < start_deadline => {}
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => return result.map_err(Into::into),
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < end => {}
             Err(_) => return Err("bluetooth_scan_start_timeout".into()),
         }
     }
-    let end = Instant::now() + c.scan_timeout;
-    while Instant::now() < end {
+}
+trait Discovery {
+    fn elapsed(&self) -> Duration;
+    fn receive(&mut self, wait: Duration) -> Result<Option<Value>>;
+    fn restart(&mut self) -> Result<()>;
+    fn check(&mut self) -> Result<()>;
+}
+struct NativeDiscovery {
+    process: Process,
+    rx: Receiver<Result<Value>>,
+    started_rx: Receiver<std::result::Result<(), &'static str>>,
+    overflow: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    start: Instant,
+    command_timeout: Duration,
+}
+impl Discovery for NativeDiscovery {
+    fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
+    fn receive(&mut self, wait: Duration) -> Result<Option<Value>> {
+        next(&self.rx, wait)
+    }
+    fn restart(&mut self) -> Result<()> {
+        while self.started_rx.try_recv().is_ok() {}
+        let input = self
+            .process
+            .0
+            .stdin
+            .as_mut()
+            .ok_or("bluetooth_control_unavailable")?;
+        input.write_all(b"scan off\nscan on\n")?;
+        input.flush()?;
+        wait_started(&self.started_rx, self.command_timeout)
+    }
+    fn check(&mut self) -> Result<()> {
         #[cfg(target_os = "linux")]
         crate::signals::check()?;
-        if overflow.load(std::sync::atomic::Ordering::Acquire) {
+        if self.overflow.load(std::sync::atomic::Ordering::Acquire) {
             return Err("bluetooth_scan_overflow".into());
         }
-        if let Some(v) = next(
-            &rx,
-            end.saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(200)),
-        )? {
-            window.update(&v)?;
+        if self.process.0.try_wait()?.is_some() {
+            return Err("bluetooth_scan_failed".into());
+        }
+        match self.started_rx.try_recv() {
+            Ok(Err(reason)) => Err(reason.into()),
+            Err(TryRecvError::Disconnected) => Err("bluetooth_scan_failed".into()),
+            _ => Ok(()),
         }
     }
-    // Include queued removals when the deadline wins.
+}
+fn scan_discovery(
+    c: &Config,
+    address: Option<&str>,
+    mut window: Window,
+    discovery: &mut dyn Discovery,
+    advertisement: &mut dyn FnMut(&Device),
+) -> Result<Vec<Device>> {
+    let mut renewal = Duration::from_secs(600);
+    let mut seen = HashSet::new();
     loop {
-        match rx.try_recv() {
-            Ok(v) => window.update(&v?)?,
-            Err(TryRecvError::Empty) => break,
-            Err(_) => return Err("bluetooth_monitor_closed".into()),
+        discovery.check()?;
+        let now = discovery.elapsed();
+        if c.scan_mode == ScanMode::Window && now >= c.scan_timeout {
+            break;
+        }
+        if c.scan_mode == ScanMode::Continuous && now >= renewal {
+            discovery.restart()?;
+            renewal = discovery.elapsed() + Duration::from_secs(600);
+        }
+        let wait = if c.scan_mode == ScanMode::Window {
+            c.scan_timeout.saturating_sub(now)
+        } else {
+            renewal.saturating_sub(discovery.elapsed())
+        }
+        .min(Duration::from_millis(200));
+        if let Some(value) = discovery.receive(wait)? {
+            window.update(&value)?;
+            let devices = window.result();
+            for device in &devices {
+                if c.trace_advertisements
+                    && seen.insert((
+                        device.advertisement.car_id.clone(),
+                        device.advertisement.serial,
+                    ))
+                {
+                    advertisement(device);
+                }
+            }
+            if c.scan_mode == ScanMode::Continuous {
+                if let Some(device) = devices
+                    .into_iter()
+                    .find(|d| address.is_none_or(|a| a.eq_ignore_ascii_case(&d.address)))
+                {
+                    return Ok(vec![device]);
+                }
+            }
         }
     }
-    if overflow.load(std::sync::atomic::Ordering::Acquire) {
-        return Err("bluetooth_scan_overflow".into());
+    // Include queued removals when the window deadline wins.
+    while let Some(value) = discovery.receive(Duration::ZERO)? {
+        window.update(&value)?;
+        for device in window.result() {
+            if c.trace_advertisements
+                && seen.insert((
+                    device.advertisement.car_id.clone(),
+                    device.advertisement.serial,
+                ))
+            {
+                advertisement(&device);
+            }
+        }
     }
+    discovery.check()?;
     Ok(window.result())
 }
 pub(crate) fn adapter_address(c: &Config) -> Result<String> {
@@ -396,6 +499,122 @@ mod tests {
         assert_eq!(w.result().len(), 1);
         w.update(&json!({"type":"signal","member":"InterfacesRemoved","payload":{"type":"oas","data":[path,[DEVICE]]}})).unwrap();
         assert!(w.result().is_empty());
+    }
+    struct FakeDiscovery {
+        now: Duration,
+        events: std::collections::VecDeque<(Duration, Option<Value>)>,
+        restarts: usize,
+        error: Option<&'static str>,
+    }
+    impl Discovery for FakeDiscovery {
+        fn elapsed(&self) -> Duration {
+            self.now
+        }
+        fn receive(&mut self, _: Duration) -> Result<Option<Value>> {
+            if let Some((after, value)) = self.events.pop_front() {
+                self.now += after;
+                Ok(value)
+            } else {
+                Ok(None)
+            }
+        }
+        fn restart(&mut self) -> Result<()> {
+            self.restarts += 1;
+            Ok(())
+        }
+        fn check(&mut self) -> Result<()> {
+            if let Some(reason) = self.error {
+                Err(reason.into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    fn signal(serial: u8) -> Value {
+        let identity = [1, 9, serial, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 52, 255];
+        json!({"type":"signal","member":"InterfacesAdded","payload":{"type":"oa{sa{sv}}","data":["/org/bluez/hci0/dev_unit",{DEVICE:{"Address":"aa:bb:cc:dd:ee:01","UUIDs":[ble::ADVERTISEMENT_SERVICE],"ServiceData":{ble::IDENTITY_SERVICE:identity}}}]}})
+    }
+    #[test]
+    fn continuous_waits_renews_and_first_match_wins() {
+        let mut discovery = FakeDiscovery {
+            now: Duration::ZERO,
+            events: [
+                (Duration::from_secs(600), None),
+                (Duration::from_secs(600), None),
+                (Duration::from_secs(1), Some(signal(1))),
+                (Duration::ZERO, Some(signal(2))),
+            ]
+            .into(),
+            restarts: 0,
+            error: None,
+        };
+        let c = Config {
+            scan_mode: ScanMode::Continuous,
+            trace_advertisements: true,
+            ..Config::default()
+        };
+        let mut traces = vec![];
+        let devices = scan_discovery(
+            &c,
+            None,
+            Window::new("hci0", json!({})),
+            &mut discovery,
+            &mut |d| traces.push(d.advertisement.serial),
+        )
+        .unwrap();
+        assert_eq!(discovery.restarts, 2);
+        assert_eq!(devices[0].advertisement.serial, 1);
+        assert_eq!(traces, [1]);
+        assert_eq!(discovery.events.len(), 1);
+    }
+    #[test]
+    fn scan_trace_deduplicates_per_car_serial_and_window_still_expires() {
+        let mut discovery = FakeDiscovery {
+            now: Duration::ZERO,
+            events: [
+                (Duration::ZERO, Some(signal(1))),
+                (Duration::ZERO, Some(signal(1))),
+                (Duration::ZERO, Some(signal(2))),
+                (Duration::from_secs(5), None),
+            ]
+            .into(),
+            restarts: 0,
+            error: None,
+        };
+        let mut traces = vec![];
+        let c = Config {
+            trace_advertisements: true,
+            ..Config::default()
+        };
+        scan_discovery(
+            &c,
+            None,
+            Window::new("hci0", json!({})),
+            &mut discovery,
+            &mut |d| traces.push(d.advertisement.serial),
+        )
+        .unwrap();
+        assert_eq!(traces, [1, 2]);
+        assert_eq!(discovery.restarts, 0);
+        for error in ["shutdown_requested", "bluetooth_scan_failed"] {
+            discovery.error = Some(error);
+            let c = Config {
+                scan_mode: ScanMode::Continuous,
+                ..Config::default()
+            };
+            assert_eq!(
+                scan_discovery(
+                    &c,
+                    None,
+                    Window::new("hci0", json!({})),
+                    &mut discovery,
+                    &mut |_| {}
+                )
+                .unwrap_err()
+                .to_string(),
+                error
+            );
+        }
     }
     #[test]
     fn busctl_variants() {

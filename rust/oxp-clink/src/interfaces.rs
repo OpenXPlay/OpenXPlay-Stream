@@ -180,8 +180,11 @@ impl SocketProvider for StdSockets {
         port: u16,
         timeout: Duration,
     ) -> Result<TcpStream> {
+        #[cfg(unix)]
+        let socket = crate::bound_socket::connect(local, peer, port, timeout)?;
+        #[cfg(not(unix))]
         let socket = TcpStream::connect_timeout(&SocketAddrV4::new(peer, port).into(), timeout)?;
-        // std cannot bind an outbound TCP socket; reject an incorrectly routed connection.
+        // Retain the misroute refusal even after binding the outbound socket.
         require(
             socket.local_addr()?.ip() == std::net::IpAddr::V4(local),
             "local_address_route_mismatch",

@@ -60,6 +60,41 @@ class WireIntegrationTest {
         } finally { input.stop(); output.close() }
     }
 
+    @Test fun hostUiCrossesTheInputBindingOnceWithoutReplay() {
+        val consumerInput = PipedInputStream(65536)
+        val producerOutput = PipedOutputStream(consumerInput)
+        val producerInput = PipedInputStream(65536)
+        val consumerOutput = PipedOutputStream(producerInput)
+        val errors = CopyOnWriteArrayList<Throwable>()
+        val requests = CopyOnWriteArrayList<Unit>()
+        val ready = CopyOnWriteArrayList<OutputCapabilities>()
+        val input = WireInput(WireTransport.streams(consumerInput, consumerOutput), name = "consumer", onError = { errors.add(it) })
+        val output = WireOutput(WireTransport.streams(producerInput, producerOutput), id = "consumer", onError = { errors.add(it) })
+        val sink = object : InputSink {
+            override fun hostUiRequested() { requests.add(Unit) }
+            override fun session(state: SessionState) = Unit
+            override fun videoFormat(screen: ScreenId, format: VideoFormat?) = Unit
+            override fun videoFrame(frame: VideoFrame) = Unit
+            override fun audioFormat(stream: Int, format: AudioFormat?) = Unit
+            override fun audioPacket(packet: AudioPacket) = Unit
+            override fun microphone(stream: Int, request: MicRequest?) = Unit
+        }
+        try {
+            output.onHostUiRequested()
+            input.start(SessionConfig(emptyMap()), sink)
+            output.open(object : OutputHost {
+                override fun capabilities(value: OutputCapabilities) { ready.add(value) }
+                override fun control(event: ControlEvent) = Unit
+                override fun stats(stats: OutputStats) = Unit
+            })
+            eventually { ready.isNotEmpty() }
+            assertTrue(requests.isEmpty())
+            output.onHostUiRequested(); output.onHostUiRequested()
+            eventually { requests.size == 2 }
+            assertTrue(errors.isEmpty(), errors.joinToString())
+        } finally { input.stop(); output.close() }
+    }
+
     @Test fun producerCapabilityDeclarationsUpdateHubControlAcceptance() {
         val consumerInput = PipedInputStream(65536)
         val producerOutput = PipedOutputStream(consumerInput)

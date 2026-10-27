@@ -670,6 +670,27 @@ impl OutputHost for Host {
     }
 }
 impl InputSink for Hub {
+    fn host_ui_requested(&self) {
+        {
+            let s = self.state.lock().unwrap();
+            if s.closed {
+                return;
+            }
+            let epoch = self.generation.load(Ordering::Acquire);
+            for d in &s.outputs {
+                let weak = self.weak.clone();
+                self.deliver(d, move |o| {
+                    if weak
+                        .upgrade()
+                        .is_some_and(|h| h.generation.load(Ordering::Acquire) == epoch)
+                    {
+                        o.on_host_ui_requested();
+                    }
+                });
+            }
+        }
+        self.drain();
+    }
     fn display_settings(&self, settings: DisplaySettings) {
         if settings.validate().is_err() {
             return;

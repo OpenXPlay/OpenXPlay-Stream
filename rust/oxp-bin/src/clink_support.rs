@@ -91,6 +91,12 @@ impl PinProvider for Pin {
 pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
     use oxp_link_linux::LinkEvent;
     match state {
+        LinkEvent::Advertisement {
+            advertisement: a,
+            serial_same,
+        } => {
+            json!({"type":"ble_advertisement","major":a.major,"minor":a.minor,"serial":a.serial,"carId":a.car_id,"modelId":a.model_id,"serialSame":serial_same})
+        }
         LinkEvent::Scanning => json!({"type":"link","state":"scanning"}),
         LinkEvent::Connecting { address, name } => {
             json!({"type":"link","state":"connecting","headUnit":{"address":address,"name":name}})
@@ -292,7 +298,11 @@ impl OutputSink for Sink {
     fn stats(&self, s: OutputStats) {
         let mut state = self.state.lock().unwrap();
         self.client(&mut state, &s.origin.client_id);
-        self.send(json_message(json!({"type":"stats","screen":s.screen,"decodeMs":s.decode_time_us.map(|n|n as f64/1000.0),"decodeQueue":s.decode_queue,"dropped":s.dropped,"rendered":s.rendered,"decodedLatencyMs":null,"renderedLatencyMs":s.end_to_end_latency_us.map(|n|n as f64/1000.0),"clockOffsetUs":null,"rttUs":null,"audioBufferedMs":s.audio_buffered_us.map(|n|n as f64/1000.0),"audioUnderruns":s.audio_underruns})));
+        let mut value = json!({"type":"stats","screen":s.screen,"decodeMs":s.decode_time_us.map(|n|n as f64/1000.0),"decodeQueue":s.decode_queue,"dropped":s.dropped,"rendered":s.rendered,"decodedLatencyMs":null,"renderedLatencyMs":s.end_to_end_latency_us.map(|n|n as f64/1000.0),"clockOffsetUs":null,"rttUs":null,"audioBufferedMs":s.audio_buffered_us.map(|n|n as f64/1000.0),"audioUnderruns":s.audio_underruns});
+        if let Some(session) = s.session {
+            value["session"] = json!(session.to_string());
+        }
+        self.send(json_message(value));
     }
 }
 /// `--clink-transcode`: `auto` (default) transcodes streams the head unit cannot decode when a
