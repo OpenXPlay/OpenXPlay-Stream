@@ -27,6 +27,15 @@ class WebJsonCodecTest {
         }
     }
 
+    @Test fun renderedSessionIsOptionalAndMustBeAnExactI64String() {
+        val stats = WebJsonCodec.parse(vector("stats"))
+        WebJsonCodec.validate(stats)
+        WebJsonCodec.validate(JsonObject(stats + ("session" to JsonPrimitive("9223372036854775807"))))
+        for (value in listOf(JsonNull, JsonPrimitive(true), JsonPrimitive(1), JsonPrimitive("1.5"), JsonPrimitive("9223372036854775808"))) {
+            assertFailsWith<WireFormatException> { WebJsonCodec.validate(JsonObject(stats + ("session" to value))) }
+        }
+    }
+
     @Test fun everyVectorRoundTrips() {
         for (name in listOf("display-settings-client-frame-rate", "display-settings-relay-frame-rate", "welcome-receiver-build", "display-settings-native", "hello-fullscreen-preferred", "view-area", "fullscreen-exit", "welcome-view-area", "hello-viewport", "welcome-relay", "welcome-display-settings", "display-settings-client", "display-settings-client-codec", "display-settings-relay", "hello", "hello-auto", "hello-fps-30", "hello-fps-35", "hello-fps-40", "hello-fps-45", "hello-fps-50", "hello-fps-55", "hello-fps-60", "hello-preferences", "hello-video-codec-h264", "hello-video-codec-auto", "restart", "welcome", "session", "video-format", "audio-format", "mic", "keyframe", "pause", "ping", "pong", "stats", "stats-diagnostics", "receiver-info", "error")) {
             val original = Json.parseToJsonElement(vector(name))

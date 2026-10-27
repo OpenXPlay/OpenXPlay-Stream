@@ -235,4 +235,6 @@ public data class OutputStats(
     public val endToEndLatencyUs: Long?,
     public val audioBufferedUs: Long? = null,
     public val audioUnderruns: Long = 0,
+    /** Session whose frame was actually rendered; absent for receivers without playback confirmation. */
+    public val session: SessionId? = null,
 )

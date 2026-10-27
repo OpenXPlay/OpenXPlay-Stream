@@ -28,6 +28,11 @@ export const strings = {
     contain: 'Fit', fill: 'Fill', fullscreen: 'Full screen', developer: 'Developer mode', about: 'About',
     source: 'Source', version: 'Web version', relayVersion: 'version', powered: 'Powered by OpenXPlay.', soundHint: 'Tap for sound',
     retryIn: 'Trying again in {seconds} s. Check your relay and network.', connecting: 'Connecting', connectingHint: 'Connecting to your relay…',
+    connectingIphone: 'Connecting iPhone', connectingIphoneHint: 'Keep your iPhone nearby while CarPlay connects.',
+    authenticating: 'Preparing CarPlay', authenticatingHint: 'Your iPhone is being authenticated.',
+    joiningNetwork: 'Connecting iPhone to Wi-Fi', joiningNetworkHint: 'Keep the relay hotspot or car network available.',
+    waitingMedia: 'Waiting for picture', waitingMediaHint: 'Your iPhone has connected. Waiting for the CarPlay picture.',
+    phoneFailed: 'iPhone connection interrupted', phoneFailedHint: 'Check your iPhone and keep the relay on while it retries.',
     waiting: 'Waiting for iPhone', waitingHint: 'Connect your iPhone to the relay to start CarPlay.',
     reconnecting: 'Reconnecting', reconnectingHint: 'Keep the relay on and check your network connection.',
     error: 'Relay unreachable', errorHint: 'Keep the relay on and join the same network, then try again.', retry: 'Try again',
@@ -61,6 +66,11 @@ export const strings = {
     contain: '适应', fill: '填满', fullscreen: '全屏', developer: '开发者模式', about: '关于',
     source: '源代码', version: '网页版本', relayVersion: '版本', powered: 'Powered by OpenXPlay.', soundHint: '轻触开启声音',
     retryIn: '{seconds} 秒后重试。请检查中继设备和网络。', connecting: '正在连接', connectingHint: '正在连接中继设备…',
+    connectingIphone: '正在连接 iPhone', connectingIphoneHint: '请将 iPhone 放在附近，正在建立 CarPlay 连接。',
+    authenticating: '正在准备 CarPlay', authenticatingHint: '正在完成 iPhone 认证。',
+    joiningNetwork: '正在连接无线网络', joiningNetworkHint: '请保持中继热点或车机网络可用。',
+    waitingMedia: '等待 CarPlay 画面', waitingMediaHint: 'iPhone 已连接，正在等待 CarPlay 传输画面。',
+    phoneFailed: 'iPhone 连接中断', phoneFailedHint: '请检查 iPhone，并保持中继设备开启以重新连接。',
     waiting: '等待 iPhone', waitingHint: '将 iPhone 连接到中继设备以启动 CarPlay。',
     reconnecting: '正在重新连接', reconnectingHint: '请保持中继设备开启并检查网络连接。',
     error: '无法连接中继设备', errorHint: '请开启中继设备并连接同一网络，然后重试。', retry: '重试',
@@ -85,7 +95,7 @@ export type TextKey = keyof typeof strings.en;
 export function playbackHint(mode: PlaybackMode): TextKey {
   return mode === 'QUALITY' ? 'qualityHint' : mode === 'SPEED' ? 'speedHint' : 'smartHint';
 }
-export type StatusState = 'connecting' | 'waiting' | 'reconnecting' | 'error' | 'unsupported' | 'playing' | 'soundBlocked' | 'microphoneDenied';
+export type StatusState = 'connectingIphone' | 'authenticating' | 'joiningNetwork' | 'waitingMedia' | 'phoneFailed' | 'connecting' | 'waiting' | 'reconnecting' | 'error' | 'unsupported' | 'playing' | 'soundBlocked' | 'microphoneDenied';
 export function statusCard(state: StatusState): { headline: TextKey; subline: TextKey; hidden: boolean } {
   const headline = state;
   const subline: TextKey = `${state}Hint`;
@@ -111,6 +121,12 @@ export class ReceiverPreferences {
 
 /** Keep protocol terminology behind developer mode and map it to one useful next step. */
 export function protocolStatus(protocol: string, playing: boolean): StatusState {
+  const startup: Record<string, StatusState> = {
+    'startup/connecting': 'connectingIphone', 'startup/authenticating': 'authenticating',
+    'startup/joining-network': 'joiningNetwork', 'startup/waiting-media': 'waitingMedia',
+    'startup/failed': 'phoneFailed', 'startup/disconnected': 'phoneFailed',
+  };
+  if (startup[protocol]) return startup[protocol];
   if (protocol === 'ACTIVE') return playing ? 'playing' : 'waiting';
   if (protocol === 'CONNECTING' || protocol === 'ENDED') return 'waiting';
   if (protocol === 'RECONNECTING' || protocol.startsWith('Disconnected')) return 'reconnecting';

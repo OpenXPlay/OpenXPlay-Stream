@@ -168,7 +168,8 @@ class AudioTest {
                     val event = controls.filterIsInstance<ControlEvent.MicPacket>().single()
                     assertEquals(Origin("web", welcome["clientId"]!!.jsonPrimitive.content), event.origin)
                     assertEquals(123L, event.ptsUs); assertEquals(640, event.data.size)
-                    pcm.send(1, vector("stats").toByteArray()); eventually { observedStats.isNotEmpty() }
+                    pcm.send(1, JsonObject(WebJsonCodec.parse(vector("stats")) + ("session" to JsonPrimitive("1"))).toString().toByteArray()); eventually { observedStats.isNotEmpty() }
+                    assertEquals(SessionId(1), observedStats.last().session)
                     assertEquals(60_000L, observedStats.last().audioBufferedUs); assertEquals(2L, observedStats.last().audioUnderruns)
                     web.onMicrophone(1, null); assertEquals(WebJsonCodec.microphone(1, null), pcm.json())
                     microphone(640); assertContentEquals(closePayload(1008), pcm.read().payload)

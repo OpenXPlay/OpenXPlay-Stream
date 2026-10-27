@@ -14,6 +14,7 @@ import { audioCodecs, aacConfig, type AudioDecoderInstance } from '../shared/aud
 import type { AudioFormat, MicFormat } from '../protocol/json';
 const scope = self as DedicatedWorkerGlobalScope;
 const SCREEN = 0;
+let sessionRendered = 0;
 let canvas: OffscreenCanvas, context: OffscreenCanvasRenderingContext2D | null;
 let hello: Hello, url = '', socket: WebSocket | null = null, stopped = false, visible = true;
 let restartSession: string | null = null;
@@ -255,7 +256,7 @@ function render(): void {
     const resumed = hold.deadline !== null;
     updateHold('frame');
     if (restartSession === null && (!playing || resumed)) { playing = true; notice({ type: 'playing' }); }
-    rendered++; renderedLatencyMs = latencyMs(nowUs(), item.relayUs, offsetUs);
+    sessionRendered++; rendered++; renderedLatencyMs = latencyMs(nowUs(), item.relayUs, offsetUs);
     if (renderedLatencyMs !== null) renderSamples.push(renderedLatencyMs);
   } finally {
     item.frame.close();
@@ -299,6 +300,7 @@ function touch(contacts: Parameters<typeof encodeTouch>[0]): void {
 function session(next: import('../protocol/json').SessionState): void {
   if (restartSession !== null && (next.id !== restartSession || next.phase !== 'ACTIVE')) restartSession = null;
   const changed = sessionId !== null && sessionId !== next.id;
+  if (changed || next.phase === 'ENDED') sessionRendered = 0;
   active = next.phase === 'ACTIVE'; sessionId = next.id;
   if (changed || next.phase === 'ENDED') clearAudio();
   if (next.phase === 'ENDED') updateHold('end');
@@ -311,7 +313,7 @@ function session(next: import('../protocol/json').SessionState): void {
     if (config) { startDecoder(); keyframe(); }
     else void configureFormat(format);
   }
-  notice({ type: 'status', text: next.phase });
+  notice({ type: 'status', text: next.reason?.startsWith('startup/') ? next.reason : next.phase });
 }
 function control(message: JsonMessage): void {
   switch (message.type) {
@@ -424,6 +426,7 @@ function connect(): void {
   current.onerror = () => { updateHold('interrupt'); notice({ type: 'status', text: 'Connection failed' }); };
   current.onclose = () => {
     if (socket !== current) return;
+    sessionRendered = 0;
     ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
     notice({ type: 'status', text: 'Disconnected; reconnecting…' });
@@ -526,5 +529,6 @@ const statsTimer = setInterval(() => {
     counters.packets = 0; counters.maxArrivalGapMs = 0; counters.decoderOutputs = 0; counters.maxDecoderOutputGapMs = 0;
   }
   resetMetrics(); pageMetrics = {};
+  if (active && sessionId !== null && sessionRendered > 0) stats.session = sessionId;
   send(stats); notice({ type: 'stats', stats, skipped, renderQueue: Math.max(0, frames.length - 1), queueDepth, playback: mode, audio, audioBuffers });
 }, 1000);

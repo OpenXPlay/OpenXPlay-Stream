@@ -30,7 +30,7 @@ export interface Stats {
   renderLatencyP50Ms?: number; renderLatencyP95Ms?: number; eventLoopLagAvgMs?: number; eventLoopLagMaxMs?: number;
   longTaskCount?: number; longTaskTotalMs?: number; usedJSHeapSize?: number; renderDepth?: number;
   audioBufferedMs?: number | null; audioUnderruns?: number;
-  type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
+  session?: I64; type: 'stats'; screen: number; decodeMs: number | null; decodeQueue: number; dropped: number; rendered: number;
   decodedLatencyMs: number | null; renderedLatencyMs: number | null; clockOffsetUs: I64 | null; rttUs: I64 | null;
 }
 export interface DisplaySettings { type: 'display-settings'; resolution: 'auto' | 'native' | '1080p' | '720p' | 'screen'; screenWidth: 125 | 200 | 250 | 300; videoCodec: 'auto' | 'h265' | 'h264'; frameRate?: FrameRatePreference }
@@ -89,7 +89,7 @@ const audio = object({ role: literal('MEDIA', 'ALERT', 'VOICE', 'TELEPHONY', 'OT
 const mic = object({ codec: audioCodec, sampleRate: x => int(x) && positive(x), channels: x => int(x) && positive(x), frameMs: positive });
 const extensible = (schema: Validator): Validator => x => {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return false;
-  const base = ['type', 'screen', 'decodeMs', 'decodeQueue', 'dropped', 'rendered', 'decodedLatencyMs', 'renderedLatencyMs', 'clockOffsetUs', 'rttUs', 'audioBufferedMs', 'audioUnderruns'];
+  const base = ['session', 'type', 'screen', 'decodeMs', 'decodeQueue', 'dropped', 'rendered', 'decodedLatencyMs', 'renderedLatencyMs', 'clockOffsetUs', 'rttUs', 'audioBufferedMs', 'audioUnderruns'];
   const known = Object.fromEntries(Object.entries(x).filter(([key]) => base.includes(key)));
   return schema(known) && diagnosticFields.every(key => !(key in x) || optional(num)((x as Record<string, unknown>)[key]));
 };
@@ -120,7 +120,7 @@ const schemas: Record<string, Validator> = {
   ping: object({ type: literal('ping'), t0Us: i64 }),
   pong: object({ type: literal('pong'), t0Us: i64, t1Us: i64, t2Us: i64 }),
   'receiver-info': x => typeof x === 'object' && x !== null && !Array.isArray(x) && new TextEncoder().encode(JSON.stringify(x)).length <= 65536,
-  stats: extensible(object({ audioBufferedMs: optional(nullable(num)), audioUnderruns: optional(int), type: literal('stats'), screen: range(255), decodeMs: nullable(num), decodeQueue: int, dropped: int, rendered: int,
+  stats: extensible(object({ session: optional(i64), audioBufferedMs: optional(nullable(num)), audioUnderruns: optional(int), type: literal('stats'), screen: range(255), decodeMs: nullable(num), decodeQueue: int, dropped: int, rendered: int,
     decodedLatencyMs: nullable(num), renderedLatencyMs: nullable(num), clockOffsetUs: nullable(i64), rttUs: nullable(i64) })),
   error: object({ type: literal('error'), code: nonempty, message: str }),
   'host-ui': object({ type: literal('host-ui') }),

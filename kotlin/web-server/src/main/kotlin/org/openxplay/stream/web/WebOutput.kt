@@ -657,7 +657,8 @@ public class WebOutput(
                     fun us(key: String): Long? = message[key]?.takeUnless { it == JsonNull }?.jsonPrimitive?.double?.let { (it * 1000).toLong() }
                     val stats = OutputStats(origin, ScreenId(message.int("screen")), us("decodeMs"), message.int("decodeQueue"),
                         message["dropped"]!!.jsonPrimitive.double.toLong(), message["rendered"]!!.jsonPrimitive.double.toLong(), us("renderedLatencyMs"),
-                        us("audioBufferedMs"), message["audioUnderruns"]?.jsonPrimitive?.double?.toLong() ?: 0)
+                        us("audioBufferedMs"), message["audioUnderruns"]?.jsonPrimitive?.double?.toLong() ?: 0,
+                        message["session"]?.jsonPrimitive?.content?.toLongOrNull()?.let(::SessionId))
                     run.report(Triple(clientId, "stats", stats.screen)) { it.stats(stats) }
                 }
             }
