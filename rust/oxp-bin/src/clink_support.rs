@@ -91,11 +91,17 @@ impl PinProvider for Pin {
 pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
     use oxp_link_linux::LinkEvent;
     match state {
+        LinkEvent::Trace { stage, fields } => {
+            json!({"type":"link-trace","stage":stage,"fields":fields})
+        }
+        LinkEvent::Failure(failure) => {
+            json!({"type":"link","state":"failed","stage":failure.stage,"code":failure.code,"elapsedMs":failure.elapsed_ms,"totalElapsedMs":failure.total_elapsed_ms,"attempt":failure.attempt,"osCode":failure.os_code,"operation":failure.operation,"status":failure.status})
+        }
         LinkEvent::Advertisement {
             advertisement: a,
             serial_same,
         } => {
-            json!({"type":"ble_advertisement","major":a.major,"minor":a.minor,"serial":a.serial,"carId":a.car_id,"modelId":a.model_id,"serialSame":serial_same})
+            json!({"type":"ble_advertisement","major":a.major,"minor":a.minor,"serial":a.serial,"carId":a.car_id,"modelId":a.model_id,"vendorData":a.vendor_data,"name":a.name,"serialSame":serial_same})
         }
         LinkEvent::Scanning => json!({"type":"link","state":"scanning"}),
         LinkEvent::Connecting { address, name } => {
