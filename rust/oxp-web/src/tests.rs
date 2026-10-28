@@ -466,7 +466,7 @@ fn failed_hellos_close_with_policy_and_block_the_remote_ip() {
         ws.send(Message::Text(hello.to_string().into())).unwrap();
         if attempt < 6 {
             assert!(
-                matches!(ws.read().unwrap(), Message::Close(Some(c)) if c.code == CloseCode::Policy)
+                matches!(ws.read().unwrap(), Message::Close(Some(c)) if c.code == CloseCode::from(PAIRING_REQUIRED))
             );
         } else {
             let Message::Text(v) = ws.read().unwrap() else {
@@ -561,6 +561,89 @@ fn required_pairing_rejects_an_empty_code() {
         Tls::Disabled,
     ))
     .is_err());
+}
+
+#[test]
+fn ordinary_policy_closes_keep_1008_after_pairing_authentication() {
+    for scenario in [
+        "hello-required",
+        "microphone-validation",
+        "unsupported-media",
+    ] {
+        let config = WebOutputConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            PathBuf::new(),
+            Pairing::Required("correct".into()),
+            Tls::Disabled,
+        );
+        let web = WebOutput::new(config.clone()).unwrap();
+        web.state
+            .lock()
+            .unwrap()
+            .clients
+            .insert("test".into(), Client::new(config.queue_duration_us));
+        let run = Runtime {
+            active: AtomicBool::new(true),
+            bound: Mutex::new(None),
+            listening: Condvar::new(),
+            connections: AtomicUsize::new(0),
+        };
+        let (server, client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let state = web.state.clone();
+        let worker = std::thread::spawn(move || {
+            let mut ws = WebSocket::from_raw_socket(server, Role::Server, None);
+            client_loop(
+                &mut ws,
+                "test",
+                &config,
+                &state,
+                &run,
+                &Mutex::new(HelloRateLimit::default()),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .unwrap();
+        });
+        let mut ws = WebSocket::from_raw_socket(client, Role::Client, None);
+        if scenario == "hello-required" {
+            ws.send(Message::Text(
+                json!({"type":"ping","t0Us":"1"}).to_string().into(),
+            ))
+            .unwrap();
+        } else {
+            let mut hello: Value = serde_json::from_str(include_str!(
+                "../../web-receiver/spec/vectors/web/hello.json"
+            ))
+            .unwrap();
+            hello["token"] = json!("correct");
+            hello["microphone"] = json!(true);
+            ws.send(Message::Text(hello.to_string().into())).unwrap();
+            assert!(matches!(ws.read().unwrap(), Message::Text(_)));
+            let header = Header {
+                kind: if scenario == "microphone-validation" {
+                    Kind::Microphone
+                } else {
+                    Kind::Audio
+                },
+                stream: 0,
+                flags: 0,
+                sequence: 0,
+                pts_us: 0,
+                sender_clock_us: 0,
+            };
+            let mut packet = oxp_wire::encode_header(&header).unwrap().to_vec();
+            packet.extend_from_slice(&[0; 16]);
+            ws.send(Message::Binary(packet.into())).unwrap();
+        }
+        assert!(
+            matches!(ws.read().unwrap(), Message::Close(Some(close)) if close.code == CloseCode::Policy),
+            "{scenario}"
+        );
+        worker.join().unwrap();
+    }
 }
 
 #[test]

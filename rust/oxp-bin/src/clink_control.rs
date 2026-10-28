@@ -33,9 +33,16 @@ fn parse(line: &[u8]) -> Result<Command, &'static str> {
 }
 
 /// Keeps at most 4 KiB while draining oversized lines through the next newline.
-pub fn read_control(
+pub fn read_control(input: impl BufRead, trace: Option<&TraceRecorder>, emit: impl FnMut(Value)) {
+    read_control_with(input, trace, |_| None, emit);
+}
+
+/// Shares the bounded stdin channel with other relay commands. A handled command returns its
+/// reply; None preserves the existing Carlink command handling and diagnostics.
+pub fn read_control_with(
     mut input: impl BufRead,
     trace: Option<&TraceRecorder>,
+    mut other: impl FnMut(&[u8]) -> Option<Value>,
     mut emit: impl FnMut(Value),
 ) {
     let mut line = Vec::with_capacity(4096);
@@ -66,7 +73,16 @@ pub fn read_control(
         };
         input.consume(consumed);
         if newline || eof && (!line.is_empty() || oversized) {
-            let command = if oversized {
+            let reply = if oversized { None } else { other(&line) };
+            let command = if let Some(reply) = reply {
+                emit(reply);
+                line.clear();
+                oversized = false;
+                if eof {
+                    break;
+                }
+                continue;
+            } else if oversized {
                 Err("line_too_long")
             } else {
                 parse(&line)

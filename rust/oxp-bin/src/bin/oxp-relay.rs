@@ -4,7 +4,7 @@
 
 #![forbid(unsafe_code)]
 
-use oxp_bin::{clink_control::read_control, clink_trace::TraceRecorder};
+use oxp_bin::{clink_control::read_control_with, clink_trace::TraceRecorder};
 use oxp_bin::{clink_support::*, *};
 use oxp_clink::trace::{now_nanos, ClinkTrace, ClinkTraceEvent};
 use oxp_clink::{
@@ -25,7 +25,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off] [--clink-trace DIR] [--control-stdin]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to a 5 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture commands and requires --unix.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to a 5 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture and web-tls commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -154,7 +154,6 @@ fn clink_link_traced(
             "--clink-transcode",
             "--clink-hevc",
             "--clink-trace",
-            "--control-stdin",
         ]
         .iter()
         .any(|k| args.get(k).is_some())
@@ -595,14 +594,6 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
         let _ = shutdown.trace.set(trace.clone());
     }
     let link = clink_link_traced(&args, trace.clone().map(|t| t as Arc<dyn ClinkTrace>))?;
-    if args.get("--control-stdin").is_some() {
-        let trace = trace.clone();
-        std::thread::Builder::new()
-            .name("clink-control".into())
-            .spawn(move || {
-                read_control(std::io::stdin().lock(), trace.as_deref(), event);
-            })?;
-    }
     *shutdown.link.lock().unwrap() = link.clone();
     let clink = link.is_some();
     if !web && !clink {
@@ -697,6 +688,20 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
         let output = Arc::new(WebOutput::new(config)?);
         web_output = Some(output.clone());
         outputs.push(output);
+    }
+    if args.get("--control-stdin").is_some() {
+        let trace = trace.clone();
+        let web = web_output.clone();
+        std::thread::Builder::new()
+            .name("relay-control".into())
+            .spawn(move || {
+                read_control_with(
+                    std::io::stdin().lock(),
+                    trace.as_deref(),
+                    |line| oxp_bin::web_control::handle(line, web.as_deref()),
+                    event,
+                );
+            })?;
     }
     if clink {
         let output = ClinkOutput::new(
@@ -1247,7 +1252,10 @@ mod tests {
 
     #[test]
     fn trace_flags_require_carlink_and_control_requires_unix() {
-        for extra in [vec!["--clink-trace", "/tmp/trace"], vec!["--control-stdin"]] {
+        for extra in [
+            vec!["--clink-trace", "/tmp/trace"],
+            vec!["--clink-trace", "/tmp/trace", "--control-stdin"],
+        ] {
             let mut values = vec!["--unix", "/tmp/wire"];
             values.extend(extra.clone());
             assert!(clink_link(&args(&values)).is_err());
@@ -1272,6 +1280,10 @@ mod tests {
         ] {
             assert!(parse_arguments(values.into_iter().map(str::to_owned)).is_err());
         }
+        assert!(clink_link(&args(&["--unix", "wire", "--control-stdin"]))
+            .unwrap()
+            .is_none());
+        assert!(USAGE.contains("web-tls"));
         assert!(USAGE.contains("--clink-trace DIR"));
         assert!(USAGE.contains("--control-stdin"));
     }

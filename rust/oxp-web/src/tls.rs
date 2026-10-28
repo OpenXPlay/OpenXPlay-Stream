@@ -42,6 +42,14 @@ pub enum Tls {
         sans: Vec<String>,
     },
 }
+/// Trusted certificate paths are read together on the relay's control thread, never during a
+/// handshake. The relay must finish publishing the files before requesting a replacement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedPem {
+    pub name: String,
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
 pub struct Identity {
     pub config: Arc<ServerConfig>,
     pub fingerprint: String,
@@ -193,6 +201,49 @@ pub fn load(tls: &Tls) -> Result<Option<Identity>> {
             (fallback, Some(name), trusted)
         }
     };
+    Ok(Some(identity(
+        fallback,
+        trusted_name.filter(|_| trusted.is_some()),
+        trusted,
+    )?))
+}
+
+pub(crate) fn replacement(
+    state_dir: &Path,
+    trusted: Option<&TrustedPem>,
+    sans: &[String],
+) -> Result<Identity> {
+    for name in sans {
+        if name.parse::<std::net::IpAddr>().is_err() && !valid_dns_name(name) {
+            return Err("Invalid self-signed TLS SAN".into());
+        }
+    }
+    // Validate trusted material before touching the self-signed cache. An invalid request must
+    // never turn a previously served trusted name into an unnoticed fallback certificate.
+    let (name, trusted) = if let Some(pem) = trusted {
+        if !valid_dns_name(&pem.name) {
+            return Err("Invalid TLS SNI DNS name".into());
+        }
+        let trusted = certified_key(&pem.cert, &pem.key)?;
+        let name = Name::from_text(&pem.name);
+        if !sans::parse(trusted.cert[0].as_ref())?
+            .iter()
+            .any(|san| san.normalized() == name)
+        {
+            return Err("Trusted TLS name is absent from certificate SANs".into());
+        }
+        (Some(name.to_string()), Some(trusted))
+    } else {
+        (None, None)
+    };
+    identity(self_signed(state_dir, sans)?, name, trusted)
+}
+
+fn identity(
+    fallback: Arc<CertifiedKey>,
+    trusted_name: Option<String>,
+    trusted: Option<Arc<CertifiedKey>>,
+) -> Result<Identity> {
     let trusted_fingerprint = trusted.as_ref().map(|key| fingerprint(key));
     let fingerprint = fingerprint(&fallback);
     let config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
@@ -203,12 +254,12 @@ pub fn load(tls: &Tls) -> Result<Option<Identity>> {
             trusted,
             fallback,
         }));
-    Ok(Some(Identity {
+    Ok(Identity {
         config: Arc::new(config),
         fingerprint,
         trusted_name,
         trusted_fingerprint,
-    }))
+    })
 }
 
 fn certified_key(cert: &Path, key: &Path) -> Result<Arc<CertifiedKey>> {
