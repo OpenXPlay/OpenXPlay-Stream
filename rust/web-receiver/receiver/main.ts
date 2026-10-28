@@ -18,7 +18,7 @@ import { microphoneStatus, applyReducedMotion } from './ui';
 import { CaptureLifecycle } from './capture-lifecycle';
 import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version, shouldReload } from './version';
-import { StableScreen, DisplayDebounce, DisplaySettingsGate } from './display';
+import { DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
 import { FullscreenIntent, FullscreenExitHistory, autoRestoreFullscreen } from './fullscreen';
 import { frameRatePreference, RestartGate, FrameRateSync } from './frame-rate';
 import { playbackMode, withPlayback } from '../shared/playback';
@@ -29,8 +29,6 @@ const source = element<HTMLAnchorElement>('source');
 const debug = element('debug');
 const fragment = new URLSearchParams(location.hash.slice(1));
 const storage = new ReceiverPreferences(() => localStorage);
-const stableScreen = new StableScreen(() => localStorage);
-stableScreen.measure(screen.width, screen.height, devicePixelRatio || 1);
 const preferences = storage.load(fragment);
 // Capture is controlled by CarPlay requests rather than a saved UI switch.
 preferences.microphone = true;
@@ -41,6 +39,7 @@ document.documentElement.lang = language;
 for (const node of document.querySelectorAll<HTMLElement>('[data-text]')) node.textContent = text[node.dataset.text as TextKey];
 for (const node of document.querySelectorAll<HTMLElement>('[data-label]')) node.setAttribute('aria-label', text[node.dataset.label as TextKey]);
 element('card-settings').setAttribute('aria-label', text.settings);
+element('drawer-back').setAttribute('aria-label', text.back);
 canvas.setAttribute('aria-label', text.projection);
 const gear = element<HTMLButtonElement>('gear'); gear.setAttribute('aria-label', text.settings);
 const settings = element<HTMLDialogElement>('settings');
@@ -181,8 +180,7 @@ function updatePictureValue(): void {
 }
 function updatePictureSize(): void {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
-  const size = (w: number, h: number) => w && h ? `${w} × ${h}` : '—';
-  element('picture-size').textContent = `${text.picture} ${size(videoWidth, videoHeight)} · ${text.windowSize} ${size(Math.round(box.width * dpr), Math.round(box.height * dpr))}`;
+  element('picture-size').textContent = `${text.picture} ${pictureSize(videoWidth, videoHeight)} · ${text.windowSize} ${pictureSize(Math.round(box.width * dpr), Math.round(box.height * dpr))}`;
 }
 const drawer = bindDrawer(settings, reducedMotion, open => {
   if (open) releaseAll(); pluginSlot.visibility(!open); wakeGear();
@@ -195,6 +193,7 @@ element('quick-fill').onclick = () => element(preferences.fit === 'fill' ? 'fit'
 document.addEventListener('pointerdown', event => { if (event.target !== canvas) wakeGear(); }, { passive: true });
 const fullscreen = new FullscreenIntent(!!document.fullscreenEnabled, () => localStorage);
 const fullscreenHistory = new FullscreenExitHistory();
+let pendingFullscreenExit = false;
 const restoreSwitch = element<HTMLInputElement>('fullscreen-restore');
 restoreSwitch.checked = fullscreen.restore;
 restoreSwitch.onchange = () => { fullscreen.setRestore(restoreSwitch.checked); fullscreenState(); };
@@ -215,14 +214,12 @@ async function requestFullscreen(): Promise<void> {
   } catch { fullscreen.denied(); fullscreenState(); }
 }
 async function reportFullscreenExit(): Promise<void> {
-  if (document.hidden) await new Promise<void>(resolve => {
-    const visible = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', visible); resolve(); } };
-    document.addEventListener('visibilitychange', visible);
-  });
+  if (!pendingFullscreenExit || document.hidden || !hello) return;
+  pendingFullscreenExit = false;
   const hiddenMs = fullscreenHistory.take(performance.now()), display = measuredDisplay();
   const autoRestore = await autoRestoreFullscreen({ enabled: () => fullscreen.restore && fullscreen.intent,
     restored: () => !!document.fullscreenElement, hidden: () => document.hidden,
-    visible: () => new Promise<void>(resolve => { const visible = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', visible); resolve(); } }; document.addEventListener('visibilitychange', visible); }),
+    visible: () => new Promise<void>(resolve => { const visible = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', visible); resolve(); } }; document.addEventListener('visibilitychange', visible); visible(); }),
     request: () => document.documentElement.requestFullscreen(), delay: ms => new Promise(resolve => setTimeout(resolve, ms)) });
   post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
@@ -234,12 +231,13 @@ document.addEventListener('pointerdown', event => {
 }, { capture: true });
 for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, event => {
   const pointer = event as PointerEvent;
-  const decision = fullscreen.pointerUp(pointer.pointerId, type === 'pointercancel');
+  const decision = fullscreen.pointerUp(pointer.pointerId);
   if (decision.swallow) { event.preventDefault(); event.stopImmediatePropagation(); }
-  if (decision.request) void requestFullscreen();
 }, { capture: true });
 document.addEventListener('fullscreenchange', () => {
-  if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) { releaseAll(); void reportFullscreenExit(); }
+  if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) {
+    releaseAll(); pendingFullscreenExit = true; requestAnimationFrame(reportFullscreenExit);
+  }
   fullscreenState(); resize();
 });
 fullscreenState();
@@ -400,20 +398,21 @@ function resize(): void {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   const width = Math.max(1, Math.round(box.width * dpr)), height = Math.max(1, Math.round(box.height * dpr));
   if (worker) post({ type: 'resize', width, height }); else { canvas.width = width; canvas.height = height; }
-  reportDisplay();
-
 }
 function measuredDisplay(): DisplayInfo {
   const dpr = devicePixelRatio || 1, box = canvas.getBoundingClientRect();
-  return { ...hello.displays[0], ...stableScreen.measure(screen.width, screen.height, dpr), safeArea: safeArea(dpr),
-    viewport: { width: Math.max(1, Math.round(box.width)), height: Math.max(1, Math.round(box.height)) },
+  return { ...hello.displays[0], width: Math.max(1, Math.round(screen.width * dpr)), height: Math.max(1, Math.round(screen.height * dpr)), dpr, safeArea: safeArea(dpr),
+    viewport: { width: Math.max(1, Math.round(box.width * dpr)), height: Math.max(1, Math.round(box.height * dpr)) },
     fullscreen: !!document.fullscreenElement, fullscreenPreferred: fullscreen.intent };
 }
 function reportDisplay(): void {
-  if (!hello) return;
+  if (!initialized || !hello) return;
   const display = fullscreen.display(measuredDisplay());
-  if (displayDebounce.observe(display, performance.now())) { hello = { ...hello, displays: [display] }; post({ type: 'hello', hello }); }
+  if (displayDebounce.observe(display, performance.now())) {
+    hello = { ...hello, displays: [display] }; post({ type: 'hello', hello }); resize();
+  }
 }
+// Screen, DPR and safe-area changes may leave the CSS canvas box unchanged.
 setInterval(reportDisplay, 100);
 function position(event: PointerEvent, clamp: boolean) {
   const box = canvas.getBoundingClientRect();
@@ -444,7 +443,11 @@ canvas.addEventListener('pointerup', event => {
 });
 canvas.addEventListener('pointercancel', releaseAll);
 canvas.addEventListener('lostpointercapture', event => { if (contacts.has(event.pointerId)) releaseAll(); });
-document.addEventListener('visibilitychange', () => { fullscreenHistory.visibility(document.hidden, performance.now()); releaseAll(); post({ type: 'visibility', visible: !document.hidden }); });
+document.addEventListener('visibilitychange', () => {
+  fullscreenHistory.visibility(document.hidden, performance.now());
+  if (!document.hidden) requestAnimationFrame(reportFullscreenExit);
+  releaseAll(); post({ type: 'visibility', visible: !document.hidden });
+});
 window.addEventListener('pagehide', () => { stopCapture(); void audioContext?.close(); releaseAll(); post({ type: 'stop' }); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 new ResizeObserver(resize).observe(canvas);
@@ -477,7 +480,7 @@ async function start(): Promise<void> {
     const dpr = devicePixelRatio || 1;
     hello = { type: 'hello', version: 0, token: pairing.token ?? '',
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
-      displays: [{ screen: 0, ...stableScreen.measure(screen.width, screen.height, dpr), refreshHz,
+      displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
     hello = withPlayback(frameRateSync.hello(hello), preferences.playback);
     hello = { ...hello, displays: [fullscreen.display(measuredDisplay())] }; displayDebounce.seed(hello.displays[0]);
@@ -503,7 +506,7 @@ async function start(): Promise<void> {
         case 'ended': updatePlayback(message); break;
         case 'playing': if (!frameRateSync.synced) applying(false); updatePlayback(message); wakeGear(); break;
         case 'rejected': {
-          protocolState = 'Pairing rejected (1008)'; const rejectedState = pairing.rejected(message.token); fragment.delete('k');
+          protocolState = 'Pairing rejected (4401)'; const rejectedState = pairing.rejected(message.token); fragment.delete('k');
           const hash = fragment.toString();
           history.replaceState(null, '', `${location.pathname}${location.search}${hash ? `#${hash}` : ''}`);
           codeInput.value = ''; renderCode(); playback = { state: rejectedState, protocol: protocolState, holding: false }; setState(rejectedState);
@@ -513,7 +516,7 @@ async function start(): Promise<void> {
         case 'view-area': releaseAll(); viewArea = message; pluginSlot.refresh(); break;
         case 'host-ui': if (!fallbackGear) drawer.open(); break;
         case 'display-disconnected': {
-          viewArea = undefined; fullscreen.viewAreas = false; displayGate.welcome();
+          releaseAll(); viewArea = undefined; pluginSlot.refresh(); fullscreen.viewAreas = false; displayGate.welcome();
           const wasSynced = frameRateSync.synced; frameRateSync.disconnect();
           const { frameRate: _, ...legacy } = currentDisplaySettings; currentDisplaySettings = legacy;
           if (wasSynced && hello) { hello = frameRateSync.hello(hello); post({ type: 'hello', hello }); }

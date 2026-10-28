@@ -36,7 +36,11 @@ export class PluginSlot {
   }
   private send(type: string, data: object = {}): void { this.frame?.contentWindow?.postMessage({ oxp: 'host/0', type, ...data }, '*'); }
   private clip(): void { if (this.frame) this.frame.style.clipPath = clipPath(this.policy.regions); }
-  private remove(): void { this.frame?.remove(); this.frame = undefined; clearInterval(this.timer); this.timer = undefined; this.coverChanged(); }
+  private remove(): void {
+    const covered = this.cover !== 'none';
+    this.frame?.remove(); this.frame = undefined; clearInterval(this.timer); this.timer = undefined;
+    if (covered) this.coverChanged();
+  }
   private mount(): void {
     const host = discover(this.capabilities, location.href, this.enabled);
     if (!host) { this.remove(); return; }
@@ -67,7 +71,12 @@ export class PluginSlot {
       case 'wake': this.wakeGear(); break;
       case 'host-prefs': saveHostPrefs(() => localStorage, m.value); break;
       case 'pong': this.policy.pong(m.seq as number, performance.now()); break;
-      case 'layout': this.policy.geometry = this.hostGeometry(); this.policy.layout(m.regions as Region[], m.cover as Cover); this.clip(); this.coverChanged(); break;
+      case 'layout': {
+        const previous = this.cover;
+        this.policy.geometry = this.hostGeometry(); this.policy.layout(m.regions as Region[], m.cover as Cover); this.clip();
+        if (this.cover !== previous) this.coverChanged();
+        break;
+      }
       case 'diagnostic':
         if (performance.now() - this.diagnosticAt >= 1000) { this.diagnosticAt = performance.now(); this.diagnostic(m.code as string, m.detail as string); }
     }

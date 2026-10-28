@@ -431,7 +431,8 @@ function connect(): void {
     sessionRendered = false; hostUiSupported = false;
     ready = false; viewArea = undefined; displaySettingsSupported = false; viewAreaSupported = false; notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
-    if (event?.code === 1008) {
+    // oxp-web reserves 4401 for pairing rejection. Generic 1008 policy closes retry, as on Kotlin.
+    if (event?.code === 4401) {
       stopped = true; clearTimeout(holdTimer); hold = { ...hold, deadline: null, clearAt: null };
       notice({ type: 'rejected', token: sentHelloToken }); return;
     }

@@ -67,9 +67,9 @@ p { line-height: 1.5; color: #a8a8a8; margin: .5rem 0 1.25rem; }
 #settings { position: fixed; inset: 0; margin: 0; width: 100%; height: 100%; max-width: none; max-height: none; overflow: hidden; padding: 0; border: 0; background: transparent; color: var(--text); }
 #settings::backdrop { background: transparent; }
 .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); opacity: 0; transition: opacity 320ms var(--open-curve); }
-.panel { position: absolute; top: var(--edge-top); right: var(--edge-right); bottom: var(--edge-bottom); width: 66.667%; min-width: min(100%, 24rem); border-radius: 1.75rem; overflow: hidden; display: flex; flex-direction: column; background: var(--panel); transform: translate3d(calc(100% + var(--edge-right)),0,0); transition: transform var(--duration, 440ms) var(--curve, var(--open-curve)); touch-action: pan-y; }
+.panel { --inset: var(--edge-right); position: absolute; top: var(--edge-top); right: var(--edge-right); bottom: var(--edge-bottom); width: 66.667%; min-width: min(100%, 24rem); border-radius: 1.75rem; overflow: hidden; display: flex; flex-direction: column; background: var(--panel); transform: translate3d(calc(100% + var(--inset)),0,0); transition: transform var(--duration, 440ms) var(--curve, var(--open-curve)); touch-action: pan-y; }
 .panel[data-width=half] { width: 50%; }
-.panel[data-width=full] { top: 0; right: 0; bottom: 0; width: 100%; border-radius: 0; padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
+.panel[data-width=full] { --inset: 0px; top: 0; right: 0; bottom: 0; width: 100%; border-radius: 0; padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
 .is-open .panel { transform: translate3d(0,0,0); }
 .is-open .scrim { opacity: 1; }
 .is-closing .panel { transition-duration: var(--duration, 280ms); transition-timing-function: var(--curve, var(--close-curve)); }
@@ -81,11 +81,13 @@ p { line-height: 1.5; color: #a8a8a8; margin: .5rem 0 1.25rem; }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 3.25rem; height: 3.25rem; padding: .875rem; border: 0; border-radius: 50%; background: var(--group); }
 #drawer-back { opacity: 0; transform: scale(.8); }
 .has-back #drawer-back { opacity: 1; transform: scale(1); }
-#settings-title { flex: 1; min-width: 0; position: relative; transform: translateX(-3.5rem); font-size: 1.375rem; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
-#settings-title span { position: absolute; top: 0; left: 0; width: 100%; opacity: 0; visibility: hidden; transform: translateX(1rem); }
-#settings-title span.active { position: relative; display: block; opacity: 1; visibility: visible; transform: translateX(0); }
+#settings-title { flex: 1; min-width: 0; display: grid; transform: translateX(-3.5rem); font-size: 1.375rem; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+#settings-title span { grid-area: 1 / 1; opacity: 0; visibility: hidden; transform: translateX(1rem); }
+#settings-title span.before { transform: translateX(-1rem); }
+#settings-title span.active { opacity: 1; visibility: visible; transform: translateX(0); }
 .has-back #settings-title { transform: translateX(0); }
 .is-moving #settings-title, .is-moving #settings-title span, .is-moving #drawer-back { transition: transform 220ms var(--open-curve), opacity 220ms var(--open-curve); }
+.is-moving #settings-title span { visibility: visible; }
 .pages { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .page { position: absolute; inset: 0; padding: .5rem 1.25rem 1.25rem; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; contain: layout paint style; touch-action: pan-y; visibility: hidden; transform: translate3d(100%,0,0); }
 .page:focus { outline: none; }

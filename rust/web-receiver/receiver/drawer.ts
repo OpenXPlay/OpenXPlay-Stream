@@ -53,7 +53,8 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     back.disabled = stack.depth === 1; back.setAttribute('aria-hidden', String(back.disabled)); panel.classList.toggle('has-back', !back.disabled);
     for (const title of dialog.querySelectorAll<HTMLElement>('[data-title]')) {
       const active = title.dataset.title === stack.current;
-      title.classList.toggle('active', active); title.setAttribute('aria-hidden', String(!active));
+      title.classList.toggle('active', active); title.classList.toggle('before', title.dataset.title === stack.previous);
+      title.setAttribute('aria-hidden', String(!active));
     }
   }
   function cancel(): void { clearTimeout(timer); win.cancelAnimationFrame(frame); finish = undefined; target = undefined; }
@@ -81,11 +82,12 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     panel.style.removeProperty('transform'); scrim.style.removeProperty('opacity');
     if (next && trigger) openers.set(next, trigger);
     const incoming = page(); phase = 'page';
+    if (interactive) panel.style.setProperty('--duration', '280ms');
     outgoing.classList.add('participating'); incoming.classList.add('participating'); dialog.classList.toggle('popping', !next);
     if (!interactive) { incoming.classList.toggle('before', !next); incoming.classList.remove('active'); void incoming.offsetWidth; }
     const run = () => {
       states(); for (const node of [outgoing, incoming]) { node.style.removeProperty('transform'); node.style.removeProperty('opacity'); }
-      motion(next ? 400 : 360, outgoing); focus(next ? undefined : openers.get(previous));
+      motion(interactive ? 280 : next ? 400 : 360, outgoing); focus(next ? undefined : openers.get(previous));
     };
     if (interactive || reduced()) run(); else frame = win.requestAnimationFrame(run);
   }
@@ -108,7 +110,7 @@ export function bindDrawer(dialog: HTMLDialogElement, reduced: () => boolean, vi
     phase = 'opening'; dialog.classList.remove('is-closing'); dialog.classList.add('is-opening', 'is-moving');
     panel.style.removeProperty('--duration'); panel.style.removeProperty('--curve');
     void panel.offsetWidth;
-    const run = () => { dialog.classList.add('is-open'); motion(500, dialog.querySelector<HTMLElement>('.root-last') ?? panel); focus(); };
+    const run = () => { dialog.classList.add('is-open'); motion(480, dialog.querySelector<HTMLElement>('.root-last') ?? panel); focus(); };
     if (reduced()) run(); else frame = win.requestAnimationFrame(run);
   }
   const pop = () => { if (stack.depth === 1) close(); else navigate(); };
