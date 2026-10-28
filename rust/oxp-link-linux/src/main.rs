@@ -17,7 +17,7 @@ fn main() {
 }
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let command = args.next().ok_or("usage: oxp-link scan|connect|leave [--address MAC] [--adapter hci0] [--interface wlan0] [--address-type random|public] [--name NAME] [--model MODEL] [--id ID] [--scan-timeout SEC] [--handoff-timeout SEC] [--join-timeout SEC]")?;
+    let command = args.next().ok_or("usage: oxp-link scan|connect|leave [--address MAC] [--adapter hci0] [--interface wlan0] [--address-type random|public] [--name NAME] [--model MODEL] [--id ID] [--scan-timeout SEC] [--handoff-timeout SEC] [--join-timeout SEC] [--p2p-reserved on|off]")?;
     let mut c = Config::default();
     let mut address = None;
     while let Some(flag) = args.next() {
@@ -26,6 +26,7 @@ fn run() -> Result<()> {
             "--address" if command == "connect" => address = Some(value),
             "--adapter" => c.bluetooth_adapter = value,
             "--interface" => c.wifi_interface = value,
+            "--p2p-reserved" => c.p2p_reserved_by_carplay = oxp_link_linux::p2p_reserved(&value)?,
             "--address-type" => {
                 c.address_type = match value.as_str() {
                     "random" => AddressType::Random,
