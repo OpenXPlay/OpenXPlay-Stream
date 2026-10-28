@@ -332,17 +332,41 @@ impl WebOutput {
             host_queue: Mutex::new(None),
         })
     }
-    /// Replaces both TLS identities for new connections, leaving existing TLS sessions intact.
-    /// Requires a self-signed state directory at startup. Covered SANs stay cached across address
-    /// removal/flapping; new SANs regenerate the pair using the existing cache and key rules.
+    /// Replaces trusted TLS and generated SANs, retaining any installed user default certificate.
+    /// Existing TLS sessions stay intact. Requires a self-signed state directory at startup.
+    /// Generated SANs stay cached across address removal/flapping, using the existing key rules.
     /// A failed replacement leaves the served identities unchanged.
     pub fn update_tls(&self, trusted: Option<tls::TrustedPem>, sans: Vec<String>) -> Result<Value> {
+        self.update_tls_with_default(trusted, sans, tls::DefaultUpdate::Keep)
+    }
+    /// Atomically replaces trusted TLS, SANs and optionally the user default certificate.
+    /// Keep retains the installed default key; Remove restores generated TLS with these SANs.
+    pub fn update_tls_with_default(
+        &self,
+        trusted: Option<tls::TrustedPem>,
+        sans: Vec<String>,
+        default: tls::DefaultUpdate,
+    ) -> Result<Value> {
         let state_dir = match &self.config.tls {
-            Tls::SelfSigned { state_dir, .. } | Tls::Sni { state_dir, .. } => state_dir.clone(),
+            Tls::SelfSigned { state_dir, .. }
+            | Tls::Sni { state_dir, .. }
+            | Tls::DefaultPem { state_dir, .. } => state_dir.clone(),
             _ => return Err("TLS updates require self-signed TLS at startup".into()),
         };
         let _update = self.tls_update.lock().unwrap();
-        let identity = tls::replacement(&state_dir, trusted.as_ref(), &sans)?;
+        let current_default = self
+            .tls
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|identity| identity.default_key.clone());
+        let identity = tls::replacement(
+            &state_dir,
+            trusted.as_ref(),
+            &sans,
+            default,
+            current_default,
+        )?;
         let event = identity.fingerprint_event();
         *self.tls.lock().unwrap() = Some(identity);
         Ok(event)

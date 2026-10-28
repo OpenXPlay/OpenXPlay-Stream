@@ -21,6 +21,8 @@ use std::{
 mod sans;
 use sans::Name;
 #[cfg(test)]
+mod default_tests;
+#[cfg(test)]
 mod tests;
 
 #[derive(Clone, Debug)]
@@ -41,6 +43,26 @@ pub enum Tls {
         state_dir: PathBuf,
         sans: Vec<String>,
     },
+    /// A user certificate for IP access and every client outside the trusted SNI name.
+    DefaultPem {
+        pem: DefaultPem,
+        trusted: Option<TrustedPem>,
+        state_dir: PathBuf,
+        sans: Vec<String>,
+    },
+}
+/// Complete PEM files, read and validated before publishing a TLS replacement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultPem {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
+/// An omitted control field retains the installed key, without rereading its files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DefaultUpdate {
+    Keep,
+    Remove,
+    Replace(DefaultPem),
 }
 /// Trusted certificate paths are read together on the relay's control thread, never during a
 /// handshake. The relay must finish publishing the files before requesting a replacement.
@@ -55,15 +77,17 @@ pub struct Identity {
     pub fingerprint: String,
     pub trusted_name: Option<String>,
     pub trusted_fingerprint: Option<String>,
+    pub(crate) default_key: Option<Arc<CertifiedKey>>,
 }
 impl Identity {
     pub(crate) fn fingerprint_event(&self) -> Value {
         let mut event = json!({
-            "type": "tls-fingerprint", "algorithm": "SHA-256", "fingerprint": self.fingerprint
+            "type": "tls-fingerprint", "algorithm": "SHA-256", "fingerprint": self.fingerprint,
+            "trustedFingerprint": self.trusted_fingerprint,
+            "defaultFingerprint": self.default_key.as_ref().map(|key| fingerprint(key))
         });
         if let Some(name) = &self.trusted_name {
             event["trustedName"] = json!(name);
-            event["trustedFingerprint"] = json!(self.trusted_fingerprint);
         }
         event
     }
@@ -175,10 +199,21 @@ pub fn local_ipv4() -> Vec<String> {
     result
 }
 pub fn load(tls: &Tls) -> Result<Option<Identity>> {
-    let (fallback, trusted_name, trusted) = match tls {
+    let (fallback, trusted_name, trusted, default_key) = match tls {
         Tls::Disabled => return Ok(None),
-        Tls::Pem { cert, key } => (certified_key(cert, key)?, None, None),
-        Tls::SelfSigned { state_dir, sans } => (self_signed(state_dir, sans)?, None, None),
+        Tls::Pem { cert, key } => (certified_key(cert, key)?, None, None, None),
+        Tls::SelfSigned { state_dir, sans } => (self_signed(state_dir, sans)?, None, None, None),
+        Tls::DefaultPem { pem, trusted, .. } => {
+            // Imported material must never silently fall back to a generated certificate.
+            let default = certified_key(&pem.cert, &pem.key)?;
+            let trusted_key = trusted
+                .as_ref()
+                .map(|pem| startup_trusted(&pem.name, &pem.cert, &pem.key))
+                .transpose()?
+                .flatten();
+            let name = trusted.as_ref().map(|pem| normalize_name(&pem.name));
+            (default.clone(), name, trusted_key, Some(default))
+        }
         Tls::Sni {
             name,
             cert,
@@ -186,39 +221,55 @@ pub fn load(tls: &Tls) -> Result<Option<Identity>> {
             state_dir,
             sans,
         } => {
-            if !valid_dns_name(name) {
-                return Err("Invalid TLS SNI DNS name".into());
-            }
+            let trusted = startup_trusted(name, cert, key)?;
             let fallback = self_signed(state_dir, sans)?;
-            let trusted = match certified_key(cert, key) {
-                Ok(key) => Some(key),
-                Err(e) => {
-                    eprintln!("Could not load trusted TLS identity for {name}; using self-signed TLS: {e}");
-                    None
-                }
-            };
-            let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
-            (fallback, Some(name), trusted)
+            let name = normalize_name(name);
+            (fallback, Some(name), trusted, None)
         }
     };
     Ok(Some(identity(
         fallback,
         trusted_name.filter(|_| trusted.is_some()),
         trusted,
+        default_key,
     )?))
+}
+
+fn normalize_name(name: &str) -> String {
+    name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase()
+}
+
+fn startup_trusted(name: &str, cert: &Path, key: &Path) -> Result<Option<Arc<CertifiedKey>>> {
+    if !valid_dns_name(name) {
+        return Err("Invalid TLS SNI DNS name".into());
+    }
+    match certified_key(cert, key) {
+        Ok(key) => Ok(Some(key)),
+        Err(e) => {
+            eprintln!("Could not load trusted TLS identity for {name}; using default TLS: {e}");
+            Ok(None)
+        }
+    }
 }
 
 pub(crate) fn replacement(
     state_dir: &Path,
     trusted: Option<&TrustedPem>,
     sans: &[String],
+    update: DefaultUpdate,
+    current_default: Option<Arc<CertifiedKey>>,
 ) -> Result<Identity> {
     for name in sans {
         if name.parse::<std::net::IpAddr>().is_err() && !valid_dns_name(name) {
             return Err("Invalid self-signed TLS SAN".into());
         }
     }
-    // Validate trusted material before touching the self-signed cache. An invalid request must
+    let default = match update {
+        DefaultUpdate::Keep => current_default,
+        DefaultUpdate::Remove => None,
+        DefaultUpdate::Replace(pem) => Some(certified_key(&pem.cert, &pem.key)?),
+    };
+    // Validate imported material before touching the self-signed cache. An invalid request must
     // never turn a previously served trusted name into an unnoticed fallback certificate.
     let (name, trusted) = if let Some(pem) = trusted {
         if !valid_dns_name(&pem.name) {
@@ -236,13 +287,18 @@ pub(crate) fn replacement(
     } else {
         (None, None)
     };
-    identity(self_signed(state_dir, sans)?, name, trusted)
+    let fallback = match &default {
+        Some(key) => key.clone(),
+        None => self_signed(state_dir, sans)?,
+    };
+    identity(fallback, name, trusted, default)
 }
 
 fn identity(
     fallback: Arc<CertifiedKey>,
     trusted_name: Option<String>,
     trusted: Option<Arc<CertifiedKey>>,
+    default_key: Option<Arc<CertifiedKey>>,
 ) -> Result<Identity> {
     let trusted_fingerprint = trusted.as_ref().map(|key| fingerprint(key));
     let fingerprint = fingerprint(&fallback);
@@ -259,6 +315,7 @@ fn identity(
         fingerprint,
         trusted_name,
         trusted_fingerprint,
+        default_key,
     })
 }
 
@@ -270,11 +327,9 @@ fn certified_key(cert: &Path, key: &Path) -> Result<Arc<CertifiedKey>> {
         rustls::server::ParsedCertificate::try_from(cert)?;
     }
     let key = PrivateKeyDer::from_pem_file(key)?;
-    Ok(Arc::new(CertifiedKey::from_der(
-        certs,
-        key,
-        &ring::default_provider(),
-    )?))
+    let certified = CertifiedKey::from_der(certs, key, &ring::default_provider())?;
+    certified.keys_match()?;
+    Ok(Arc::new(certified))
 }
 
 fn fingerprint(key: &CertifiedKey) -> String {

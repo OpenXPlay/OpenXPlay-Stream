@@ -31,7 +31,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1] [--clink-p2p-reserved on|off]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --clink-p2p-reserved defaults to off; the host must pass on while CarPlay reserves Wi-Fi Direct. Otherwise P2P requires supplicant D-Bus access, iw-confirmed interface/channel capacity and BusyBox udhcpc/ifconfig/mv; failures clean up before infrastructure fallback. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink and keeps web running; omitted picture/hevc/vehicleData settings retain their current choices. phoneMac is a unicast Bluetooth address validated like --clink-phone-mac: a string replaces the override before the next BLE link/handshake, null clears it to the Wi-Fi MAC, and absence retains the current choice. Invalid settings reject the command before retiring Carlink. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities events at web startup and each Carlink generation (including off) report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown; available reports a usable hardware pair, with actual conversion validated at runtime.\nBrowser socket termination emits type=receiver-disconnected with client, code and reason (closed, timeout or error), using the receiver-info client ID. code retains the received/server close code; 1005 means no received code, 1006 means abnormal closure, 1008/timeout means hello timeout, and 1011/timeout means stalled writing. Peer close text is not reported; established idle pages do not time out.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]... [--tls-default-cert PEM --tls-default-key PEM]] | --tls-self-signed STATE_DIR [--tls-san NAME]... [--tls-default-cert PEM --tls-default-key PEM] | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1] [--clink-p2p-reserved on|off]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --clink-p2p-reserved defaults to off; the host must pass on while CarPlay reserves Wi-Fi Direct. Otherwise P2P requires supplicant D-Bus access, iw-confirmed interface/channel capacity and BusyBox udhcpc/ifconfig/mv; failures clean up before infrastructure fallback. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; optional default:{\"cert\":\"/user-cert.pem\",\"key\":\"/user-key.pem\"} replaces IP/nonmatching SNI TLS, default:null restores generated TLS, omission keeps the installed default. sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprint/trustedName/trustedFingerprint/defaultFingerprint, or error (tls_update_failed for invalid PEM); defaultFingerprint is null without a user default; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink and keeps web running; omitted picture/hevc/vehicleData settings retain their current choices. phoneMac is a unicast Bluetooth address validated like --clink-phone-mac: a string replaces the override before the next BLE link/handshake, null clears it to the Wi-Fi MAC, and absence retains the current choice. Invalid settings reject the command before retiring Carlink. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities events at web startup and each Carlink generation (including off) report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown; available reports a usable hardware pair, with actual conversion validated at runtime.\nBrowser socket termination emits type=receiver-disconnected with client, code and reason (closed, timeout or error), using the receiver-info client ID. code retains the received/server close code; 1005 means no received code, 1006 means abnormal closure, 1008/timeout means hello timeout, and 1011/timeout means stalled writing. Peer close text is not reported; established idle pages do not time out.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use the user default, or self-signed TLS when none is installed. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable trusted PEM falls back to the selected default TLS certificate. Without --tls-name, PEM is served to every client. --tls-default-cert and --tls-default-key must be supplied together with --tls-self-signed; optional trusted PEM also requires --tls-name. Invalid default PEM fails startup. Both startup tls-fingerprint events and web-tls replies report SHA-256 uppercase colon-separated leaf fingerprints: fingerprint identifies IP/nonmatching SNI TLS, defaultFingerprint identifies the user default or null, trustedFingerprint identifies trusted SNI or null. PEM chains must parse and the unencrypted key must match the leaf. Supported keys (rustls/ring): RSA (PKCS#1 or PKCS#8), ECDSA P-256/P-384 (SEC1 or PKCS#8), Ed25519 (PKCS#8).\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -71,6 +71,8 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--relay-version",
             "--tls-cert",
             "--tls-key",
+            "--tls-default-cert",
+            "--tls-default-key",
             "--tls-name",
             "--tls-self-signed",
             "--no-tls",
@@ -420,8 +422,46 @@ fn tls_from_args(args: &Args, sans: Vec<String>) -> Result<Tls> {
     let key = args.get("--tls-key");
     let state_dir = args.get("--tls-self-signed");
     let no_tls = args.get("--no-tls").is_some();
+    let default_cert = args.get("--tls-default-cert");
+    let default_key = args.get("--tls-default-key");
     if cert.is_some() != key.is_some() {
         return Err("TLS requires --tls-cert and --tls-key".into());
+    }
+    if default_cert.is_some() != default_key.is_some() {
+        return Err("TLS requires --tls-default-cert and --tls-default-key".into());
+    }
+    if let (Some(cert), Some(key)) = (default_cert, default_key) {
+        let Some(state_dir) = state_dir.filter(|_| !no_tls) else {
+            return Err("Default PEM TLS requires --tls-self-signed, without --no-tls".into());
+        };
+        let trusted = match (
+            args.get("--tls-name"),
+            args.get("--tls-cert"),
+            args.get("--tls-key"),
+        ) {
+            (Some(name), Some(cert), Some(key)) if oxp_web::tls::valid_dns_name(name) => {
+                Some(oxp_web::tls::TrustedPem {
+                    name: name.into(),
+                    cert: cert.into(),
+                    key: key.into(),
+                })
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err(
+                    "Trusted TLS requires --tls-cert, --tls-key and a valid --tls-name".into(),
+                )
+            }
+        };
+        return Ok(Tls::DefaultPem {
+            pem: oxp_web::tls::DefaultPem {
+                cert: cert.into(),
+                key: key.into(),
+            },
+            trusted,
+            state_dir: state_dir.into(),
+            sans,
+        });
     }
     if let Some(name) = args.get("--tls-name") {
         if !oxp_web::tls::valid_dns_name(name) {
@@ -1067,6 +1107,8 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
                 "--source-url",
                 "--tls-cert",
                 "--tls-key",
+                "--tls-default-cert",
+                "--tls-default-key",
                 "--tls-name",
                 "--tls-self-signed",
                 "--no-tls",
@@ -1377,6 +1419,7 @@ fn lan_choice(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn web_transcode_flag_is_independent_validated_and_documented() {
@@ -1771,6 +1814,113 @@ mod tests {
             vec!["--tls-name", "relay.test", "--tls-name", "other.test"],
         ] {
             assert!(tls(&values).is_err(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn user_default_tls_arguments_require_a_pair_and_generated_fallback_state() {
+        let base = [
+            "--tls-default-cert",
+            "user.pem",
+            "--tls-default-key",
+            "user-key.pem",
+        ];
+        let mut valid = base.to_vec();
+        valid.extend(["--tls-self-signed", "state", "--tls-san", "192.0.2.5"]);
+        let Tls::DefaultPem {
+            pem,
+            trusted,
+            state_dir,
+            sans,
+        } = tls(&valid).unwrap()
+        else {
+            panic!("Expected user default TLS")
+        };
+        assert_eq!(pem.cert, PathBuf::from("user.pem"));
+        assert_eq!(pem.key, PathBuf::from("user-key.pem"));
+        assert!(trusted.is_none());
+        assert_eq!(state_dir, PathBuf::from("state"));
+        assert_eq!(sans, ["192.0.2.5"]);
+        valid.extend([
+            "--tls-cert",
+            "trusted.pem",
+            "--tls-key",
+            "trusted-key.pem",
+            "--tls-name",
+            "relay.test",
+        ]);
+        assert!(matches!(
+            tls(&valid).unwrap(),
+            Tls::DefaultPem {
+                trusted: Some(_),
+                ..
+            }
+        ));
+        for extra in [
+            vec![],
+            vec!["--no-tls"],
+            vec!["--tls-self-signed", "state", "--no-tls"],
+            vec!["--tls-self-signed", "state", "--tls-name", "relay.test"],
+            vec![
+                "--tls-self-signed",
+                "state",
+                "--tls-cert",
+                "trusted.pem",
+                "--tls-key",
+                "trusted-key.pem",
+            ],
+            vec![
+                "--tls-self-signed",
+                "state",
+                "--tls-cert",
+                "trusted.pem",
+                "--tls-key",
+                "trusted-key.pem",
+                "--tls-name",
+                "invalid/name",
+            ],
+        ] {
+            let mut invalid = base.to_vec();
+            invalid.extend(extra);
+            assert!(tls(&invalid).is_err(), "{invalid:?}");
+        }
+        for invalid in [
+            vec![
+                "--tls-self-signed",
+                "state",
+                "--tls-default-cert",
+                "user.pem",
+            ],
+            vec![
+                "--tls-self-signed",
+                "state",
+                "--tls-default-key",
+                "user-key.pem",
+            ],
+            vec!["--tls-self-signed", "state", "--tls-default-cert"],
+            vec!["--tls-self-signed", "state", "--tls-default-key"],
+            vec![
+                "--tls-self-signed",
+                "state",
+                "--tls-default-cert",
+                "a",
+                "--tls-default-cert",
+                "b",
+                "--tls-default-key",
+                "c",
+            ],
+        ] {
+            assert!(tls(&invalid).is_err(), "{invalid:?}");
+        }
+        for phrase in [
+            "--tls-default-cert",
+            "--tls-default-key",
+            "default:null",
+            "defaultFingerprint",
+            "Ed25519",
+            "tls_update_failed",
+        ] {
+            assert!(USAGE.contains(phrase), "{phrase}");
         }
     }
 
