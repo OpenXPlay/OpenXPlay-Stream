@@ -83,7 +83,10 @@ public class TsMuxer(
         writeVideoPayload(payload.toByteArray(), ptsUs, keyFrame)
     }
 
-    /** Four-byte length-prefixed HEVC; every IRAP starts with hvcC parameter sets, never an AUD. */
+    /**
+     * Four-byte length-prefixed HEVC; every IRAP carries the hvcC parameter sets. In-band AUDs are dropped and,
+     * with [insertAud], one is written first (pic_type 2: any slice type).
+     */
     public fun writeVideo(frame: ByteArray, config: HevcConfig, ptsUs: Long, keyFrame: Boolean) {
         require(videoCodec == VideoCodec.H265) { "Muxer codec mismatch" }
         require(ptsUs >= 0) { "Negative timestamp" }
@@ -96,6 +99,7 @@ public class TsMuxer(
         fun append(nal: ByteArray) {
             payload.write(byteArrayOf(0, 0, 0, 1)); payload.write(nal)
         }
+        if (insertAud) append(byteArrayOf(0x46, 0x01, 0x50))
         if (irap) (config.vps + config.sps + config.pps).forEach(::append)
         // Replace in-band parameter sets and omit optional prefix SEI on IRAPs so the slice follows
         // VPS/SPS/PPS directly. Prefix SEI must not be moved behind the slice as if it were suffix SEI.

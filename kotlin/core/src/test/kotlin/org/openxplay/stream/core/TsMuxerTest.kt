@@ -40,23 +40,28 @@ class TsMuxerTest {
         }
     }
 
-    @Test fun hevcPmtAndEveryIrapStartsWithParameterSetsWithoutAud() {
+    @Test fun hevcPmtAndEveryIrapStartsWithParameterSetsAfterOptionalAud() {
         val config = org.openxplay.stream.core.codec.HevcConfig.parse(vector("hevc-main-1920x1080"))
-        val packets = mutableListOf<ByteArray>()
-        val muxer = TsMuxer({ packets += it.copyOf() }, videoCodec = VideoCodec.H265, pmtVersion = 7)
-        fun nal(type: Int) = byteArrayOf(0, 0, 0, 3, (type shl 1).toByte(), 1, 0x80.toByte())
-        for (type in 16..21) muxer.writeVideo(nal(35) + nal(39) + nal(type) + nal(40), config, (type - 16) * 33_333L, false)
-        val pmt = section(packets.first { pid(it) == 0x100 })
-        assertEquals(0x24, u8(pmt[12])); assertEquals(7, (u8(pmt[5]) ushr 1) and 31)
-        assertEquals(0L, independentCrc(pmt))
-        for ((index, pes) in pesPackets(packets, 0x101).withIndex()) {
-            assertEquals(0xe0, u8(pes[3]))
-            val units = Nal.units(pes.copyOfRange(14, pes.size), Nal.Format.ANNEX_B).toList()
-            assertEquals(listOf(32, 33, 34, 16 + index, 40), units.map { (u8(it[0]) ushr 1) and 63 })
-            (config.vps + config.sps + config.pps).zip(units).forEach { (a, b) -> assertContentEquals(a, b) }
+        // Carlink passes insertAud = false; DLNA players need one AUD per access unit.
+        for (aud in listOf(false, true)) {
+            val packets = mutableListOf<ByteArray>()
+            val muxer = TsMuxer({ packets += it.copyOf() }, insertAud = aud, videoCodec = VideoCodec.H265, pmtVersion = 7)
+            fun nal(type: Int) = byteArrayOf(0, 0, 0, 3, (type shl 1).toByte(), 1, 0x80.toByte())
+            for (type in 16..21) muxer.writeVideo(nal(35) + nal(39) + nal(type) + nal(40), config, (type - 16) * 33_333L, false)
+            val pmt = section(packets.first { pid(it) == 0x100 })
+            assertEquals(0x24, u8(pmt[12])); assertEquals(7, (u8(pmt[5]) ushr 1) and 31)
+            assertEquals(0L, independentCrc(pmt))
+            for ((index, pes) in pesPackets(packets, 0x101).withIndex()) {
+                assertEquals(0xe0, u8(pes[3]))
+                val units = Nal.units(pes.copyOfRange(14, pes.size), Nal.Format.ANNEX_B).toList()
+                val sets = listOf(32, 33, 34, 16 + index, 40)
+                assertEquals(if (aud) listOf(35) + sets else sets, units.map { (u8(it[0]) ushr 1) and 63 })
+                if (aud) assertContentEquals(byteArrayOf(0x46, 0x01, 0x50), units.first())
+                (config.vps + config.sps + config.pps).zip(units.drop(if (aud) 1 else 0)).forEach { (a, b) -> assertContentEquals(a, b) }
+            }
+            assertEquals(6, packets.count { pid(it) == 0 })
+            assertTrue(packets.filter(::hasPcr).map { pcr(it).first }.zipWithNext().all { (a, b) -> b - a <= 40_000 * 27 })
         }
-        assertEquals(6, packets.count { pid(it) == 0 })
-        assertTrue(packets.filter(::hasPcr).map { pcr(it).first }.zipWithNext().all { (a, b) -> b - a <= 40_000 * 27 })
     }
 
     @Test

@@ -42,7 +42,7 @@ data class RelayOptions(
     }
 
     companion object {
-        const val USAGE: String = """Usage: devrelay --clip <annex-b.h264> [options]
+        const val USAGE: String = """Usage: devrelay --clip <annex-b.h264|annex-b.h265> [options]
        devrelay --cast-search
   --cast-search             Print DLNA renderers and exit (--clip is optional)
   --cast-renderer <udn>     Add a DLNA output for the renderer UDN

@@ -16,13 +16,14 @@ public fun interface ReplayControlListener {
 }
 
 /**
- * Replays fixed H.264 media on a daemon thread, which also handles file I/O and parsing.
+ * Snapshots H.264/H.265 media at construction to advertise its codec before negotiation.
+ * Access-unit parsing and replay run on a daemon thread; load failures report ENDED there.
  * Negotiated dimensions and FPS are advisory: the clip size and constructor frame rate are used.
  * Sink/listener callbacks must honor the non-blocking contract; stop fences them under a short lock.
  * A stopped session emits no further sink/control callbacks; recording summaries may finish later. EOF and load failures report ENDED asynchronously.
  */
 public class AnnexBFileInput private constructor(
-    private val load: () -> ByteArray,
+    load: () -> ByteArray,
     public val frameRate: Double,
     public val loop: Boolean,
     private val controlListener: ReplayControlListener,
@@ -69,8 +70,10 @@ public class AnnexBFileInput private constructor(
         require(1_000_000_000.0 / frameRate < Long.MAX_VALUE.toDouble()) { "Frame interval is too large" }
     }
 
+    private val media = runCatching(load)
+    private val codec = media.mapCatching { AnnexBClip.detectCodec(it) }.getOrDefault(VideoCodec.H264)
     override val capabilities: InputCapabilities = InputCapabilities(
-        codecs = setOf(VideoCodec.H264), screens = setOf(ScreenId.MAIN), touch = true,
+        codecs = setOf(codec), screens = setOf(ScreenId.MAIN), touch = true,
         keys = KeyCode.entries.toSet(), microphone = audio.micRate != null, keyFrameRequests = true,
         reconfigure = ReconfigureCost.NONE,
     )
@@ -91,7 +94,7 @@ public class AnnexBFileInput private constructor(
     private var lastReceivedNanos = Long.MIN_VALUE
 
     override fun start(config: SessionConfig, sink: InputSink) {
-        require(supported(config)) { "Replay supports only H.264 on the main screen" }
+        require(supported(config)) { "Replay supports only $codec on the main screen" }
         synchronized(lock) {
             if (current != null) return
             val run = Run(SessionId(++nextSession), sink, lastWorker)
@@ -147,7 +150,7 @@ public class AnnexBFileInput private constructor(
     }
 
     private fun supported(config: SessionConfig): Boolean = config.screens.all { (screen, value) ->
-        screen == ScreenId.MAIN && value.codec == VideoCodec.H264
+        screen == ScreenId.MAIN && value.codec == codec
     }
 
     private fun dispatch(run: Run, call: () -> Unit): Boolean = synchronized(lock) {
@@ -159,7 +162,7 @@ public class AnnexBFileInput private constructor(
     private fun play(run: Run) {
         try {
             run.predecessor?.join()
-            val clip = AnnexBClip.parse(load(), frameRate)
+            val clip = AnnexBClip.parse(media.getOrThrow(), frameRate)
             if (!dispatch(run) { run.sink.session(SessionState(run.id, SessionPhase.ACTIVE)) }) return
             if (!dispatch(run) { run.sink.videoFormat(ScreenId.MAIN, clip.format) }) return
             val fencedSink = object : InputSink by run.sink {

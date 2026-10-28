@@ -6,11 +6,13 @@ package org.openxplay.stream.cast
 
 import java.io.ByteArrayOutputStream
 import java.util.ArrayDeque
+import org.openxplay.stream.core.VideoCodec
 import org.openxplay.stream.core.VideoFormat
 import org.openxplay.stream.core.VideoFrame
 import org.openxplay.stream.core.audio.Adts
 import org.openxplay.stream.core.audio.AudioSpecificConfig
 import org.openxplay.stream.core.codec.AvcConfig
+import org.openxplay.stream.core.codec.HevcConfig
 import org.openxplay.stream.core.codec.TsMuxer
 
 internal val SILENT_AAC = byteArrayOf(0x21, 0x10, 0x04, 0x60, 0x8c.toByte(), 0x1c)
@@ -92,18 +94,20 @@ internal class CastTimeline(val startNanos: Long, private val audioEnabled: Bool
 
 /** One muxer per generation; its borrowed packet buffer is copied into owned chunks. */
 internal class CastMediaMuxer(format: VideoFormat, audio: Boolean, private val sink: (CastChunk) -> Unit) {
-    private val config = AvcConfig.parse(format.config)
+    private val avc = if (format.codec == VideoCodec.H264) AvcConfig.parse(format.config) else null
+    private val hevc = if (format.codec == VideoCodec.H265) HevcConfig.parse(format.config) else null
     private val aac = AudioSpecificConfig(2, 48_000, 2)
     private val bytes = ByteArrayOutputStream()
     private var keyframe = false
     private var now = 0L
-    private val muxer = TsMuxer({ bytes.write(it) }, audioEnabled = audio, insertAud = true)
+    private val muxer = TsMuxer({ bytes.write(it) }, audioEnabled = audio, insertAud = true, videoCodec = format.codec)
     fun write(event: MediaEvent, nowNanos: Long) {
         now = nowNanos
         when (event) {
             is MediaEvent.Video -> {
                 if (event.frame.keyFrame) { flush(); keyframe = true }
-                muxer.writeVideo(event.frame.data, config, event.ptsUs, event.frame.keyFrame)
+                if (avc != null) muxer.writeVideo(event.frame.data, avc, event.ptsUs, event.frame.keyFrame)
+                else muxer.writeVideo(event.frame.data, checkNotNull(hevc), event.ptsUs, event.frame.keyFrame)
             }
             is MediaEvent.Audio -> muxer.writeAudio(Adts.buildHeader(aac, event.data.size) + event.data, event.ptsUs)
         }
