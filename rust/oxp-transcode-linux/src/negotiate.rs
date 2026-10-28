@@ -54,6 +54,8 @@ pub struct DeviceInfo {
     pub consumes: Vec<u32>,
     /// Formats the device produces (the CAPTURE queue).
     pub produces: Vec<u32>,
+    /// Coded frame sizes, when ENUM_FRAMESIZES is implemented.
+    pub sizes: Vec<FormatSize>,
 }
 impl DeviceInfo {
     fn decodes(&self, codec: VideoCodec) -> bool {
@@ -61,14 +63,14 @@ impl DeviceInfo {
             && self.consumes.contains(&codec_fourcc(codec))
             && RAW_FORMATS.iter().any(|f| self.produces.contains(f))
     }
-    fn encodes_avc(&self) -> bool {
+    fn encodes(&self, codec: VideoCodec) -> bool {
         self.m2m
-            && self.produces.contains(&PIX_FMT_H264)
+            && self.produces.contains(&codec_fourcc(codec))
             && RAW_FORMATS.iter().any(|f| self.consumes.contains(f))
     }
 }
 
-/// A stateful decoder and an H.264 encoder that agree on a raw frame format.
+/// A stateful decoder and encoder that agree on a raw frame format.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DevicePair {
     pub decoder: DeviceInfo,
@@ -84,8 +86,11 @@ pub struct Inventory {
 }
 impl Inventory {
     pub fn select(&self, codec: VideoCodec) -> Option<DevicePair> {
+        self.select_codecs(codec, VideoCodec::H264)
+    }
+    pub fn select_codecs(&self, codec: VideoCodec, target: VideoCodec) -> Option<DevicePair> {
         for decoder in self.devices.iter().filter(|d| d.decodes(codec)) {
-            for encoder in self.devices.iter().filter(|d| d.encodes_avc()) {
+            for encoder in self.devices.iter().filter(|d| d.encodes(target)) {
                 let shared = RAW_FORMATS
                     .into_iter()
                     .find(|f| decoder.produces.contains(f) && encoder.consumes.contains(f));
@@ -101,21 +106,57 @@ impl Inventory {
         None
     }
     pub fn support(&self) -> Option<TranscodeSupport> {
-        let decode: Vec<_> = [VideoCodec::H264, VideoCodec::H265]
+        let codecs = [VideoCodec::H264, VideoCodec::H265];
+        let decode: Vec<_> = codecs
             .into_iter()
-            .filter(|c| self.select(*c).is_some())
+            .filter(|c| {
+                codecs
+                    .into_iter()
+                    .any(|t| self.select_codecs(*c, t).is_some())
+            })
+            .collect();
+        let encode: Vec<_> = codecs
+            .into_iter()
+            .filter(|t| {
+                codecs
+                    .into_iter()
+                    .any(|c| self.select_codecs(c, *t).is_some())
+            })
             .collect();
         (!decode.is_empty()).then_some(TranscodeSupport {
             decode,
-            encode: vec![VideoCodec::H264],
-            // Frames pass through the CPU between the codecs, which can resize them.
+            encode,
             scaling: true,
         })
+    }
+    pub fn encoders(&self) -> Vec<crate::EncoderCapability> {
+        self.devices
+            .iter()
+            .flat_map(|d| {
+                [VideoCodec::H264, VideoCodec::H265]
+                    .into_iter()
+                    .filter(|c| d.encodes(*c))
+                    .map(|codec| {
+                        let sizes: Vec<_> = d
+                            .sizes
+                            .iter()
+                            .filter(|s| s.format == codec_fourcc(codec))
+                            .collect();
+                        crate::EncoderCapability {
+                            codec,
+                            max_width: sizes.iter().map(|s| s.max_width).max(),
+                            max_height: sizes.iter().map(|s| s.max_height).max(),
+                        }
+                    })
+            })
+            .collect()
     }
     pub fn describe(&self) -> String {
         let Some(pair) = self
             .select(VideoCodec::H264)
             .or_else(|| self.select(VideoCodec::H265))
+            .or_else(|| self.select_codecs(VideoCodec::H264, VideoCodec::H265))
+            .or_else(|| self.select_codecs(VideoCodec::H265, VideoCodec::H265))
         else {
             let nodes: Vec<_> = self
                 .devices
@@ -123,7 +164,7 @@ impl Inventory {
                 .map(|d| format!("{} ({})", d.path.display(), d.driver))
                 .collect();
             return format!(
-                "video transcoder unavailable: no V4L2 M2M decoder and H.264 encoder pair among [{}]",
+                "video transcoder unavailable: no V4L2 M2M decoder and encoder pair among [{}]",
                 nodes.join(", ")
             );
         };
@@ -204,6 +245,37 @@ pub fn h264_profiles(profile: u8, constraints: u8) -> Option<&'static [i32]> {
 /// Encoder settings for a low-latency H.264 stream whose IDR frames repeat SPS and PPS.
 pub fn encoder_controls(target: &TranscodeTarget) -> Result<Vec<ControlStep>, String> {
     let p = target.profile;
+    if p.codec == VideoCodec::H265 {
+        const LEVELS: [u8; 13] = [30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186];
+        let level = LEVELS
+            .iter()
+            .position(|l| *l == p.level)
+            .ok_or("unsupported HEVC level")? as i32;
+        if p.profile != 1 || p.high_tier {
+            return Err("only HEVC Main tier Main profile is supported".into());
+        }
+        return Ok(vec![
+            step("HEVC profile", CID_CODEC_BASE + 615, &[0], true),
+            step("HEVC level", CID_CODEC_BASE + 616, &[level], true),
+            step("HEVC tier", CID_CODEC_BASE + 618, &[0], true),
+            step("bitrate", CID_BITRATE, &[target.bitrate as i32], true),
+            step("B frames", CID_B_FRAMES, &[0], false),
+            step(
+                "GOP size",
+                CID_GOP_SIZE,
+                &[target.fps.clamp(1, 120) as i32],
+                false,
+            ),
+            step("header mode", CID_HEADER_MODE, &[1], false),
+            step("repeat sequence header", CID_REPEAT_SEQ_HEADER, &[1], false),
+            step(
+                "prepend parameter sets",
+                CID_PREPEND_SPSPPS_TO_IDR,
+                &[1],
+                false,
+            ),
+        ]);
+    }
     let profiles = h264_profiles(p.profile, p.constraints)
         .ok_or_else(|| format!("no V4L2 profile for H.264 profile_idc {}", p.profile))?;
     let level =
@@ -270,6 +342,36 @@ pub fn capture_buffer_count(driver_minimum: Option<i32>) -> u32 {
     driver_minimum.unwrap_or(4).clamp(1, 32) as u32 + 2
 }
 
+/// Inclusive bounds returned by ENUM_FRAMESIZES for a coded format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormatSize {
+    pub format: u32,
+    pub min_width: u32,
+    pub min_height: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub step_width: u32,
+    pub step_height: u32,
+}
+impl DeviceInfo {
+    pub fn fits(&self, codec: VideoCodec, width: u32, height: u32) -> bool {
+        let sizes: Vec<_> = self
+            .sizes
+            .iter()
+            .filter(|s| s.format == codec_fourcc(codec))
+            .collect();
+        sizes.is_empty()
+            || sizes.iter().any(|s| {
+                width >= s.min_width
+                    && width <= s.max_width
+                    && height >= s.min_height
+                    && height <= s.max_height
+                    && (width - s.min_width).is_multiple_of(s.step_width.max(1))
+                    && (height - s.min_height).is_multiple_of(s.step_height.max(1))
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +391,7 @@ mod tests {
             m2m,
             consumes: consumes.to_vec(),
             produces: produces.to_vec(),
+            sizes: Vec::new(),
         }
     }
     fn venus() -> Vec<DeviceInfo> {
@@ -331,7 +434,7 @@ mod tests {
             inventory.support().unwrap(),
             TranscodeSupport {
                 decode: vec![VideoCodec::H264, VideoCodec::H265],
-                encode: vec![VideoCodec::H264],
+                encode: vec![VideoCodec::H264, VideoCodec::H265],
                 scaling: true,
             }
         );
@@ -473,5 +576,76 @@ mod tests {
         assert_eq!(capture_buffer_count(Some(-3)), 3);
         assert_eq!(fourcc_name(PIX_FMT_NV12M), "NM12");
         assert_eq!(decoder_controls().len(), 2);
+    }
+    #[test]
+    fn meson_decoder_without_encoder_has_no_transcode_support() {
+        let inventory = Inventory {
+            devices: vec![device(
+                "/dev/video0",
+                "meson-video-decoder",
+                true,
+                &[PIX_FMT_H264, PIX_FMT_HEVC],
+                &[PIX_FMT_NV12],
+            )],
+        };
+        assert!(inventory.support().is_none());
+        assert!(inventory.encoders().is_empty());
+        assert!(inventory.describe().contains("unavailable"));
+    }
+    #[test]
+    fn encoder_formats_sizes_and_hevc_controls_are_independent() {
+        let mut devices = venus();
+        devices[1].sizes = vec![
+            FormatSize {
+                format: PIX_FMT_H264,
+                min_width: 128,
+                min_height: 96,
+                max_width: 1920,
+                max_height: 1080,
+                step_width: 2,
+                step_height: 2,
+            },
+            FormatSize {
+                format: PIX_FMT_HEVC,
+                min_width: 128,
+                min_height: 96,
+                max_width: 1280,
+                max_height: 720,
+                step_width: 2,
+                step_height: 2,
+            },
+        ];
+        let inventory = Inventory { devices };
+        let caps = inventory.encoders();
+        assert_eq!(
+            (caps[0].codec, caps[0].max_width),
+            (VideoCodec::H264, Some(1920))
+        );
+        assert_eq!(
+            (caps[1].codec, caps[1].max_height),
+            (VideoCodec::H265, Some(720))
+        );
+        let pair = inventory
+            .select_codecs(VideoCodec::H264, VideoCodec::H265)
+            .unwrap();
+        assert!(pair.encoder.fits(VideoCodec::H265, 1280, 720));
+        assert!(!pair.encoder.fits(VideoCodec::H265, 1920, 1080));
+        assert!(!pair.encoder.fits(VideoCodec::H265, 1279, 720));
+        let target = TranscodeTarget {
+            profile: CodecProfile::parse("hvc1.1.6.L123.B0").unwrap(),
+            width: 1280,
+            height: 720,
+            fps: 30,
+            bitrate: 4000000,
+        };
+        let controls = encoder_controls(&target).unwrap();
+        assert_eq!(controls[0].values, vec![0]);
+        assert_eq!(controls[1].values, vec![6]);
+        assert!(controls
+            .iter()
+            .all(|c| c.id != CID_H264_PROFILE && c.id != CID_H264_LEVEL));
+        let mut target = target;
+        target.profile.profile = 2;
+        assert!(encoder_controls(&target).is_err());
     }
 }

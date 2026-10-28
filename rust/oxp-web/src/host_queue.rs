@@ -118,7 +118,11 @@ impl HostQueue {
                 value["screen"].as_f64().unwrap_or(0.0) as u32,
             );
             let (id, value, callback) = (id.to_owned(), value.clone(), callback.clone());
-            queue.report(key, move || callback(&id, &value));
+            if value["type"] == "receiver-disconnected" {
+                queue.essential(move || callback(&id, &value));
+            } else {
+                queue.report(key, move || callback(&id, &value));
+            }
         })
     }
 

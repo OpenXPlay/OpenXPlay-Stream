@@ -44,6 +44,8 @@ struct Shared {
     state: Mutex<State>,
     ops: Mutex<VecDeque<Op>>,
     draining: AtomicBool,
+    carlink_geometry: bool,
+    picture_size: Option<(u32, u32)>,
 }
 #[derive(Default)]
 struct State {
@@ -64,6 +66,9 @@ struct State {
     reported: Option<String>,
     /// The wrapped output's last control origin, reused for the adapter's own requests.
     origin: Option<Origin>,
+    requested_area: Option<ViewArea>,
+    active_area: Option<ViewArea>,
+    configured_crop: Option<ViewArea>,
 }
 /// Video calls into the wrapped output are serialized through this queue, whichever thread
 /// (hub delivery, wrapped output or transcoder worker) produces them.
@@ -72,6 +77,7 @@ enum Op {
     Format(Option<Arc<VideoFormat>>),
     Frame(VideoFrame),
     Reconfigure,
+    Area(Option<ViewArea>),
     Encoded {
         revision: u64,
         format: Arc<VideoFormat>,
@@ -90,6 +96,25 @@ impl TranscodingOutput {
         factory: Arc<dyn TranscoderFactory>,
         diagnostics: Diagnostics,
     ) -> Self {
+        Self::build(inner, factory, diagnostics, false, None)
+    }
+    /// A fixed Carlink frame size pre-stretches the active area without changing the input
+    /// canvas. None retains the active area's aspect ratio, bounded by the decoder level.
+    pub fn carlink(
+        inner: Arc<dyn ProjectionOutput>,
+        factory: Arc<dyn TranscoderFactory>,
+        diagnostics: Diagnostics,
+        picture_size: Option<(u32, u32)>,
+    ) -> Self {
+        Self::build(inner, factory, diagnostics, true, picture_size)
+    }
+    fn build(
+        inner: Arc<dyn ProjectionOutput>,
+        factory: Arc<dyn TranscoderFactory>,
+        diagnostics: Diagnostics,
+        carlink_geometry: bool,
+        picture_size: Option<(u32, u32)>,
+    ) -> Self {
         let support = factory.support();
         Self {
             shared: Arc::new_cyclic(|weak| Shared {
@@ -97,6 +122,8 @@ impl TranscodingOutput {
                 inner,
                 factory,
                 support,
+                carlink_geometry,
+                picture_size,
                 diagnostics,
                 state: Default::default(),
                 ops: Default::default(),
@@ -122,6 +149,24 @@ impl ProjectionOutput for TranscodingOutput {
             shared: self.shared.weak.clone(),
             upstream: host,
         }))
+    }
+    fn wants_context(&self) -> bool {
+        self.shared.inner.wants_context()
+    }
+    fn on_context(&self, update: oxp_core::ContextUpdate) {
+        self.shared.inner.on_context(update);
+    }
+    fn on_host_ui_requested(&self) {
+        self.shared.inner.on_host_ui_requested();
+    }
+    fn on_display_settings(&self, settings: DisplaySettings) {
+        self.shared.inner.on_display_settings(settings);
+    }
+    fn on_view_area(&self, screen: u32, area: Option<ViewArea>) {
+        if screen == SCREEN && self.shared.carlink_geometry {
+            self.shared.submit(Op::Area(area));
+        }
+        self.shared.inner.on_view_area(screen, area);
     }
     fn on_session(&self, state: &SessionState, config: &SessionConfig) {
         self.shared
@@ -156,6 +201,8 @@ impl ProjectionOutput for TranscodingOutput {
             st.closed = true;
             st.stop_pipeline();
             st.source = None;
+            st.requested_area = None;
+            st.configured_crop = None;
             st.decision = None;
             st.reported = None;
             st.revision += 1;
@@ -175,6 +222,7 @@ impl State {
             self.retired = pipeline.stop();
         }
         self.delivered = None;
+        self.active_area = None;
     }
 }
 
@@ -231,7 +279,9 @@ impl Shared {
                 if first {
                     // An encoder that ignored the target would leave the receiver black again.
                     let produced = CodecProfile::parse(&format.codec_string);
-                    if !produced.is_some_and(|p| st.sink.as_ref().is_some_and(|s| s.accepts(&p))) {
+                    if !produced.is_some_and(|p| st.sink.as_ref().is_some_and(|s| s.accepts(&p)))
+                        || !matches!(&st.decision, Some(TranscodeDecision::Transcode { target, .. }) if (format.width,format.height) == (target.width,target.height))
+                    {
                         drop(st);
                         let produced =
                             produced.map_or(format.codec_string.clone(), |p| p.to_string());
@@ -243,6 +293,7 @@ impl Shared {
                         });
                     }
                     st.delivered = Some(format.clone());
+                    st.active_area = st.configured_crop;
                 }
                 drop(st);
                 if first {
@@ -275,6 +326,10 @@ impl Shared {
                 st.source = Some(format);
                 self.configure(st, true);
             }
+            Op::Area(area) => {
+                st.requested_area = area;
+                self.configure(st, false);
+            }
             Op::Reconfigure => self.configure(st, false),
             Op::Failed { revision, error } => {
                 if st.revision != revision || st.pipeline.is_none() {
@@ -293,6 +348,8 @@ impl Shared {
                 if state.phase == SessionPhase::Ended {
                     st.stop_pipeline();
                     st.source = None;
+                    st.requested_area = None;
+                    st.configured_crop = None;
                     st.decision = None;
                     st.failed = false;
                     st.reported = None;
@@ -310,15 +367,92 @@ impl Shared {
             return;
         };
         let video = source_video(&source);
-        let decision = st.sink.as_ref().map(|sink| match &video {
-            Some(video) => transcode_policy::decide(video, sink, self.support.as_ref()),
+        let crop = if self.carlink_geometry
+            && self.support.as_ref().is_some_and(|s| {
+                s.scaling && s.decode.contains(&source.codec) && !s.encode.is_empty()
+            })
+            && st.sink.is_some()
+        {
+            Some(crate::geometry::crop(
+                source.width,
+                source.height,
+                st.requested_area,
+            ))
+        } else {
+            None
+        };
+        let mut decision = st.sink.as_ref().map(|sink| match &video {
+            Some(video) => match transcode_policy::decide(video, sink, self.support.as_ref()) {
+                TranscodeDecision::Transcode { reason, .. } => self
+                    .target(video, sink)
+                    .map(|target| TranscodeDecision::Transcode { target, reason })
+                    .unwrap_or(TranscodeDecision::Unsupported {
+                        reason: "encoder-size",
+                    }),
+                decision => decision,
+            },
             None => TranscodeDecision::Unsupported {
                 reason: "source-unknown",
             },
         });
-        if !force && decision == st.decision {
+        if let (Some(area), Some(video), Some(sink)) = (crop, &video, &st.sink) {
+            let picture = self
+                .picture_size
+                .unwrap_or((area.width & !1, area.height & !1));
+            let geometry = area.x != 0
+                || area.y != 0
+                || area.width != source.width
+                || area.height != source.height
+                || picture != (source.width, source.height);
+            if geometry {
+                let input = SourceVideo {
+                    width: picture.0,
+                    height: picture.1,
+                    fps: Some(video.fps.unwrap_or(30.0).min(30.0)),
+                    ..*video
+                };
+                let mut bounded = sink.clone();
+                // The window's shape does not constrain the frame: the car stretches it.
+                bounded.max_width = None;
+                bounded.max_height = None;
+                let target = self
+                    .target(&input, &bounded)
+                    .filter(|t| self.picture_size.is_none() || (t.width, t.height) == picture);
+                decision = Some(match target {
+                    Some(target) => TranscodeDecision::Transcode {
+                        target,
+                        reason: "carlink-geometry",
+                    },
+                    None => TranscodeDecision::Unsupported {
+                        reason: "no-geometry-target",
+                    },
+                });
+            }
+        }
+        if !force && decision == st.decision && crop == st.configured_crop {
             return;
         }
+        if !force {
+            if let (
+                Some(TranscodeDecision::Transcode {
+                    target: previous, ..
+                }),
+                Some(TranscodeDecision::Transcode { target: next, .. }),
+                Some(pipeline),
+            ) = (&st.decision, &decision, &st.pipeline)
+            {
+                if previous == next {
+                    pipeline.update_crop(crop);
+                    st.configured_crop = crop;
+                    if st.delivered.is_some() {
+                        st.active_area = crop;
+                    }
+                    st.decision = decision;
+                    return;
+                }
+            }
+        }
+        st.configured_crop = crop;
         st.stop_pipeline();
         st.revision += 1;
         st.decision = decision.clone();
@@ -333,7 +467,11 @@ impl Shared {
         }
         let mut forward = Some(source.clone());
         if let Some(TranscodeDecision::Transcode { target, .. }) = decision {
-            let config = TranscodeConfig { source, target };
+            let config = TranscodeConfig {
+                source,
+                target,
+                crop,
+            };
             let previous = st.retired.take();
             match Pipeline::start(
                 self.weak.clone(),
@@ -359,6 +497,35 @@ impl Shared {
         }
         self.inner.on_video_format(SCREEN, forward);
     }
+    /// Plan against each encoder's own bounds instead of combining incompatible maxima.
+    fn target(&self, source: &SourceVideo, sink: &SinkVideo) -> Option<crate::TranscodeTarget> {
+        let support = self.support.as_ref()?;
+        let encoders = self.factory.encoders();
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            for encoder in encoders
+                .iter()
+                .filter(|e| e.codec == codec && support.encode.contains(&codec))
+            {
+                let mut sink = sink.clone();
+                sink.max_width = match (sink.max_width, encoder.max_width) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+                sink.max_height = match (sink.max_height, encoder.max_height) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+                let support = TranscodeSupport {
+                    encode: vec![codec],
+                    ..support.clone()
+                };
+                if let Some(target) = transcode_policy::target(source, &sink, &support) {
+                    return Some(target);
+                }
+            }
+        }
+        None
+    }
     /// Asks the input for an IDR: a new decoder, a discontinuity or a fallback needs one.
     fn request_key_frame(&self) {
         let (host, origin) = {
@@ -382,7 +549,7 @@ impl Shared {
 }
 
 fn same_stream(a: &VideoFormat, b: &VideoFormat) -> bool {
-    a.codec == b.codec && a.config == b.config
+    a.codec == b.codec && a.config == b.config && a.width == b.width && a.height == b.height
 }
 fn source_video(format: &VideoFormat) -> Option<SourceVideo> {
     Some(SourceVideo {
@@ -438,6 +605,23 @@ impl OutputHost for Proxy {
                 pipeline.request_key_frame();
             }
         }
+        let mut event = event;
+        if let Some(shared) = self.shared.upgrade() {
+            let st = shared.state.lock().unwrap();
+            if let (
+                ControlEvent::Touch {
+                    screen: SCREEN,
+                    contacts,
+                    ..
+                },
+                Some(area),
+            ) = (&mut event, st.active_area)
+            {
+                for contact in contacts {
+                    crate::geometry::map(area, contact);
+                }
+            }
+        }
         self.upstream.control(event);
     }
     fn stats(&self, stats: OutputStats) {
@@ -466,6 +650,7 @@ struct PipelineControl {
     running: AtomicBool,
     key_frame: AtomicBool,
     input: Mutex<Input>,
+    crop: Mutex<Option<Option<ViewArea>>>,
 }
 struct Input {
     frames: VecDeque<VideoFrame>,
@@ -484,6 +669,7 @@ impl Pipeline {
         let control = Arc::new(PipelineControl {
             running: AtomicBool::new(true),
             key_frame: AtomicBool::new(false),
+            crop: Mutex::new(None),
             input: Mutex::new(Input {
                 frames: VecDeque::with_capacity(QUEUE_FRAMES),
                 bytes: 0,
@@ -523,6 +709,9 @@ impl Pipeline {
         input.awaiting_key = false;
         input.bytes += frame.data.len();
         input.frames.push_back(frame);
+    }
+    fn update_crop(&self, crop: Option<ViewArea>) {
+        *self.control.crop.lock().unwrap() = Some(crop);
     }
     fn request_key_frame(&self) {
         self.control.key_frame.store(true, Ordering::Release);
@@ -587,6 +776,9 @@ fn pump(
     let mut pending: Option<VideoFrame> = None;
     let mut watchdog = Watchdog::new(STALL_LIMIT, Instant::now());
     while control.running.load(Ordering::Acquire) {
+        if let Some(crop) = control.crop.lock().unwrap().take() {
+            transcoder.update_crop(crop)?;
+        }
         if control.key_frame.swap(false, Ordering::AcqRel) {
             transcoder.force_key_frame()?;
         }
@@ -643,7 +835,7 @@ fn pump(
         {
             let format = VideoFormat::create(
                 SCREEN,
-                VideoCodec::H264,
+                config.target.profile.codec,
                 avcc.clone(),
                 Some(config.target.fps as f64),
             )?;

@@ -35,6 +35,15 @@ pub struct Capability {
     pub reserved: [u32; 3],
 }
 #[repr(C)]
+pub struct FrameSizeEnum {
+    pub index: u32,
+    pub pixel_format: u32,
+    pub kind: u32,
+    /// Discrete width/height, or min/max/step width followed by min/max/step height.
+    pub size: [u32; 6],
+    pub reserved: [u32; 2],
+}
+#[repr(C)]
 pub struct FmtDesc {
     pub index: u32,
     pub kind: u32,
@@ -226,6 +235,7 @@ pub struct StreamParm {
 const _: () = {
     assert!(size_of::<Capability>() == 104);
     assert!(size_of::<FmtDesc>() == 64);
+    assert!(size_of::<FrameSizeEnum>() == 44);
     assert!(size_of::<PixFormatMplane>() == 192);
     assert!(size_of::<Format>() == 208);
     assert!(size_of::<RequestBuffers>() == 20);
@@ -246,6 +256,7 @@ const fn ioc(direction: c_ulong, number: c_ulong, size: usize) -> c_ulong {
 }
 pub const VIDIOC_QUERYCAP: c_ulong = ioc(READ, 0, size_of::<Capability>());
 pub const VIDIOC_ENUM_FMT: c_ulong = ioc(READ | WRITE, 2, size_of::<FmtDesc>());
+pub const VIDIOC_ENUM_FRAMESIZES: c_ulong = ioc(READ | WRITE, 74, size_of::<FrameSizeEnum>());
 pub const VIDIOC_G_FMT: c_ulong = ioc(READ | WRITE, 4, size_of::<Format>());
 pub const VIDIOC_S_FMT: c_ulong = ioc(READ | WRITE, 5, size_of::<Format>());
 pub const VIDIOC_REQBUFS: c_ulong = ioc(READ | WRITE, 8, size_of::<RequestBuffers>());
@@ -284,6 +295,7 @@ macro_rules! pod {
 pod!(
     Capability,
     FmtDesc,
+    FrameSizeEnum,
     PixFormatMplane,
     Format,
     RequestBuffers,

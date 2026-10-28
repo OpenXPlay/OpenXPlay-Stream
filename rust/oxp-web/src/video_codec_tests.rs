@@ -77,3 +77,55 @@ fn repeated_hello_updates_preference_without_changing_hardware() {
     handle(hello, "b", &config, &web.state, 0).unwrap();
     assert!(!host.0.lock().unwrap().last().unwrap().prefers_h264);
 }
+
+#[test]
+fn transcoding_capabilities_follow_every_main_screen_browser() {
+    let mut config = WebOutputConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        PathBuf::new(),
+        Pairing::Disabled,
+        Tls::Disabled,
+    );
+    config.common_video_decoders = true;
+    let web = WebOutput::new(config.clone()).unwrap();
+    let host = Arc::new(Host::default());
+    web.state.lock().unwrap().host = Some(host.clone());
+    let mut hello: Value = serde_json::from_str(include_str!(
+        "../../web-receiver/spec/vectors/web/hello-video-codec-auto.json"
+    ))
+    .unwrap();
+    for id in ["hevc", "avc"] {
+        web.state
+            .lock()
+            .unwrap()
+            .clients
+            .insert(id.into(), Client::new(config.queue_duration_us));
+        if id == "avc" {
+            hello["decoders"].as_array_mut().unwrap().retain(|d| {
+                !oxp_core::video_codec_policy::is_hevc(d["codecString"].as_str().unwrap())
+            });
+        }
+        handle(hello.clone(), id, &config, &web.state, 0).unwrap();
+    }
+    assert!(!host
+        .0
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .decoders
+        .iter()
+        .any(|d| oxp_core::video_codec_policy::is_hevc(&d.codec_string)));
+    assert!(!host.0.lock().unwrap().last().unwrap().decoders.is_empty());
+    web.state.lock().unwrap().clients.remove("avc");
+    report_caps(&web.state);
+    assert!(host
+        .0
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .decoders
+        .iter()
+        .any(|d| oxp_core::video_codec_policy::is_hevc(&d.codec_string)));
+}

@@ -134,19 +134,55 @@ pub struct Nv12Scaler {
 }
 impl Nv12Scaler {
     pub fn new(src: Nv12Layout, dst: Nv12Layout) -> Self {
+        Self::with_crop(src, dst, crate::geometry::crop(src.width, src.height, None))
+            .expect("full picture crop")
+    }
+    pub fn with_crop(
+        src: Nv12Layout,
+        dst: Nv12Layout,
+        area: oxp_core::model::ViewArea,
+    ) -> Result<Self> {
+        area.validate()?;
+        if area.canvas_width != src.width
+            || area.canvas_height != src.height
+            || area.width < 2
+            || area.height < 2
+        {
+            return Err("crop does not match decoded picture".into());
+        }
         let map = |to: usize, from: usize| -> Vec<u32> {
             (0..to).map(|i| (i * from / to) as u32).collect()
         };
         let pairs = |w: u32| w.div_ceil(2) as usize;
-        Self {
-            luma_x: map(dst.width as usize, src.width as usize),
-            luma_y: map(dst.height as usize, src.height as usize),
-            chroma_x: map(pairs(dst.width), pairs(src.width)),
-            chroma_y: map(dst.chroma_rows(), src.chroma_rows()),
-            same_width: src.width == dst.width,
+        Ok(Self {
+            luma_x: map(dst.width as usize, area.width as usize)
+                .into_iter()
+                .map(|x| x + area.x)
+                .collect(),
+            luma_y: map(dst.height as usize, area.height as usize)
+                .into_iter()
+                .map(|y| y + area.y)
+                .collect(),
+            chroma_x: map(pairs(dst.width), pairs(area.width))
+                .into_iter()
+                .map(|x| x + area.x / 2)
+                .collect(),
+            chroma_y: map(dst.chroma_rows(), area.height.div_ceil(2) as usize)
+                .into_iter()
+                .map(|y| y + area.y / 2)
+                .collect(),
+            same_width: area.x == 0 && area.width == dst.width,
             src,
             dst,
-        }
+        })
+    }
+    pub fn update_crop(&mut self, area: Option<oxp_core::model::ViewArea>) -> Result<()> {
+        *self = Self::with_crop(
+            self.src,
+            self.dst,
+            area.unwrap_or_else(|| crate::geometry::crop(self.src.width, self.src.height, None)),
+        )?;
+        Ok(())
     }
     /// `src` and `dst` hold the mapped planes; the second entry is empty for single-plane NV12.
     pub fn convert(&self, src: [&[u8]; 2], dst: [&mut [u8]; 2]) -> Result<()> {
@@ -361,5 +397,41 @@ mod tests {
         let mut tiny = buffers(&dst_format);
         tiny[0].truncate(1000);
         assert!(convert(&Nv12Scaler::new(src_layout, dst_layout), &src, &mut tiny).is_err());
+    }
+    #[test]
+    fn crop_stretches_luma_and_chroma_without_sampling_the_borders() {
+        let sf = venus_format(16, 12);
+        let df = venus_format(8, 8);
+        let sl = Nv12Layout::new(&sf, (16, 12)).unwrap();
+        let dl = Nv12Layout::new(&df, (8, 8)).unwrap();
+        let mut src = buffers(&sf);
+        picture(&sl, &mut src);
+        let mut dst = buffers(&df);
+        let area = oxp_core::model::ViewArea {
+            x: 4,
+            y: 2,
+            width: 8,
+            height: 4,
+            canvas_width: 16,
+            canvas_height: 12,
+        };
+        let mut scaler = Nv12Scaler::with_crop(sl, dl, area).unwrap();
+        convert(&scaler, &src, &mut dst).unwrap();
+        for (x, y) in [(0, 0), (7, 7), (3, 4)] {
+            let (sx, sy) = (4 + x, 2 + y / 2);
+            assert_eq!(dst[0][y * dl.luma.stride + x], (sx * 7 + sy * 13) as u8);
+        }
+        assert_eq!(
+            dst[0][dl.chroma.offset],
+            src[0][sl.chroma.offset + sl.chroma.stride + 4]
+        );
+        scaler
+            .update_crop(Some(oxp_core::model::ViewArea { x: 2, y: 4, ..area }))
+            .unwrap();
+        convert(&scaler, &src, &mut dst).unwrap();
+        assert_eq!(dst[0][0], (2 * 7 + 4 * 13) as u8);
+        assert!(
+            Nv12Scaler::with_crop(sl, dl, oxp_core::model::ViewArea { width: 20, ..area }).is_err()
+        );
     }
 }

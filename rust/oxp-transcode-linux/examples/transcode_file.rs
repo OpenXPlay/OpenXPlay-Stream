@@ -76,7 +76,11 @@ fn main() -> oxp_transcode_linux::Result<()> {
         return Err("the policy does not transcode this input for this sink".into());
     };
     let started = Instant::now();
-    let mut transcoder = factory.open(&TranscodeConfig { source, target })?;
+    let mut transcoder = factory.open(&TranscodeConfig {
+        source,
+        target,
+        crop: None,
+    })?;
     eprintln!("opened in {} ms", started.elapsed().as_millis());
 
     let mut output = std::io::BufWriter::new(std::fs::File::create(&args[2])?);
