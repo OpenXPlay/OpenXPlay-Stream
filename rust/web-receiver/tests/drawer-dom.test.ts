@@ -97,6 +97,25 @@ it('supports keyboard entry, Tab wrapping, arrows and one-level back', () => {
   f.key('Backspace'); expect(f.current()).toBe('picture'); f.key('Escape'); expect(f.current()).toBe('root');
   f.key('Settings'); expect(f.dialog.open).toBe(false);
 });
+it.each(['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'])('acquires D-pad focus with %s after a touch opens the sheet', key => {
+  const f = fixture(true); f.drawer.open();
+  expect(f.doc.activeElement).toBe(f.pages.get('root'));
+  f.key(key); expect(f.doc.activeElement).toBe(f.close);
+  f.events.emit('pointerdown', {}); f.drawer.push('picture'); expect(f.doc.activeElement).toBe(f.pages.get('picture'));
+  f.key(key); expect(f.doc.activeElement).toBe(f.back);
+});
+it('keeps the outgoing title before the active title through push and pop motion', () => {
+  const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(600);
+  const titles = f.dialog.querySelectorAll('[data-title]');
+  const title = (name: string) => titles.find(node => node.dataset.title === name)!;
+  f.drawer.push('picture'); vi.advanceTimersByTime(16);
+  expect(f.dialog.classes.has('is-moving')).toBe(true);
+  expect(title('root').classes.has('before')).toBe(true); expect(title('root').getAttribute('aria-hidden')).toBe('true');
+  expect(title('picture').classes.has('active')).toBe(true);
+  vi.advanceTimersByTime(600); f.drawer.push('resolution'); vi.advanceTimersByTime(600); f.drawer.pop(); vi.advanceTimersByTime(16);
+  expect(title('picture').classes.has('active')).toBe(true); expect(title('root').classes.has('before')).toBe(true);
+  expect(title('resolution').classes.has('before')).toBe(false); expect(title('resolution').getAttribute('aria-hidden')).toBe('true');
+});
 it.each([0, 80, 420])('lets a tap interrupt the opening transition at %s ms', at => {
   const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(at);
   f.dialog.emit('click', { target: f.row }); vi.advanceTimersByTime(600);
@@ -134,7 +153,10 @@ it('preserves vertical scrolling and settles a cancelled horizontal gesture', ()
 });
 it('swipes a submenu back and resizes between the three panel modes', () => {
   const f = fixture(); f.drawer.open(); vi.advanceTimersByTime(600); f.drawer.push('picture'); vi.advanceTimersByTime(600); f.drawer.push('codec'); vi.advanceTimersByTime(600);
-  f.pointer('pointerdown', 0); f.pointer('pointermove', 250, 0, 200); vi.advanceTimersByTime(16); f.pointer('pointerup', 250, 0, 210); vi.advanceTimersByTime(600);
+  f.pointer('pointerdown', 0); f.pointer('pointermove', 250, 0, 200); vi.advanceTimersByTime(16); f.pointer('pointerup', 250, 0, 210);
+  expect(f.panel.properties.get('--duration')).toBe('280ms');
+  vi.advanceTimersByTime(359); expect(f.dialog.classes.has('is-moving')).toBe(true);
+  vi.advanceTimersByTime(1); expect(f.dialog.classes.has('is-moving')).toBe(false);
   expect(f.current()).toBe('picture'); expect(f.dialog.open).toBe(true);
   expect(f.panel.dataset.width).toBe('two-thirds'); f.win.innerWidth = 2000; f.windowEvents.emit('resize', {}); expect(f.panel.dataset.width).toBe('half');
   f.win.innerWidth = 430; f.windowEvents.emit('resize', {}); expect(f.panel.dataset.width).toBe('full');

@@ -19,7 +19,7 @@ export function sheetKey(event: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'preven
   const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
   const candidates = horizontal && group ? controls.filter(control => group.contains(control)) : controls;
   const current = candidates.indexOf(target);
-  if (current < 0) return;
+  if (current < 0) { event.preventDefault(); candidates[0]?.focus(); return; }
   event.preventDefault();
   candidates[(current + (event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : candidates.length - 1)) % candidates.length]?.focus();
 }

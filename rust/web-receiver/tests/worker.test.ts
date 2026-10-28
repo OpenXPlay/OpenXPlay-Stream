@@ -225,14 +225,28 @@ it('rejects stale port installation and same-token callbacks from replaced captu
   socket.receive({ type: 'mic', stream: 7, request: null });
   current.onmessage({ data: { token, data: new ArrayBuffer(1920) } }); expect(socket.sent).toHaveLength(1);
 });
-it('stops reconnecting after policy close and resumes with the new pairing code', async () => {
+it('stops reconnecting only after the pairing close and resumes with the new pairing code', async () => {
   const socket = init(); socket.open(); await welcome(socket);
-  socket.close(1008);
+  socket.close(4401);
   expect(scope.postMessage).toHaveBeenCalledWith({ type: 'rejected', token: 'example-pairing-token' });
   await vi.advanceTimersByTimeAsync(60000); expect(Socket.instances).toHaveLength(1);
   command({ type: 'pair', token: '00123456' });
   const next = Socket.instances.at(-1)!; next.open();
   expect(next.json()[0]).toMatchObject({ type: 'hello', token: '00123456' });
+});
+it.each([1000, 1002, 1006, 1008, 1011])('retries non-pairing close %s with backoff and preserves the hello token', async code => {
+  const socket = init(); socket.open(); await welcome(socket);
+  socket.close(code);
+  expect(scope.postMessage.mock.calls.some(([notice]) => notice.type === 'rejected')).toBe(false);
+  await vi.advanceTimersByTimeAsync(399); expect(Socket.instances).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(202); expect(Socket.instances).toHaveLength(2);
+  Socket.instances[1].open(); expect(Socket.instances[1].json()[0]).toEqual(vector('hello'));
+});
+it('retries a pre-welcome 1008 timeout without asking for a pairing code', async () => {
+  const socket = init(null, { ...vector('hello'), token: '' }); socket.open(); socket.close(1008);
+  expect(scope.postMessage.mock.calls.some(([notice]) => notice.type === 'rejected')).toBe(false);
+  await vi.advanceTimersByTimeAsync(601); expect(Socket.instances).toHaveLength(2);
+  Socket.instances[1].open(); expect(Socket.instances[1].json()[0]).toMatchObject({ type: 'hello', token: '' });
 });
 it('detaches capture immediately while permission or the relay response is pending', async () => {
   const socket = init(); socket.open(); await welcome(socket);
@@ -251,7 +265,7 @@ it('starts without a token and waits after rejection until a code is submitted',
   const socket = Socket.instances[0]; socket.open();
   expect(socket.sent[0]).toEqual(hello);
   command({ type: 'hello', hello: { ...hello, token: 'not-sent-yet' } });
-  socket.close(1008);
+  socket.close(4401);
   expect(scope.postMessage).toHaveBeenCalledWith({ type: 'rejected', token: '' });
   await vi.advanceTimersByTimeAsync(60000); expect(Socket.instances).toHaveLength(1);
   command({ type: 'pair', token: '00123456' }); Socket.instances[1].open();
@@ -370,7 +384,7 @@ it.each(['socket', 'decoder', 'manual reconnect'] as const)('shows the card afte
 });
 it('preserves pairing rejection after an interruption without a delayed status override', async () => {
   const { socket } = await streaming();
-  socket.close(1008); scope.postMessage.mockClear();
+  socket.close(4401); scope.postMessage.mockClear();
   await vi.advanceTimersByTimeAsync(4000);
   expect(notices().filter(v => v.type === 'hold' || v.type === 'status')).toEqual([]);
   expect(Socket.instances).toHaveLength(1);

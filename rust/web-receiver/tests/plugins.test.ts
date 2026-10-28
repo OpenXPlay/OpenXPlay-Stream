@@ -91,9 +91,13 @@ it('sandboxes one frame, verifies message source, collapses before host reply, a
   slot.refresh(); expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'geometry', hostPrefs: { dock: { x: 300, y: 150 } } }), '*');
   message('layout', { cover: 'fullscreen', regions: [{ x: 0, y: 0, w: 1000, h: 500 }] });
   expect(slot.cover).toBe('fullscreen'); expect(coverChanged).toHaveBeenCalledOnce();
+  message('layout', { cover: 'fullscreen', regions: [{ x: 20, y: 20, w: 900, h: 450 }] });
+  expect(coverChanged).toHaveBeenCalledOnce();
   const full = frame.style.clipPath; expect(slot.collapse()).toBe(true); expect(frame.style.clipPath).not.toBe(full); expect(post).toHaveBeenLastCalledWith({ oxp: 'host/0', type: 'collapse' }, '*');
   expect(slot.cover).toBe('none'); expect(coverChanged).toHaveBeenCalledTimes(2);
   expect(slot.collapse()).toBe(false);
+  message('layout', { cover: 'none', regions: [] });
+  expect(coverChanged).toHaveBeenCalledTimes(2);
   slot.visibility(false);
   message('ready', { spec: 'oxp-web-plugin/0' });
   expect(post).toHaveBeenLastCalledWith({oxp:'host/0',type:'visibility',visible:false}, '*');
@@ -106,7 +110,7 @@ it('sandboxes one frame, verifies message source, collapses before host reply, a
   expect(post).toHaveBeenLastCalledWith({oxp:'host/0',type:'visibility',visible:true}, '*');
   now = 2000; vi.advanceTimersByTime(2000); expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'ping', seq: 1 }), '*');
   now = 6000; vi.advanceTimersByTime(4000); expect(diagnostic).toHaveBeenCalledWith('plugins-host-stalled'); expect(append).toHaveBeenCalledTimes(2);
-  now = 12000; vi.advanceTimersByTime(6000); expect(append).toHaveBeenCalledTimes(2); expect(remove).toHaveBeenCalledTimes(2); expect(slot.cover).toBe('none'); expect(coverChanged).toHaveBeenCalledTimes(4);
+  now = 12000; vi.advanceTimersByTime(6000); expect(append).toHaveBeenCalledTimes(2); expect(remove).toHaveBeenCalledTimes(2); expect(slot.cover).toBe('none'); expect(coverChanged).toHaveBeenCalledTimes(2);
 });
 
 it('stores only bounded JSON objects and tolerates unavailable or corrupt storage', () => {

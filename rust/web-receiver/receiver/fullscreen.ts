@@ -11,13 +11,13 @@ export class FullscreenIntent {
   viewAreas = false;
   failed = false;
   private active = false;
-  private pointers = new Map<number, boolean>();
+  private pointers = new Set<number>();
   private last?: DisplayInfo;
   constructor(private readonly available: boolean, private readonly storage: () => Store) {
     this.intent = available;
     try { this.intent = available && storage().getItem('oxp.fullscreen') !== 'false'; this.restore = storage().getItem('oxp.fullscreenRestore') !== 'false'; } catch { }
   }
-  get pending(): boolean { return this.available && this.intent && this.restore && !this.active && !this.failed; }
+  get pending(): boolean { return this.available && this.intent && this.restore && !this.active; }
   get state(): 'fullscreenUnavailable' | 'enabled' | 'off' { return !this.available || (this.intent && this.failed) ? 'fullscreenUnavailable' : this.intent ? 'enabled' : 'off'; }
   private persist(key: string, value: boolean): void { try { this.storage().setItem(key, String(value)); } catch { } }
   setRestore(value: boolean): void { this.restore = value; this.persist('oxp.fullscreenRestore', value); }
@@ -36,15 +36,11 @@ export class FullscreenIntent {
   }
   pointerDown(event: Pick<PointerEvent, 'pointerId' | 'pointerType'>): { swallow: boolean; request: boolean } {
     if (!this.pending) return { swallow: false, request: false };
-    const mouse = event.pointerType === 'mouse';
-    this.pointers.set(event.pointerId, !mouse);
-    return { swallow: true, request: mouse };
+    this.pointers.add(event.pointerId);
+    return { swallow: true, request: true };
   }
-  pointerUp(pointerId: number, cancelled = false): { swallow: boolean; request: boolean } {
-    const deferred = this.pointers.get(pointerId);
-    if (deferred === undefined) return { swallow: false, request: false };
-    this.pointers.delete(pointerId);
-    return { swallow: true, request: deferred && !cancelled && this.pending };
+  pointerUp(pointerId: number): { swallow: boolean; request: boolean } {
+    return { swallow: this.pointers.delete(pointerId), request: false };
   }
   display(real: DisplayInfo): DisplayInfo {
     if (real.fullscreen) this.last = real;
