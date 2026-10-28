@@ -291,3 +291,220 @@ fn invalid_replacements_keep_the_entire_served_set_and_cached_files() {
     .unwrap();
     assert!(pem_only.update_tls(None, vec![]).is_err());
 }
+
+#[test]
+fn user_default_install_keep_replace_and_remove_preserve_connections_and_trusted_sni() {
+    let root = Temp::new();
+    let state_dir = root.0.join("local");
+    let web = WebOutput::new(WebOutputConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        root.0.clone(),
+        Pairing::Disabled,
+        Tls::SelfSigned {
+            state_dir: state_dir.clone(),
+            sans: vec![],
+        },
+    ))
+    .unwrap();
+    web.open(Arc::new(Host)).unwrap();
+    let address = web.await_listening(Duration::from_secs(5)).unwrap();
+    let generated = CertificateDer::from_pem_file(state_dir.join("cert.pem")).unwrap();
+    let mut old = connect(
+        address,
+        "127.0.0.1",
+        std::slice::from_ref(&generated),
+        &rustls::version::TLS12,
+    );
+    let (trusted, trusted_cert) = pem(&root, "trusted.test");
+    let (first, first_cert) = pem(&root, "127.0.0.1");
+    let event = web
+        .update_tls_with_default(
+            Some(trusted.clone()),
+            vec![],
+            tls::DefaultUpdate::Replace(tls::DefaultPem {
+                cert: first.cert.clone(),
+                key: first.key.clone(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(event["defaultFingerprint"], event["fingerprint"]);
+    let original = event.clone();
+    let mut user = connect(
+        address,
+        "127.0.0.1",
+        std::slice::from_ref(&first_cert),
+        &rustls::version::TLS13,
+    );
+    assert_eq!(peer(&user), first_cert);
+    let mut trusted_socket = connect(
+        address,
+        "trusted.test",
+        std::slice::from_ref(&trusted_cert),
+        &rustls::version::TLS12,
+    );
+    assert_eq!(peer(&trusted_socket), trusted_cert);
+    ping(&mut old);
+    // Keep uses the validated installed key even if its source files disappear.
+    fs::remove_file(&first.cert).unwrap();
+    fs::remove_file(&first.key).unwrap();
+    let sans = vec!["192.0.2.77".into()];
+    assert_eq!(
+        web.update_tls(Some(trusted.clone()), sans.clone()).unwrap(),
+        original
+    );
+    let (second, second_cert) = pem(&root, "127.0.0.1");
+    let default = tls::DefaultPem {
+        cert: second.cert.clone(),
+        key: second.key.clone(),
+    };
+    let event = web
+        .update_tls_with_default(
+            Some(trusted.clone()),
+            sans.clone(),
+            tls::DefaultUpdate::Replace(default),
+        )
+        .unwrap();
+    assert_ne!(event["defaultFingerprint"], original["defaultFingerprint"]);
+    assert_eq!(event["trustedFingerprint"], original["trustedFingerprint"]);
+    let mut current = connect(
+        address,
+        "127.0.0.1",
+        std::slice::from_ref(&second_cert),
+        &rustls::version::TLS12,
+    );
+    assert_eq!(peer(&current), second_cert);
+    ping(&mut user);
+    // A valid default combined with invalid trusted material must install neither half.
+    let mut invalid_trusted = trusted.clone();
+    invalid_trusted.key = second.key.clone();
+    assert!(web
+        .update_tls_with_default(
+            Some(invalid_trusted),
+            sans.clone(),
+            tls::DefaultUpdate::Remove
+        )
+        .is_err());
+    assert_eq!(
+        web.tls
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .fingerprint_event(),
+        event
+    );
+    let event = web
+        .update_tls_with_default(Some(trusted), sans, tls::DefaultUpdate::Remove)
+        .unwrap();
+    assert_eq!(event["defaultFingerprint"], Value::Null);
+    assert_eq!(event["trustedFingerprint"], original["trustedFingerprint"]);
+    let restored = CertificateDer::from_pem_file(state_dir.join("cert.pem")).unwrap();
+    assert_ne!(restored, generated);
+    for version in [&rustls::version::TLS12, &rustls::version::TLS13] {
+        let mut ip = connect(
+            address,
+            "192.0.2.77",
+            std::slice::from_ref(&restored),
+            version,
+        );
+        assert_eq!(peer(&ip), restored);
+        ping(&mut ip);
+        let mut named = connect(
+            address,
+            "trusted.test",
+            std::slice::from_ref(&trusted_cert),
+            version,
+        );
+        assert_eq!(peer(&named), trusted_cert);
+        ping(&mut named);
+    }
+    for socket in [&mut old, &mut user, &mut current, &mut trusted_socket] {
+        ping(socket);
+    }
+    web.close();
+}
+
+#[test]
+fn invalid_defaults_leave_served_set_and_generated_cache_untouched() {
+    let root = Temp::new();
+    let state_dir = root.0.join("local");
+    let web = WebOutput::new(WebOutputConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        root.0.clone(),
+        Pairing::Disabled,
+        Tls::SelfSigned {
+            state_dir: state_dir.clone(),
+            sans: vec![],
+        },
+    ))
+    .unwrap();
+    let (trusted, _) = pem(&root, "trusted.test");
+    let (user, _) = pem(&root, "127.0.0.1");
+    let default = tls::DefaultPem {
+        cert: user.cert.clone(),
+        key: user.key.clone(),
+    };
+    web.update_tls_with_default(
+        Some(trusted.clone()),
+        vec![],
+        tls::DefaultUpdate::Replace(default.clone()),
+    )
+    .unwrap();
+    let before = web
+        .tls
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .fingerprint_event();
+    let files = [
+        fs::read(state_dir.join("cert.pem")).unwrap(),
+        fs::read(state_dir.join("key.pem")).unwrap(),
+    ];
+    let mut bad_chain = default.clone();
+    bad_chain.cert = root.0.join("malformed.pem");
+    fs::write(
+        &bad_chain.cert,
+        format!(
+            "{}-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n",
+            fs::read_to_string(&default.cert).unwrap()
+        ),
+    )
+    .unwrap();
+    let invalid = [
+        tls::DefaultPem {
+            cert: root.0.join("missing"),
+            ..default.clone()
+        },
+        tls::DefaultPem {
+            key: trusted.key.clone(),
+            ..default
+        },
+        bad_chain,
+    ];
+    for default in invalid {
+        assert!(web
+            .update_tls_with_default(
+                None,
+                vec!["192.0.2.88".into()],
+                tls::DefaultUpdate::Replace(default)
+            )
+            .is_err());
+        assert_eq!(
+            web.tls
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .fingerprint_event(),
+            before
+        );
+        assert_eq!(
+            files,
+            [
+                fs::read(state_dir.join("cert.pem")).unwrap(),
+                fs::read(state_dir.join("key.pem")).unwrap()
+            ]
+        );
+    }
+}

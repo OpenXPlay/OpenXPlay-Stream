@@ -12,9 +12,9 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
-struct Temp(PathBuf);
+pub(super) struct Temp(pub(super) PathBuf);
 impl Temp {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
             "../target/oxp-tls-{}-{}",
             std::process::id(),
@@ -30,7 +30,7 @@ impl Drop for Temp {
     }
 }
 
-fn names(values: &[&str]) -> Vec<String> {
+pub(super) fn names(values: &[&str]) -> Vec<String> {
     values.iter().map(|name| (*name).into()).collect()
 }
 
@@ -42,7 +42,7 @@ fn parsed_names(cert: &CertificateDer<'_>) -> Vec<String> {
         .collect()
 }
 
-fn sni_identity(temp: &Temp) -> (Tls, CertificateDer<'static>, CertificateDer<'static>) {
+pub(super) fn sni_identity(temp: &Temp) -> (Tls, CertificateDer<'static>, CertificateDer<'static>) {
     let trusted = rcgen::generate_simple_self_signed(names(&["relay.test"])).unwrap();
     let cert = temp.0.join("trusted.pem");
     let key = temp.0.join("trusted-key.pem");
@@ -72,7 +72,7 @@ fn sni_identity(temp: &Temp) -> (Tls, CertificateDer<'static>, CertificateDer<'s
     )
 }
 
-fn handshake(
+pub(super) fn handshake(
     server: Arc<ServerConfig>,
     roots: &[CertificateDer<'static>],
     name: &str,
@@ -201,10 +201,14 @@ fn sni_handshakes_present_the_selected_leaf_with_tls12_and_tls13() {
     assert_eq!(event["trustedFingerprint"], trusted_identity.fingerprint);
     for identity in [local_identity, trusted_identity] {
         assert!(identity.fingerprint_event().get("trustedName").is_none());
-        assert!(identity
-            .fingerprint_event()
-            .get("trustedFingerprint")
-            .is_none());
+        assert_eq!(
+            identity.fingerprint_event()["trustedFingerprint"],
+            Value::Null
+        );
+        assert_eq!(
+            identity.fingerprint_event()["defaultFingerprint"],
+            Value::Null
+        );
     }
 }
 
