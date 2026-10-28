@@ -290,12 +290,12 @@ pub fn decide(
             reason: "no-decoder",
         };
     }
-    if !support.encode.contains(&VideoCodec::H264) {
+    if support.encode.is_empty() {
         return Unsupported {
             reason: "no-encoder",
         };
     }
-    match avc_target(source, sink, support.scaling) {
+    match target(source, sink, support) {
         Some(target) => Transcode { target, reason },
         None => Unsupported {
             reason: "no-target",
@@ -432,5 +432,84 @@ fn avc_target(source: &SourceVideo, sink: &SinkVideo, scaling: bool) -> Option<T
         height: p.height,
         fps: p.fps,
         bitrate,
+    })
+}
+
+/// Chooses an encodable receiver target even when the source profile is already accepted
+/// (for example, when an output must crop or stretch the picture).
+pub fn target(
+    source: &SourceVideo,
+    sink: &SinkVideo,
+    support: &TranscodeSupport,
+) -> Option<TranscodeTarget> {
+    if !support.decode.contains(&source.profile.codec) {
+        return None;
+    }
+    if support.encode.contains(&VideoCodec::H264) {
+        if let Some(target) = avc_target(source, sink, support.scaling) {
+            return Some(target);
+        }
+    }
+    if !support.encode.contains(&VideoCodec::H265) {
+        return None;
+    }
+    // Main tier HEVC limits, matching the codec-specific WFD limits used by Carlink.
+    let decoder = sink
+        .decoders
+        .iter()
+        .filter(|d| {
+            d.codec == VideoCodec::H265
+                && d.profile == 1
+                && !d.high_tier
+                && [30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186].contains(&d.level)
+        })
+        .max_by_key(|d| d.level)?;
+    let (max_pixels, max_rate) = match decoder.level {
+        30 => (36_864, 552_960),
+        60 => (122_880, 3_686_400),
+        63 => (245_760, 7_372_800),
+        90 => (552_960, 16_588_800),
+        93 => (983_040, 33_177_600),
+        120 => (2_228_224, 66_846_720),
+        123 => (2_228_224, 133_693_440),
+        150 => (8_912_896, 267_386_880),
+        153 => (8_912_896, 534_773_760),
+        156 => (8_912_896, 1_069_547_520),
+        180 => (35_651_584, 1_069_547_520),
+        183 => (35_651_584, 2_139_095_040),
+        186 => (35_651_584, 4_278_190_080u64),
+        _ => return None,
+    };
+    let (mut width, mut height) = (source.width, source.height);
+    if width < 2 || height < 2 {
+        return None;
+    }
+    let scale = (max_pixels as f64 / (width as f64 * height as f64))
+        .sqrt()
+        .min(1.0)
+        .min(sink.max_width.unwrap_or(width) as f64 / width as f64)
+        .min(sink.max_height.unwrap_or(height) as f64 / height as f64);
+    if scale < 1.0 && !support.scaling {
+        return None;
+    }
+    width = (width as f64 * scale) as u32 & !1;
+    height = (height as f64 * scale) as u32 & !1;
+    if width < 2 || height < 2 {
+        return None;
+    }
+    let pixels = width as u64 * height as u64;
+    let fps = source
+        .fps
+        .unwrap_or(DEFAULT_FPS)
+        .min(sink.max_fps.unwrap_or(240.0))
+        .min(max_rate as f64 / pixels as f64)
+        .min(30.0) as u32;
+    (fps > 0).then_some(TranscodeTarget {
+        profile: *decoder,
+        width,
+        height,
+        fps,
+        // Android uses 4 Mbit/s and a 30 fps encoder for HEVC output.
+        bitrate: 4_000_000,
     })
 }

@@ -51,6 +51,15 @@ pub fn resolve_with_preferences(
     }
 }
 
+/// Whether a receiver's codec string accepts a source profile, level and tier.
+pub fn decoder_accepts(decoder: &str, source: &str) -> bool {
+    use oxp_media::transcode_policy::CodecProfile;
+    match (CodecProfile::parse(decoder), CodecProfile::parse(source)) {
+        (Some(decoder), Some(source)) => decoder.accepts(&source),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

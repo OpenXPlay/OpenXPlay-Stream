@@ -58,6 +58,8 @@ pub struct RelayInfo {
 pub type Diagnostics = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 #[derive(Clone)]
 pub struct WebOutputConfig {
+    /// Report only profiles playable by every main-screen client when a transcoder wraps us.
+    pub common_video_decoders: bool,
     pub host_ui: bool,
     pub relay: Option<RelayInfo>,
     pub diagnostics: Option<Diagnostics>,
@@ -82,6 +84,7 @@ pub struct WebOutputConfig {
 impl WebOutputConfig {
     pub fn new(bind: SocketAddr, static_root: PathBuf, pairing: Pairing, tls: Tls) -> Self {
         Self {
+            common_video_decoders: false,
             host_ui: false,
             relay: None,
             diagnostics: None,
@@ -239,6 +242,7 @@ impl Client {
     }
 }
 struct State {
+    common_video_decoders: bool,
     host: Option<Arc<dyn OutputHost>>,
     session: SessionState,
     formats: BTreeMap<u32, Arc<VideoFormat>>,
@@ -288,6 +292,7 @@ impl WebOutput {
             .transpose()?
             .map(Arc::new);
         let receiver_build = receiver_build(&config.static_root);
+        let common_video_decoders = config.common_video_decoders;
         let tls = Arc::new(Mutex::new(tls::load(&config.tls)?));
         Ok(Self {
             plugins,
@@ -310,6 +315,7 @@ impl WebOutput {
                 receiver_build,
                 display_settings: None,
                 view_areas: BTreeMap::new(),
+                common_video_decoders,
                 area_canvases: BTreeMap::new(),
             })),
             runtime: Mutex::new(None),
@@ -1601,6 +1607,26 @@ fn report_caps(state: &Arc<Mutex<State>>) {
                     _ => AudioCodec::PcmS16le,
                 });
             }
+        }
+        if s.common_video_decoders {
+            caps.decoders.retain(|d| {
+                clients
+                    .iter()
+                    .filter(|h| {
+                        h["displays"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|d| d["screen"] == 0)
+                    })
+                    .all(|h| {
+                        h["decoders"].as_array().unwrap().iter().any(|decoder| {
+                            decoder["codecString"].as_str().is_some_and(|v| {
+                                oxp_core::video_codec_policy::decoder_accepts(v, &d.codec_string)
+                            })
+                        })
+                    })
+            });
         }
         (s.host.clone(), caps)
     };

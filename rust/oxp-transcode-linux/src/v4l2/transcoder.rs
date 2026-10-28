@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-16
 
-//! A stateful V4L2 decoder feeding a V4L2 H.264 encoder. Decoded NV12 pictures are copied (and
+//! A stateful V4L2 decoder feeding a V4L2 H.264 or HEVC encoder. Decoded NV12 pictures are copied (and
 //! resized when needed) between the two drivers' MMAP buffers by the CPU, which keeps the path
 //! independent of DMA-buffer sharing support.
 
@@ -124,6 +124,7 @@ pub struct V4l2Transcoder {
     encoder: Device,
     raw_format: u32,
     source_size: (u32, u32),
+    crop: Option<oxp_core::model::ViewArea>,
     encoder_layout: Nv12Layout,
     /// Source parameter sets in Annex B, prefixed to key frames.
     header: Vec<u8>,
@@ -147,13 +148,13 @@ impl V4l2Transcoder {
         // The encoder goes first: an unsupported target fails before decoder memory is allocated.
         let encoder = Device::open(&pair.encoder.path)
             .map_err(|e| format!("{} open: {e}", pair.encoder.path.display()))?;
-        encoder
+        let coded_target = encoder
             .set_format(
                 CAPTURE,
                 &MplaneFormat {
                     width: target.width,
                     height: target.height,
-                    pixelformat: negotiate::PIX_FMT_H264,
+                    pixelformat: negotiate::codec_fourcc(target.profile.codec),
                     planes: vec![(
                         0,
                         negotiate::encoded_buffer_size(target.width, target.height),
@@ -161,6 +162,9 @@ impl V4l2Transcoder {
                 },
             )
             .map_err(context(&encoder, "coded format"))?;
+        if coded_target.pixelformat != negotiate::codec_fourcc(target.profile.codec) {
+            return Err("encoder replaced requested codec".into());
+        }
         let raw_format = encoder
             .set_format(
                 OUTPUT,
@@ -277,6 +281,7 @@ impl V4l2Transcoder {
             encoder,
             raw_format: pair.raw_format,
             source_size: (source.width, source.height),
+            crop: config.crop,
             encoder_layout,
             header,
             held: None,
@@ -284,7 +289,7 @@ impl V4l2Transcoder {
             force_key: false,
             timestamps: TimestampRing::new(64),
             pacer: FramePacer::new(target.fps),
-            parameters: ParameterSets::default(),
+            parameters: ParameterSets::new(target.profile.codec),
             last_pts: 0,
             unconfigured: 0,
         })
@@ -349,7 +354,12 @@ impl V4l2Transcoder {
             .map_err(context(&self.decoder, "start pictures"))?;
         self.pictures = Some(Pictures {
             queue,
-            scaler: Nv12Scaler::new(layout, self.encoder_layout),
+            scaler: Nv12Scaler::with_crop(
+                layout,
+                self.encoder_layout,
+                self.crop
+                    .unwrap_or_else(|| crate::geometry::crop(layout.width, layout.height, None)),
+            )?,
         });
         Ok(())
     }
@@ -517,6 +527,14 @@ impl V4l2Transcoder {
 }
 
 impl Transcoder for V4l2Transcoder {
+    fn update_crop(&mut self, crop: Option<oxp_core::model::ViewArea>) -> Result<()> {
+        if let Some(pictures) = &mut self.pictures {
+            pictures.scaler.update_crop(crop)?;
+        }
+        self.crop = crop;
+        Ok(())
+    }
+
     fn submit(&mut self, data: &[u8], pts_us: i64, key_frame: bool) -> Result<bool> {
         if self.awaiting_key && !key_frame {
             return Ok(true);

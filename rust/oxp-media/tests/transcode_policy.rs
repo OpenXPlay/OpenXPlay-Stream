@@ -331,3 +331,36 @@ fn descriptions_name_source_target_and_reason() {
         "video unsupported H264 High 4.0 1280x720 reason=no-transcoder"
     );
 }
+
+#[test]
+fn hevc_encoding_is_capability_gated_and_uses_its_own_level_limits() {
+    let source = source("avc1.64002A", 1920, 1080, Some(60.0));
+    let receiver = sink(&["hvc1.1.6.L123.B0"]);
+    let hardware = TranscodeSupport {
+        decode: BOTH.to_vec(),
+        encode: vec![VideoCodec::H265],
+        scaling: true,
+    };
+    let TranscodeDecision::Transcode { target, reason } =
+        decide(&source, &receiver, Some(&hardware))
+    else {
+        panic!("HEVC conversion expected")
+    };
+    assert_eq!(reason, "sink-codec");
+    assert_eq!(target.profile.codec, VideoCodec::H265);
+    assert_eq!((target.width, target.height, target.fps), (1920, 1080, 30));
+    assert_eq!(target.bitrate, 4_000_000);
+    assert!(matches!(
+        decide(&source, &receiver, Some(&support(BOTH, true))),
+        TranscodeDecision::Unsupported { .. }
+    ));
+    let small = sink(&["hvc1.1.6.L93.B0"]);
+    let TranscodeDecision::Transcode { target, .. } = decide(&source, &small, Some(&hardware))
+    else {
+        panic!("scaled HEVC expected")
+    };
+    assert!(target.width as u64 * target.height as u64 <= 983040);
+    assert_eq!(target.width % 2, 0);
+    assert_eq!(target.height % 2, 0);
+    assert!(target.width as u64 * target.height as u64 * target.fps as u64 <= 33_177_600);
+}

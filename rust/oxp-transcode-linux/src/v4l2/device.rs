@@ -6,7 +6,7 @@
 //! multi-planar API; the descriptor is non-blocking so dequeues never stall the worker.
 
 use super::sys::*;
-use crate::negotiate::{DeviceInfo, Inventory, MplaneFormat};
+use crate::negotiate::{DeviceInfo, FormatSize, Inventory, MplaneFormat};
 use libc::c_int;
 use std::{
     ffi::CString,
@@ -108,14 +108,66 @@ impl Device {
         };
         let m2m = caps & CAP_VIDEO_M2M_MPLANE != 0 && caps & CAP_STREAMING != 0;
         let formats = |kind| if m2m { self.formats(kind) } else { Vec::new() };
+        let consumes = formats(BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+        let produces = formats(BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+        let sizes = [
+            crate::negotiate::PIX_FMT_H264,
+            crate::negotiate::PIX_FMT_HEVC,
+        ]
+        .into_iter()
+        .filter(|f| consumes.contains(f) || produces.contains(f))
+        .flat_map(|f| self.frame_sizes(f))
+        .collect();
         Ok(DeviceInfo {
             path: self.path.clone(),
             driver: text(&c.driver),
             card: text(&c.card),
             m2m,
-            consumes: formats(BUF_TYPE_VIDEO_OUTPUT_MPLANE),
-            produces: formats(BUF_TYPE_VIDEO_CAPTURE_MPLANE),
+            consumes,
+            produces,
+            sizes,
         })
+    }
+    fn frame_sizes(&self, format: u32) -> Vec<FormatSize> {
+        let mut sizes = Vec::new();
+        for index in 0..128 {
+            let mut f: FrameSizeEnum = zeroed();
+            f.index = index;
+            f.pixel_format = format;
+            // SAFETY: ENUM_FRAMESIZES takes a v4l2_frmsizeenum with its format and index set.
+            if unsafe { ioctl(self.raw(), VIDIOC_ENUM_FRAMESIZES, &mut f) }.is_err() {
+                break;
+            }
+            let [a, b, c, d, e, g] = f.size;
+            let size = match f.kind {
+                1 => FormatSize {
+                    format,
+                    min_width: a,
+                    max_width: a,
+                    min_height: b,
+                    max_height: b,
+                    step_width: 1,
+                    step_height: 1,
+                },
+                2 | 3 => FormatSize {
+                    format,
+                    min_width: a,
+                    max_width: b,
+                    step_width: c,
+                    min_height: d,
+                    max_height: e,
+                    step_height: g,
+                },
+                _ => break,
+            };
+            if size.max_width > 0 && size.max_height > 0 {
+                sizes.push(size);
+            }
+            if f.kind != 1 {
+                break;
+            }
+        }
+        sizes
     }
     fn formats(&self, kind: u32) -> Vec<u32> {
         let mut out = Vec::new();

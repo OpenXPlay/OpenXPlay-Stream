@@ -7,7 +7,7 @@
 use crate::{
     EncodedFrame, Result, TranscodeConfig, TranscodeSupport, Transcoder, TranscoderFactory,
 };
-use oxp_media::AvcConfig;
+use oxp_media::{AvcConfig, VideoCodec};
 use std::{
     collections::VecDeque,
     sync::{
@@ -106,6 +106,7 @@ impl BitWriter {
 /// Counters shared between a fake factory, its transcoders and the test.
 #[derive(Default)]
 pub struct FakeStats {
+    pub geometry_updates: AtomicUsize,
     pub opened: AtomicUsize,
     pub submitted: AtomicUsize,
     pub encoded: AtomicUsize,
@@ -121,6 +122,7 @@ impl FakeStats {
 
 pub struct FakeFactory {
     pub support: Option<TranscodeSupport>,
+    pub encoders: Option<Vec<crate::EncoderCapability>>,
     /// Makes `open` fail with this message.
     pub open_error: Option<String>,
     /// Makes `poll` fail once this many frames have been encoded.
@@ -135,6 +137,7 @@ impl FakeFactory {
     pub fn new(support: Option<TranscodeSupport>) -> Self {
         Self {
             support,
+            encoders: None,
             open_error: None,
             fail_after: None,
             encoder_profile: None,
@@ -147,6 +150,20 @@ impl TranscoderFactory for FakeFactory {
     fn support(&self) -> Option<TranscodeSupport> {
         self.support.clone()
     }
+    fn encoders(&self) -> Vec<crate::EncoderCapability> {
+        self.encoders.clone().unwrap_or_else(|| {
+            self.support.as_ref().map_or_else(Vec::new, |s| {
+                s.encode
+                    .iter()
+                    .map(|&codec| crate::EncoderCapability {
+                        codec,
+                        max_width: None,
+                        max_height: None,
+                    })
+                    .collect()
+            })
+        })
+    }
     fn open(&self, config: &TranscodeConfig) -> Result<Box<dyn Transcoder>> {
         if let Some(e) = &self.open_error {
             return Err(e.clone().into());
@@ -157,10 +174,17 @@ impl TranscoderFactory for FakeFactory {
         let (profile, constraints) = self
             .encoder_profile
             .unwrap_or((t.profile.profile, t.profile.constraints));
-        let (sps, pps) =
-            avc_parameter_sets(profile, constraints, t.profile.level, t.width, t.height);
+        let config: Arc<[u8]> = if t.profile.codec == VideoCodec::H265 {
+            let (vps, sps, pps) = hevc_parameter_sets(t.profile.level, t.width, t.height);
+            crate::annexb::hevc_configuration(&vps, &sps, &pps)?.into()
+        } else {
+            let (sps, pps) =
+                avc_parameter_sets(profile, constraints, t.profile.level, t.width, t.height);
+            AvcConfig::from_parameter_sets(&sps, &pps)?.into()
+        };
         Ok(Box::new(FakeTranscoder {
-            config: AvcConfig::from_parameter_sets(&sps, &pps)?.into(),
+            codec: t.profile.codec,
+            config,
             pending: VecDeque::new(),
             awaiting_key: true,
             force: true,
@@ -175,6 +199,7 @@ impl TranscoderFactory for FakeFactory {
 
 /// Encodes each submitted frame into a one-slice access unit that carries the input timestamp.
 pub struct FakeTranscoder {
+    codec: VideoCodec,
     config: Arc<[u8]>,
     pending: VecDeque<i64>,
     awaiting_key: bool,
@@ -189,6 +214,11 @@ impl FakeTranscoder {
     }
 }
 impl Transcoder for FakeTranscoder {
+    fn update_crop(&mut self, _: Option<oxp_core::model::ViewArea>) -> Result<()> {
+        self.stats.geometry_updates.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     fn submit(&mut self, data: &[u8], pts_us: i64, key_frame: bool) -> Result<bool> {
         if data.is_empty() {
             return Err("empty access unit".into());
@@ -215,8 +245,14 @@ impl Transcoder for FakeTranscoder {
         }
         let key = std::mem::take(&mut self.force);
         out.data.clear();
-        out.data.extend_from_slice(&9u32.to_be_bytes());
-        out.data.push(if key { 0x65 } else { 0x41 });
+        if self.codec == VideoCodec::H265 {
+            out.data.extend_from_slice(&10u32.to_be_bytes());
+            out.data
+                .extend_from_slice(&[if key { 0x26 } else { 0x02 }, 1]);
+        } else {
+            out.data.extend_from_slice(&9u32.to_be_bytes());
+            out.data.push(if key { 0x65 } else { 0x41 });
+        }
         out.data.extend_from_slice(&pts.to_be_bytes());
         out.pts_us = pts;
         out.key_frame = key;
@@ -240,6 +276,28 @@ impl Drop for FakeTranscoder {
     fn drop(&mut self) {
         self.stats.closed.fetch_add(1, Ordering::AcqRel);
     }
+}
+
+/// Minimal Main profile parameter sets for deterministic HEVC tests.
+pub fn hevc_parameter_sets(level: u8, width: u32, height: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut b = BitWriter::default();
+    b.put(0, 4);
+    b.put(0, 3);
+    b.put(1, 1);
+    b.put(1, 8);
+    b.put(0x6000_0000, 32);
+    b.put(0xB0, 8);
+    b.put(0, 32);
+    b.put(0, 8);
+    b.put(level as u32, 8);
+    b.ue(0);
+    b.ue(1);
+    b.ue(width);
+    b.ue(height);
+    b.put(0, 1);
+    let mut sps = b.finish(0x42);
+    sps.insert(1, 1);
+    (vec![0x40, 1, 0x80], sps, vec![0x44, 1, 0xC0])
 }
 
 #[cfg(test)]

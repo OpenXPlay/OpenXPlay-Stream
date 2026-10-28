@@ -33,14 +33,28 @@ impl TranscoderFactory for V4l2Factory {
     fn open(&self, config: &TranscodeConfig) -> Result<Box<dyn Transcoder>> {
         let pair = self
             .inventory()
-            .select(config.source.codec)
+            .select_codecs(config.source.codec, config.target.profile.codec)
             .ok_or_else(|| {
                 format!(
-                    "no V4L2 M2M {} decoder paired with an H.264 encoder",
+                    "no V4L2 M2M {} decoder paired with the requested encoder",
                     fourcc_name(codec_fourcc(config.source.codec))
                 )
             })?;
+        if !pair.decoder.fits(
+            config.source.codec,
+            config.source.width,
+            config.source.height,
+        ) || !pair.encoder.fits(
+            config.target.profile.codec,
+            config.target.width,
+            config.target.height,
+        ) {
+            return Err("video size exceeds the probed V4L2 codec bounds".into());
+        }
         Ok(Box::new(V4l2Transcoder::open(&pair, config)?))
+    }
+    fn encoders(&self) -> Vec<crate::EncoderCapability> {
+        self.inventory().encoders()
     }
     fn describe(&self) -> String {
         self.inventory().describe()

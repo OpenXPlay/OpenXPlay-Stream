@@ -557,6 +557,31 @@ pub fn transcode_enabled(value: Option<&str>) -> Result<bool> {
         _ => Err("--clink-transcode must be auto or off".into()),
     }
 }
+/// Browser fallback has the same auto/off policy as Carlink, independently selectable.
+pub fn web_transcode_enabled(value: Option<&str>) -> Result<bool> {
+    match value.unwrap_or("auto") {
+        "auto" => Ok(true),
+        "off" => Ok(false),
+        _ => Err("--web-transcode must be auto or off".into()),
+    }
+}
+/// Status event consumed by the relay shell; null maxima mean the driver does not report them.
+pub fn transcode_capabilities(
+    output: &str,
+    enabled: bool,
+    factory: &dyn oxp_transcode_linux::TranscoderFactory,
+) -> serde_json::Value {
+    let codec = |c: VideoCodec| match c {
+        VideoCodec::H264 => "H264",
+        VideoCodec::H265 => "H265",
+    };
+    let support = factory.support();
+    json!({"type":"transcode-capabilities","output":output,"enabled":enabled,
+        "available":support.is_some(), "description":factory.describe(),
+        "decode":support.as_ref().map(|s| s.decode.iter().copied().map(codec).collect::<Vec<_>>()).unwrap_or_default(),
+        "encode":factory.encoders().iter().map(|c| json!({"codec":codec(c.codec),"maxWidth":c.max_width,"maxHeight":c.max_height})).collect::<Vec<_>>(),
+        "scaling":support.is_some_and(|s| s.scaling)})
+}
 pub fn hevc_mode(value: Option<&str>) -> Result<ClinkHevcMode> {
     match value.unwrap_or("auto") {
         "auto" => Ok(ClinkHevcMode::Auto),
@@ -613,6 +638,33 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+    #[test]
+    fn web_fallback_flag_and_capability_status_contract() {
+        assert!(web_transcode_enabled(None).unwrap());
+        assert!(web_transcode_enabled(Some("auto")).unwrap());
+        assert!(!web_transcode_enabled(Some("off")).unwrap());
+        assert!(web_transcode_enabled(Some("on")).is_err());
+        let unavailable = oxp_transcode_linux::Unavailable("decoder only".into());
+        let value = transcode_capabilities("web", true, &unavailable);
+        assert_eq!(value["type"], "transcode-capabilities");
+        assert_eq!(value["available"], false);
+        assert_eq!(value["encode"], json!([]));
+        let factory = oxp_transcode_linux::fake::FakeFactory::new(Some(
+            oxp_transcode_linux::TranscodeSupport {
+                decode: vec![VideoCodec::H265],
+                encode: vec![VideoCodec::H264],
+                scaling: true,
+            },
+        ));
+        let value = transcode_capabilities("web", false, &factory);
+        assert_eq!(value["enabled"], false);
+        assert_eq!(value["available"], true);
+        assert_eq!(value["decode"], json!(["H265"]));
+        assert_eq!(
+            value["encode"],
+            json!([{"codec":"H264","maxWidth":null,"maxHeight":null}])
+        );
+    }
     #[test]
     fn view_size_json_uses_the_relay_event_contract() {
         assert_eq!(

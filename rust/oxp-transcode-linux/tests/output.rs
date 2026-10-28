@@ -481,3 +481,283 @@ fn encoder_ignoring_the_target_profile_falls_back() {
     assert!(Arc::ptr_eq(&rig.inner.last_format().unwrap(), &source));
     assert_eq!(rig.inner.frame_count(), 0);
 }
+
+fn hevc() -> Arc<VideoFormat> {
+    let (vps, sps, pps) = oxp_transcode_linux::fake::hevc_parameter_sets(120, 1280, 720);
+    Arc::new(
+        VideoFormat::create(
+            0,
+            VideoCodec::H265,
+            oxp_transcode_linux::annexb::hevc_configuration(&vps, &sps, &pps)
+                .unwrap()
+                .into(),
+            Some(30.0),
+        )
+        .unwrap(),
+    )
+}
+fn dual_support() -> TranscodeSupport {
+    TranscodeSupport {
+        encode: vec![VideoCodec::H264, VideoCodec::H265],
+        ..support()
+    }
+}
+fn touch(inner: &Inner) {
+    inner.host().control(ControlEvent::Touch {
+        screen: 0,
+        contacts: vec![TouchContact::new(2, 0.25, 0.75, true).unwrap()],
+        origin: Origin {
+            output_id: "clink".into(),
+            client_id: "car".into(),
+        },
+    });
+}
+fn last_contact(upstream: &Upstream) -> TouchContact {
+    upstream
+        .controls
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            ControlEvent::Touch { contacts, .. } => contacts.first().cloned(),
+            _ => None,
+        })
+        .unwrap()
+}
+fn area() -> ViewArea {
+    ViewArea {
+        x: 160,
+        y: 90,
+        width: 960,
+        height: 540,
+        canvas_width: 1280,
+        canvas_height: 720,
+    }
+}
+
+#[test]
+fn dual_output_encodes_hevc_for_carlink_and_keeps_browser_avc() {
+    let car = Rig::new(FakeFactory::new(Some(dual_support())));
+    let web = Rig::new(FakeFactory::new(Some(dual_support())));
+    car.inner.report(&["hvc1.1.6.L123.B0"]);
+    web.inner.report(&["avc1.64002A"]);
+    let source = high();
+    for output in [&car.output, &web.output] {
+        output.on_video_format(0, Some(source.clone()));
+    }
+    let frame = web.frame(12345, true);
+    car.output.on_video_frame(frame.clone());
+    wait("HEVC car frame", || car.inner.frame_count() == 1);
+    assert_eq!(car.inner.last_format().unwrap().codec, VideoCodec::H265);
+    assert_eq!(car.inner.last_format().unwrap().width, 1280);
+    assert_eq!(car.inner.frames.lock().unwrap()[0].data[4] >> 1, 19);
+    assert!(Arc::ptr_eq(&web.inner.last_format().unwrap(), &source));
+    assert!(Arc::ptr_eq(
+        &web.inner.frames.lock().unwrap()[0].data,
+        &frame.data
+    ));
+    assert_eq!(FakeStats::get(&web.stats.opened), 0);
+    assert_eq!(FakeStats::get(&car.stats.opened), 1);
+}
+
+#[test]
+fn browser_hevc_falls_back_to_compatible_avc() {
+    let rig = Rig::new(FakeFactory::new(Some(dual_support())));
+    rig.inner.report(&["avc1.42E01F"]);
+    rig.output.on_video_format(0, Some(hevc()));
+    rig.frame(999, true);
+    wait("AVC browser", || rig.inner.frame_count() == 1);
+    assert_eq!(rig.inner.last_format().unwrap().codec_string, "avc1.42E01F");
+    assert_eq!(rig.inner.frames.lock().unwrap()[0].pts_us, 999);
+}
+
+#[test]
+fn carlink_crops_and_prestretches_fixed_frame_without_changing_canvas() {
+    let factory = Arc::new(FakeFactory::new(Some(dual_support())));
+    let inner = Arc::new(Inner::default());
+    let host = Arc::new(Upstream::default());
+    let output = TranscodingOutput::carlink(
+        inner.clone(),
+        factory.clone(),
+        Arc::new(|_| {}),
+        Some((1280, 720)),
+    );
+    output.open(host.clone()).unwrap();
+    inner.report(&["avc1.42E01F"]);
+    output.on_view_area(0, Some(area()));
+    let source = high();
+    output.on_video_format(0, Some(source.clone()));
+    touch(&inner);
+    assert_eq!(last_contact(&host).x, 0.25);
+    output.on_video_frame(VideoFrame {
+        screen: 0,
+        session: 1,
+        data: vec![0, 0, 0, 1, 0x65].into(),
+        pts_us: 0,
+        key_frame: true,
+        received_at_nanos: 0,
+    });
+    wait("cropped frame", || inner.frame_count() == 1);
+    let config = factory.opened.lock().unwrap().clone().unwrap();
+    assert_eq!(config.crop, Some(area()));
+    assert_eq!((config.source.width, config.source.height), (1280, 720));
+    assert_eq!((config.target.width, config.target.height), (1280, 720));
+    touch(&inner);
+    let contact = last_contact(&host);
+    assert_eq!((contact.id, contact.pressed), (2, true));
+    assert_eq!((contact.x, contact.y), (0.3125, 0.6875));
+    output.on_view_area(
+        0,
+        Some(ViewArea {
+            x: 0,
+            y: 0,
+            ..area()
+        }),
+    );
+    wait("live crop update", || {
+        FakeStats::get(&factory.stats.geometry_updates) == 1
+    });
+    assert_eq!(FakeStats::get(&factory.stats.opened), 1);
+    touch(&inner);
+    assert_eq!(last_contact(&host).x, 0.1875);
+    output.on_view_area(0, None);
+    touch(&inner);
+    assert_eq!(last_contact(&host).x, 0.25);
+    output.close();
+}
+
+#[test]
+fn no_encoder_leaves_crop_codec_and_touch_unchanged() {
+    let inner = Arc::new(Inner::default());
+    let host = Arc::new(Upstream::default());
+    let factory = Arc::new(FakeFactory::new(None));
+    let output = TranscodingOutput::carlink(
+        inner.clone(),
+        factory.clone(),
+        Arc::new(|_| {}),
+        Some((1280, 720)),
+    );
+    output.open(host.clone()).unwrap();
+    inner.report(&["hvc1.1.6.L123.B0"]);
+    output.on_view_area(0, Some(area()));
+    let source = high();
+    output.on_video_format(0, Some(source.clone()));
+    assert!(Arc::ptr_eq(&inner.last_format().unwrap(), &source));
+    touch(&inner);
+    assert_eq!(last_contact(&host).x, 0.25);
+    assert_eq!(FakeStats::get(&factory.stats.opened), 0);
+    output.close();
+}
+
+#[test]
+fn geometry_failure_restores_identity_touch_and_source_format() {
+    let mut factory = FakeFactory::new(Some(dual_support()));
+    factory.fail_after = Some(1);
+    let inner = Arc::new(Inner::default());
+    let host = Arc::new(Upstream::default());
+    let output =
+        TranscodingOutput::carlink(inner.clone(), Arc::new(factory), Arc::new(|_| {}), None);
+    output.open(host.clone()).unwrap();
+    inner.report(&["avc1.42E01F"]);
+    output.on_view_area(0, Some(area()));
+    let source = high();
+    output.on_video_format(0, Some(source.clone()));
+    let frame = |pts_us| VideoFrame {
+        screen: 0,
+        session: 1,
+        data: vec![0, 0, 0, 1, 0x65].into(),
+        pts_us,
+        key_frame: true,
+        received_at_nanos: 0,
+    };
+    output.on_video_frame(frame(0));
+    wait("first crop", || inner.frame_count() == 1);
+    touch(&inner);
+    assert_eq!(last_contact(&host).x, 0.3125);
+    output.on_video_frame(frame(33333));
+    wait("geometry fallback", || {
+        inner
+            .last_format()
+            .is_some_and(|f| Arc::ptr_eq(&f, &source))
+    });
+    touch(&inner);
+    assert_eq!(last_contact(&host).x, 0.25);
+    output.close();
+}
+
+#[test]
+fn probed_encoder_maximum_rejects_oversized_geometry_before_open() {
+    let mut factory = FakeFactory::new(Some(dual_support()));
+    factory.encoders = Some(vec![oxp_transcode_linux::EncoderCapability {
+        codec: VideoCodec::H265,
+        max_width: Some(1),
+        max_height: Some(1),
+    }]);
+    let rig = Rig::new(factory);
+    rig.inner.report(&["hvc1.1.6.L123.B0"]);
+    let source = high();
+    rig.output.on_video_format(0, Some(source.clone()));
+    assert!(Arc::ptr_eq(&rig.inner.last_format().unwrap(), &source));
+    assert_eq!(FakeStats::get(&rig.stats.opened), 0);
+    assert!(rig.lines()[0].ends_with("reason=encoder-size"));
+}
+
+#[test]
+fn browser_conversion_scales_to_the_encoder_maximum() {
+    let mut factory = FakeFactory::new(Some(dual_support()));
+    factory.encoders = Some(vec![oxp_transcode_linux::EncoderCapability {
+        codec: VideoCodec::H264,
+        max_width: Some(640),
+        max_height: Some(480),
+    }]);
+    let rig = Rig::new(factory);
+    rig.inner.report(&["avc1.42E01F"]);
+    rig.output.on_video_format(0, Some(hevc()));
+    rig.frame(0, true);
+    wait("bounded browser frame", || rig.inner.frame_count() == 1);
+    let f = rig.inner.last_format().unwrap();
+    assert_eq!((f.width, f.height), (640, 360));
+}
+
+#[test]
+fn corrected_1280_mode_changes_only_the_outgoing_frame() {
+    let factory = Arc::new(FakeFactory::new(Some(dual_support())));
+    let inner = Arc::new(Inner::default());
+    let host = Arc::new(Upstream::default());
+    let output = TranscodingOutput::carlink(
+        inner.clone(),
+        factory.clone(),
+        Arc::new(|_| {}),
+        Some((1280, 720)),
+    );
+    output.open(host).unwrap();
+    inner.report(&["avc1.42E01F"]);
+    let (sps, pps) = avc_parameter_sets(100, 0, 40, 1156, 764);
+    let source = Arc::new(
+        VideoFormat::create(
+            0,
+            VideoCodec::H264,
+            AvcConfig::from_parameter_sets(&sps, &pps).unwrap().into(),
+            Some(30.0),
+        )
+        .unwrap(),
+    );
+    output.on_video_format(0, Some(source));
+    output.on_video_frame(VideoFrame {
+        screen: 0,
+        session: 1,
+        data: vec![0, 0, 0, 1, 0x65].into(),
+        pts_us: 0,
+        key_frame: true,
+        received_at_nanos: 0,
+    });
+    wait("corrected fixed frame", || inner.frame_count() == 1);
+    let f = inner.last_format().unwrap();
+    assert_eq!((f.width, f.height), (1280, 720));
+    let opened = factory.opened.lock().unwrap();
+    let c = opened.as_ref().unwrap();
+    assert_eq!((c.source.width, c.source.height), (1156, 764));
+    assert_eq!((c.crop.unwrap().width, c.crop.unwrap().height), (1156, 764));
+    output.close();
+}

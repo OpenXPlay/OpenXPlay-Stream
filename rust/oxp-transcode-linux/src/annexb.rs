@@ -65,16 +65,25 @@ pub fn write_access_unit(prefix: &[u8], access_unit: &[u8], dst: &mut [u8]) -> R
     Ok(total)
 }
 
-/// Tracks the encoder's SPS and PPS across access units and splits them from the picture data.
+/// Tracks the encoder's VPS, SPS and PPS across access units and splits them from the picture data.
 #[derive(Default)]
 pub struct ParameterSets {
+    codec: Option<VideoCodec>,
+    vps: Vec<u8>,
     sps: Vec<u8>,
     pps: Vec<u8>,
     config: Option<Arc<[u8]>>,
 }
 impl ParameterSets {
-    /// Writes the non-parameter-set NAL units of an Annex B H.264 access unit into `out` as
-    /// four-byte length-prefixed units and returns whether it holds an IDR slice. Access unit
+    pub fn new(codec: VideoCodec) -> Self {
+        Self {
+            codec: Some(codec),
+            ..Self::default()
+        }
+    }
+
+    /// Writes the non-parameter-set NAL units of an Annex B H.264 or HEVC access unit into `out` as
+    /// four-byte length-prefixed units and returns whether it holds an IDR/IRAP slice. Access unit
     /// delimiters are dropped because the transport stream writer adds its own.
     pub fn split_access_unit(&mut self, annex_b: &[u8], out: &mut Vec<u8>) -> Result<bool> {
         out.clear();
@@ -82,6 +91,29 @@ impl ParameterSets {
         let mut changed = false;
         for unit in nal::iter(annex_b, Format::AnnexB) {
             let unit = unit?;
+            if self.codec == Some(VideoCodec::H265) {
+                if unit.len() < 2 || unit[0] & 128 != 0 || unit[1] & 7 == 0 {
+                    return Err("invalid HEVC NAL header".into());
+                }
+                let kind = (unit[0] >> 1) & 63;
+                let slot = match kind {
+                    32 => &mut self.vps,
+                    33 => &mut self.sps,
+                    34 => &mut self.pps,
+                    35 => continue,
+                    _ => {
+                        key |= (16..=23).contains(&kind);
+                        out.extend_from_slice(&(unit.len() as u32).to_be_bytes());
+                        out.extend_from_slice(unit);
+                        continue;
+                    }
+                };
+                if slot.as_slice() != unit {
+                    *slot = unit.to_vec();
+                    changed = true;
+                }
+                continue;
+            }
             let slot = match unit[0] & 31 {
                 7 => &mut self.sps,
                 8 => &mut self.pps,
@@ -100,13 +132,59 @@ impl ParameterSets {
             }
         }
         if changed && !self.sps.is_empty() && !self.pps.is_empty() {
-            self.config = Some(AvcConfig::from_parameter_sets(&self.sps, &self.pps)?.into());
+            self.config = if self.codec == Some(VideoCodec::H265) {
+                if self.vps.is_empty() {
+                    None
+                } else {
+                    Some(hevc_configuration(&self.vps, &self.sps, &self.pps)?.into())
+                }
+            } else {
+                Some(AvcConfig::from_parameter_sets(&self.sps, &self.pps)?.into())
+            };
         }
         Ok(key)
     }
     pub fn config(&self) -> Option<Arc<[u8]>> {
         self.config.clone()
     }
+}
+
+/// Builds hvcC from the encoder's actual profile-tier-level and parameter sets.
+pub fn hevc_configuration(vps: &[u8], sps: &[u8], pps: &[u8]) -> Result<Vec<u8>> {
+    let mut rbsp = Vec::new();
+    let mut zeros = 0;
+    for &byte in sps.get(2..).ok_or("truncated HEVC SPS")? {
+        if zeros >= 2 && byte == 3 {
+            zeros = 0;
+            continue;
+        }
+        rbsp.push(byte);
+        zeros = if byte == 0 { zeros + 1 } else { 0 };
+    }
+    let ptl = rbsp.get(1..13).ok_or("truncated HEVC profile-tier-level")?;
+    let mut out = vec![1];
+    out.extend_from_slice(ptl);
+    out.extend_from_slice(&[
+        0xF0,
+        0,
+        0xFC,
+        0xFD,
+        0xF8,
+        0xF8,
+        0,
+        0,
+        (((rbsp[0] >> 1) & 7) + 1) << 3 | (rbsp[0] & 1) << 2 | 3,
+        3,
+    ]);
+    for (kind, set) in [(32, vps), (33, sps), (34, pps)] {
+        let len = u16::try_from(set.len()).map_err(|_| "HEVC parameter set too large")?;
+        out.push(0x80 | kind);
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(set);
+    }
+    HevcConfig::parse(&out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -194,5 +272,26 @@ mod tests {
         assert!(sets
             .split_access_unit(&[7, 0, 0, 1, 0x41], &mut out)
             .is_err());
+    }
+    #[test]
+    fn hevc_encoder_parameter_sets_and_aud_are_removed_before_idr_delivery() {
+        let (vps, sps, pps) = crate::fake::hevc_parameter_sets(123, 1280, 720);
+        let mut data = Vec::new();
+        for unit in [&[0x46, 1, 0x50][..], &vps, &sps, &pps, &[0x26, 1, 0x80]] {
+            data.extend_from_slice(&START);
+            data.extend_from_slice(unit);
+        }
+        let mut sets = ParameterSets::new(VideoCodec::H265);
+        let mut out = Vec::new();
+        assert!(sets.split_access_unit(&data, &mut out).unwrap());
+        assert_eq!(
+            nal::units(&out, Format::Avcc).unwrap(),
+            vec![&[0x26, 1, 0x80][..]]
+        );
+        let config = HevcConfig::parse(&sets.config().unwrap()).unwrap();
+        assert_eq!(config.codec_string, "hvc1.1.6.L123.B0");
+        assert_eq!((config.width, config.height), (1280, 720));
+        assert_eq!(config.vps, vec![vps]);
+        assert!(hevc_configuration(&[], &[0x42, 1], &[]).is_err());
     }
 }

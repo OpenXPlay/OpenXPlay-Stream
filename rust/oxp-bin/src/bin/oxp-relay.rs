@@ -31,7 +31,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink; omitted picture/hevc/vehicleData settings retain their current choices. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink; omitted picture/hevc/vehicleData settings retain their current choices. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities status events report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -61,6 +61,7 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--plugins-topics",
             "--plugins-state-dir",
             "--web-bind",
+            "--web-transcode",
             "--advertise-address",
             "--token",
             "--pairing",
@@ -111,6 +112,10 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
         );
     }
     advertise_address(&args)?;
+    web_transcode_enabled(args.get("--web-transcode"))?;
+    if args.get("--web-transcode").is_some() && args.get("--web-port").is_none() {
+        return Err("--web-transcode requires --web-port".into());
+    }
     if args.get("--control-stdin").is_some() && args.get("--unix").is_none() {
         return Err("--control-stdin requires --unix".into());
     }
@@ -809,12 +814,20 @@ impl CarlinkRuntime {
         let output = Arc::new(output);
         self.shutdown.has_output.store(true, Ordering::Release);
         *self.shutdown.output.lock().unwrap() = Some(output.clone());
+        let transcoder = oxp_transcode_linux::default_factory();
+        event(transcode_capabilities(
+            "clink",
+            self.factory.transcode,
+            transcoder.as_ref(),
+        ));
         let projection: Arc<dyn ProjectionOutput> = if self.factory.transcode {
-            with_transcoding(
+            diagnostic(&transcoder.describe());
+            Arc::new(oxp_transcode_linux::TranscodingOutput::carlink(
                 output,
-                oxp_transcode_linux::default_factory(),
+                transcoder,
                 Arc::new(diagnostic),
-            )
+                options.picture_size,
+            ))
         } else {
             output
         };
@@ -1087,8 +1100,17 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
                 event(stats);
             }
         }));
+        let enabled = web_transcode_enabled(args.get("--web-transcode"))?;
+        let transcoder = oxp_transcode_linux::default_factory();
+        config.common_video_decoders = enabled && transcoder.support().is_some();
+        event(transcode_capabilities("web", enabled, transcoder.as_ref()));
         let output = Arc::new(WebOutput::new(config)?);
         web_output = Some(output.clone());
+        let output: Arc<dyn ProjectionOutput> = if enabled {
+            with_transcoding(output, transcoder, Arc::new(diagnostic))
+        } else {
+            output
+        };
         outputs.push(output);
     }
     let carlink_factory = if let Some(link) = link {
@@ -1320,6 +1342,22 @@ fn lan_choice(
 mod tests {
     use super::*;
 
+    #[test]
+    fn web_transcode_flag_is_independent_validated_and_documented() {
+        for mode in ["auto", "off"] {
+            assert!(parse_arguments(
+                ["--web-port", "8443", "--web-transcode", mode].map(str::to_owned)
+            )
+            .is_ok());
+        }
+        assert!(parse_arguments(["--web-transcode", "off"].map(str::to_owned)).is_err());
+        assert!(parse_arguments(
+            ["--web-port", "8443", "--web-transcode", "on"].map(str::to_owned)
+        )
+        .is_err());
+        assert!(USAGE.contains("--web-transcode auto|off"));
+        assert!(USAGE.contains("transcode-capabilities"));
+    }
     #[test]
     fn merged_help_describes_the_shared_channel_and_current_carlink_policy() {
         for text in [

@@ -9,6 +9,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 pub mod annexb;
 pub mod fake;
+pub mod geometry;
 pub mod negotiate;
 pub mod nv12;
 pub mod output;
@@ -16,7 +17,7 @@ pub mod pacing;
 #[cfg(target_os = "linux")]
 pub mod v4l2;
 pub use output::TranscodingOutput;
-use oxp_core::model::VideoFormat;
+use oxp_core::model::{VideoCodec, VideoFormat, ViewArea};
 pub use oxp_media::transcode_policy::{TranscodeSupport, TranscodeTarget};
 use std::{sync::Arc, time::Duration};
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -27,6 +28,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct TranscodeConfig {
     pub source: Arc<VideoFormat>,
     pub target: TranscodeTarget,
+    /// Active source rectangle; None copies the whole decoded picture.
+    pub crop: Option<ViewArea>,
 }
 
 /// One encoded access unit. Callers reuse it so `data` keeps its allocation between frames.
@@ -36,7 +39,7 @@ pub struct EncodedFrame {
     pub data: Vec<u8>,
     pub pts_us: i64,
     pub key_frame: bool,
-    /// avcC record describing `data`; rebuilt only when the encoder changes its parameter sets.
+    /// avcC or hvcC record describing `data`; rebuilt only when the encoder changes its parameter sets.
     pub config: Option<Arc<[u8]>>,
 }
 
@@ -54,11 +57,28 @@ pub trait Transcoder: Send {
     fn force_key_frame(&mut self) -> Result<()>;
     /// Discards queued input after a discontinuity; the next submitted frame must be a key frame.
     fn reset(&mut self) -> Result<()>;
+    /// Updates the source rectangle without replacing the decoder or encoded frame size.
+    fn update_crop(&mut self, _crop: Option<ViewArea>) -> Result<()> {
+        Err("transcoder does not support live crop updates".into())
+    }
 }
 
 pub trait TranscoderFactory: Send + Sync {
     /// None when this host has no usable transcoder.
     fn support(&self) -> Option<TranscodeSupport>;
+    /// Per-codec encoder bounds. Unknown bounds stay None; open still validates driver formats.
+    fn encoders(&self) -> Vec<EncoderCapability> {
+        self.support().map_or_else(Vec::new, |s| {
+            s.encode
+                .into_iter()
+                .map(|codec| EncoderCapability {
+                    codec,
+                    max_width: None,
+                    max_height: None,
+                })
+                .collect()
+        })
+    }
     fn open(&self, config: &TranscodeConfig) -> Result<Box<dyn Transcoder>>;
     /// One line for the relay log naming the devices in use.
     fn describe(&self) -> String;
@@ -90,4 +110,12 @@ pub fn default_factory() -> Arc<dyn TranscoderFactory> {
             "hardware transcoding requires Linux V4L2".into(),
         ))
     }
+}
+
+/// Encoder formats and maximum coded sizes reported by the hardware probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncoderCapability {
+    pub codec: VideoCodec,
+    pub max_width: Option<u32>,
+    pub max_height: Option<u32>,
 }
