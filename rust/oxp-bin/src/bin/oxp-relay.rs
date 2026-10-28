@@ -31,7 +31,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1] [--clink-p2p-reserved on|off]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --clink-p2p-reserved defaults to off; the host must pass on while CarPlay reserves Wi-Fi Direct. Otherwise P2P requires supplicant D-Bus access, iw-confirmed interface/channel capacity and BusyBox udhcpc/ifconfig/mv; failures clean up before infrastructure fallback. Browser socket termination emits receiver-disconnected with client, code and reason (closed, timeout or error), using the receiver-info client ID. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink; omitted picture/hevc/vehicleData settings retain their current choices. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities status events report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1] [--clink-p2p-reserved on|off]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --clink-p2p-reserved defaults to off; the host must pass on while CarPlay reserves Wi-Fi Direct. Otherwise P2P requires supplicant D-Bus access, iw-confirmed interface/channel capacity and BusyBox udhcpc/ifconfig/mv; failures clean up before infrastructure fallback. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink and keeps web running; omitted picture/hevc/vehicleData settings retain their current choices. phoneMac is a unicast Bluetooth address validated like --clink-phone-mac: a string replaces the override before the next BLE link/handshake, null clears it to the Wi-Fi MAC, and absence retains the current choice. Invalid settings reject the command before retiring Carlink. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities events at web startup and each Carlink generation (including off) report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown; available reports a usable hardware pair, with actual conversion validated at runtime.\nBrowser socket termination emits type=receiver-disconnected with client, code and reason (closed, timeout or error), using the receiver-info client ID. code retains the received/server close code; 1005 means no received code, 1006 means abnormal closure, 1008/timeout means hello timeout, and 1011/timeout means stalled writing. Peer close text is not reported; established idle pages do not time out.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -131,12 +131,15 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
 #[cfg(test)]
 fn clink_link(args: &Args) -> Result<Option<Arc<dyn ClinkLink>>> {
     clink_link_factory(args)?
-        .map(|build| build(Arc::new(|_| {})))
+        .map(|build| build(Arc::new(|_| {}), clink_phone_mac(args)?))
         .transpose()
 }
 // Each generation gets its own link and listener, including the Linux monitor's late callbacks.
-type LinkFactory =
-    Arc<dyn Fn(oxp_link_linux::LinkListener) -> Result<Arc<dyn ClinkLink>> + Send + Sync>;
+type LinkFactory = Arc<
+    dyn Fn(oxp_link_linux::LinkListener, Option<String>) -> Result<Arc<dyn ClinkLink>>
+        + Send
+        + Sync,
+>;
 fn clink_link_factory(args: &Args) -> Result<Option<LinkFactory>> {
     let mode = args.get("--clink-link").unwrap_or("static");
     if !["static", "ble"].contains(&mode) {
@@ -218,14 +221,16 @@ fn clink_link_factory(args: &Args) -> Result<Option<LinkFactory>> {
             args.need("--clink-head-unit")?.parse()?,
             args.need("--clink-local")?.parse()?,
         );
-        return Ok(Some(Arc::new(move |_| {
+        return Ok(Some(Arc::new(move |_, _| {
             Ok(Arc::new(StaticClinkLink(addresses.clone())))
         })));
     }
     let config = ble_config(args)?;
     let address = args.get("--clink-address").map(str::to_owned);
-    let build: LinkFactory = Arc::new(move |listener| {
-        let mut link = oxp_link_linux::LinuxClinkLink::new(config.clone())
+    let build: LinkFactory = Arc::new(move |listener, phone_mac| {
+        let mut config = config.clone();
+        config.phone_mac = phone_mac;
+        let mut link = oxp_link_linux::LinuxClinkLink::new(config)
             .map_err(|_| "Invalid BLE adapter, interface, or relay identity")?
             .with_listener(listener);
         if let Some(address) = &address {
@@ -236,7 +241,7 @@ fn clink_link_factory(args: &Args) -> Result<Option<LinkFactory>> {
         Ok(Arc::new(link))
     });
     // Reject invalid startup options before opening the wire or retiring any output.
-    build(Arc::new(|_| {}))?;
+    build(Arc::new(|_| {}), clink_phone_mac(args)?)?;
     Ok(Some(build))
 }
 
@@ -271,14 +276,17 @@ fn ble_config(args: &Args) -> Result<oxp_link_linux::Config> {
     }
     config.scan_mode =
         oxp_link_linux::ScanMode::parse(args.get("--clink-scan").unwrap_or("window"))?;
-    config.phone_mac = args
-        .get("--clink-phone-mac")
-        .map(oxp_link_linux::normalized_bluetooth_address)
-        .transpose()?;
+    config.phone_mac = clink_phone_mac(args)?;
     config.trace_advertisements = args.get("--clink-trace").is_some();
     config.p2p_reserved_by_carplay =
         oxp_link_linux::p2p_reserved(args.get("--clink-p2p-reserved").unwrap_or("off"))?;
     Ok(config)
+}
+
+fn clink_phone_mac(args: &Args) -> Result<Option<String>> {
+    args.get("--clink-phone-mac")
+        .map(oxp_link_linux::normalized_bluetooth_address)
+        .transpose()
 }
 
 fn deliver_link(
@@ -674,6 +682,7 @@ struct CarlinkFactory {
     digits: Option<String>,
     file: Option<String>,
     options: oxp_clink::session::SessionOptions,
+    phone_mac: Option<String>,
     trace: Arc<SessionTrace>,
     transcode: bool,
     controlled: bool,
@@ -695,6 +704,7 @@ impl CarlinkFactory {
                 vehicle_data: vehicle_enabled(args.get("--clink-vehicle-data"))?,
                 ..Default::default()
             },
+            phone_mac: clink_phone_mac(args)?,
             trace,
             transcode: transcode_enabled(args.get("--clink-transcode"))?,
             controlled: args.get("--control-stdin").is_some(),
@@ -705,16 +715,34 @@ struct CarlinkGeneration {
     active: Arc<Mutex<bool>>,
     stopped: Arc<AtomicBool>,
     pins: Arc<PairingRequests>,
+}
+struct CarlinkCurrent {
+    generation: Option<CarlinkGeneration>,
+    // Retained choices also survive pairing cancellation or a failed replacement link.
     options: oxp_clink::session::SessionOptions,
+    phone_mac: Option<String>,
 }
 struct CarlinkRuntime {
     factory: CarlinkFactory,
     shutdown: Arc<RelayShutdown>,
     hub: Arc<Hub>,
     // Serializes controls, retirement, and replacement. Media callbacks never take this lock.
-    current: Mutex<Option<CarlinkGeneration>>,
+    current: Mutex<CarlinkCurrent>,
 }
 impl CarlinkRuntime {
+    fn new(factory: CarlinkFactory, shutdown: Arc<RelayShutdown>, hub: Arc<Hub>) -> Self {
+        let current = Mutex::new(CarlinkCurrent {
+            generation: None,
+            options: factory.options.clone(),
+            phone_mac: factory.phone_mac.clone(),
+        });
+        Self {
+            factory,
+            shutdown,
+            hub,
+            current,
+        }
+    }
     fn retire(&self, current: &mut Option<CarlinkGeneration>) -> Result<()> {
         if let Some(old) = current.as_ref() {
             *old.active.lock().unwrap() = false;
@@ -739,10 +767,7 @@ impl CarlinkRuntime {
     }
     fn restart(&self, value: &serde_json::Value) -> Result<u64> {
         let mut current = self.current.lock().unwrap();
-        let mut options = current
-            .as_ref()
-            .map(|g| g.options.clone())
-            .unwrap_or_else(|| self.factory.options.clone());
+        let mut options = current.options.clone();
         if let Some(picture) = value.get("picture") {
             options.picture_size = if picture.is_null() {
                 None
@@ -764,25 +789,37 @@ impl CarlinkRuntime {
         if let Some(vehicle) = value.get("vehicleData") {
             options.vehicle_data = vehicle.as_bool().ok_or("invalid_vehicle_data")?;
         }
+        let phone_mac = match value.get("phoneMac") {
+            None => current.phone_mac.clone(),
+            Some(serde_json::Value::Null) => None,
+            Some(mac) => Some(oxp_link_linux::normalized_bluetooth_address(
+                mac.as_str().ok_or("invalid_phone_mac")?,
+            )?),
+        };
         if self.shutdown.stopped.load(Ordering::Acquire) {
             return Err("relay_stopped".into());
         }
-        self.retire(&mut current)?;
+        self.retire(&mut current.generation)?;
+        current.options = options.clone();
+        current.phone_mac = phone_mac.clone();
         let generation = self.shutdown.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let active = Arc::new(Mutex::new(true));
         let stopped = Arc::new(AtomicBool::new(false));
         let pins = Arc::new(PairingRequests::new(generation));
         let trace = self.factory.trace.clone();
         let link_active = active.clone();
-        let link = (self.factory.link)(Arc::new(move |state| {
-            deliver_link(
-                &link_active,
-                trace.as_ref(),
-                generation,
-                state,
-                private_event,
-            );
-        }))?;
+        let link = (self.factory.link)(
+            Arc::new(move |state| {
+                deliver_link(
+                    &link_active,
+                    trace.as_ref(),
+                    generation,
+                    state,
+                    private_event,
+                );
+            }),
+            phone_mac,
+        )?;
         *self.shutdown.link.lock().unwrap() = Some(link.clone());
         self.shutdown.ended.store(false, Ordering::Release);
         self.shutdown.session_failed.store(false, Ordering::Release);
@@ -835,11 +872,10 @@ impl CarlinkRuntime {
         } else {
             output
         };
-        *current = Some(CarlinkGeneration {
+        current.generation = Some(CarlinkGeneration {
             active,
             stopped,
             pins,
-            options,
         });
         self.hub.add_output(projection)?;
         Ok(generation)
@@ -851,11 +887,12 @@ impl CarlinkRuntime {
         } else {
             let mut current = self.current.lock().unwrap();
             let answer = current
+                .generation
                 .as_ref()
                 .ok_or("stale_request")
                 .and_then(|g| g.pins.respond(value));
             match answer {
-                Ok(true) => self.retire(&mut current).map(|()| {
+                Ok(true) => self.retire(&mut current.generation).map(|()| {
                     self.shutdown.emit_ended();
                     json!({"result":"cancelled"})
                 }),
@@ -1163,14 +1200,8 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
     });
     let hub = Hub::new(host);
     *shutdown.hub.lock().unwrap() = Some(hub.clone());
-    let carlink = carlink_factory.map(|factory| {
-        Arc::new(CarlinkRuntime {
-            factory,
-            shutdown: shutdown.clone(),
-            hub: hub.clone(),
-            current: Mutex::new(None),
-        })
-    });
+    let carlink = carlink_factory
+        .map(|factory| Arc::new(CarlinkRuntime::new(factory, shutdown.clone(), hub.clone())));
     let result = (|| -> Result<()> {
         for output in outputs {
             if shutdown.stopped.load(Ordering::Acquire) {
@@ -1374,6 +1405,13 @@ mod tests {
             "explicit approval",
             "--clink-vehicle-data on|off",
             "--clink-hevc auto|off|signal",
+            "--web-transcode auto|off",
+            "type=transcode-capabilities",
+            "receiver-disconnected",
+            "receiver-info client ID",
+            "phoneMac",
+            "null clears",
+            "absence retains",
         ] {
             assert!(USAGE.contains(text), "{text}");
         }
@@ -1408,6 +1446,8 @@ mod tests {
                 "signal",
                 "--clink-vehicle-data",
                 "on",
+                "--clink-phone-mac",
+                "AA:BB:CC:DD:EE:FF",
             ]);
             let factory = CarlinkFactory::from_args(
                 &args,
@@ -1433,6 +1473,7 @@ mod tests {
                 }
             );
             assert_eq!(factory.options.hevc, oxp_clink::ClinkHevcMode::Signal);
+            assert_eq!(factory.phone_mac.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
             assert!(factory.options.vehicle_data && factory.controlled);
             factory.trust.save_peer_key("car", mode.as_bytes()).unwrap();
             factories.push(factory);
@@ -2494,7 +2535,7 @@ malformed",
         );
     }
     #[test]
-    fn carlink_restart_failure_and_pairing_cancel_keep_the_browser_socket_alive() {
+    fn carlink_phone_mac_restart_failure_and_pairing_cancel_keep_the_browser_socket_alive() {
         use oxp_core::model::*;
         use std::io::{Read, Write};
         struct Host;
@@ -2528,6 +2569,17 @@ malformed",
             let mut payload = vec![0; length];
             stream.read_exact(&mut payload).unwrap();
             (header[0] & 15, payload)
+        }
+        fn assert_alive(browser: &mut std::net::TcpStream) {
+            send(browser, 9, b"alive");
+            loop {
+                let (opcode, payload) = read(browser);
+                assert_ne!(opcode, 8);
+                if opcode == 10 {
+                    assert_eq!(payload, b"alive");
+                    break;
+                }
+            }
         }
         let root = std::env::temp_dir().join(format!("oxp-w4-browser-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -2569,43 +2621,64 @@ malformed",
             serde_json::from_slice::<serde_json::Value>(&welcome).unwrap()["type"],
             "welcome"
         );
-        let runtime = CarlinkRuntime {
-            factory: CarlinkFactory {
-                link: Arc::new(|_| {
-                    Ok(Arc::new(FakeLink(Arc::new(
-                        std::sync::atomic::AtomicUsize::new(0),
-                    ))))
-                }),
-                trust: Arc::new(FileTrust::new(&root.join("trust")).unwrap()),
-                digits: None,
-                file: None,
-                options: Default::default(),
-                trace: Arc::new(SessionTrace {
-                    summary: Arc::new(SummaryTrace::new(Arc::new(|_| {}))),
-                    recorder: None,
-                }),
-                transcode: false,
-                controlled: true,
-            },
-            shutdown: shutdown.clone(),
-            hub: hub.clone(),
-            current: Mutex::new(None),
-        };
-        for picture in [
-            json!({"width":1280,"height":720}),
-            json!({"width":1920,"height":1080}),
-        ] {
-            let result = runtime.control(&json!({"type":"clink-restart","picture":picture}));
-            assert_eq!(result["result"], "started");
-            send(&mut browser, 9, b"alive");
-            loop {
-                let (opcode, payload) = read(&mut browser);
-                assert_ne!(opcode, 8);
-                if opcode == 10 {
-                    assert_eq!(payload, b"alive");
-                    break;
+        let builds = Arc::new(Mutex::new(Vec::new()));
+        let observed = builds.clone();
+        let fail = Arc::new(AtomicBool::new(false));
+        let fail_build = fail.clone();
+        let factory = CarlinkFactory::from_args(
+            &args(&[
+                "--unix",
+                "wire",
+                "--clink-link",
+                "ble",
+                "--state-dir",
+                root.to_str().unwrap(),
+                "--clink-phone-mac",
+                "02:11:22:33:44:55",
+                "--clink-transcode",
+                "off",
+                "--control-stdin",
+            ]),
+            Arc::new(move |_, phone_mac| {
+                observed.lock().unwrap().push(phone_mac);
+                if fail_build.load(Ordering::Acquire) {
+                    return Err("fake_link_build_failure".into());
                 }
-            }
+                Ok(Arc::new(FakeLink(Arc::new(
+                    std::sync::atomic::AtomicUsize::new(0),
+                ))))
+            }),
+            Arc::new(SessionTrace {
+                summary: Arc::new(SummaryTrace::new(Arc::new(|_| {}))),
+                recorder: None,
+            }),
+        )
+        .unwrap();
+        let runtime = CarlinkRuntime::new(factory, shutdown.clone(), hub.clone());
+        for (mut command, expected) in [
+            (
+                json!({"picture":{"width":1280,"height":720}}),
+                Some("02:11:22:33:44:55"),
+            ),
+            (
+                json!({"phoneMac":"AA:BB:CC:DD:EE:FF","picture":{"width":1920,"height":1080}}),
+                Some("aa:bb:cc:dd:ee:ff"),
+            ),
+            (json!({}), Some("aa:bb:cc:dd:ee:ff")),
+            (json!({"phoneMac":null}), None),
+            (json!({}), None),
+            (
+                json!({"phoneMac":"12:34:56:78:9A:BC","hevc":"signal","vehicleData":true}),
+                Some("12:34:56:78:9a:bc"),
+            ),
+        ] {
+            command["type"] = json!("clink-restart");
+            command["request"] = json!("relay-N");
+            let result = runtime.control(&command);
+            assert_eq!(result["result"], "started");
+            assert_eq!(result["request"], "relay-N");
+            assert_eq!(builds.lock().unwrap().last().unwrap().as_deref(), expected);
+            assert_alive(&mut browser);
             assert!(!shutdown.session_failed.load(Ordering::Acquire));
         }
         let generation = shutdown.generation.load(Ordering::Acquire);
@@ -2614,10 +2687,68 @@ malformed",
             ["error"]
             .is_string());
         assert_eq!(shutdown.generation.load(Ordering::Acquire), generation);
+        let active = runtime
+            .current
+            .lock()
+            .unwrap()
+            .generation
+            .as_ref()
+            .unwrap()
+            .active
+            .clone();
+        let build_count = builds.lock().unwrap().len();
+        for invalid in [
+            json!(""),
+            json!("00:00:00:00:00:00"),
+            json!("02:00:00:00:00:00"),
+            json!("ff:ff:ff:ff:ff:ff"),
+            json!("01:12:34:56:78:90"),
+            json!("aa:bb:cc:dd:ee"),
+            json!("aa:bb:cc:dd:ee:gg"),
+            json!("+2:00:00:00:00:01"),
+            json!(" aa:bb:cc:dd:ee:ff"),
+            json!("aa:bb:cc:dd:ee:ff\n"),
+            json!(false),
+            json!(1),
+            json!([]),
+            json!({}),
+        ] {
+            let response = runtime.control(&json!({"type":"clink-restart","request":"invalid","phoneMac":invalid,"picture":null,"hevc":"off","vehicleData":false}));
+            assert!(response["error"].is_string(), "{invalid}");
+            assert_eq!(response["request"], "invalid");
+            assert_eq!(response["generation"], generation);
+            assert!(*active.lock().unwrap());
+            let current = runtime.current.lock().unwrap();
+            assert_eq!(current.phone_mac.as_deref(), Some("12:34:56:78:9a:bc"));
+            assert_eq!(current.options.picture_size, Some((1920, 1080)));
+            assert_eq!(current.options.hevc, oxp_clink::ClinkHevcMode::Signal);
+            assert!(current.options.vehicle_data);
+            assert_eq!(builds.lock().unwrap().len(), build_count);
+        }
+        assert_alive(&mut browser);
+        fail.store(true, Ordering::Release);
+        assert_eq!(
+            runtime.control(&json!({"type":"clink-restart","phoneMac":"AA:BB:CC:DD:EE:FF"}))
+                ["error"],
+            "fake_link_build_failure"
+        );
+        assert!(runtime.current.lock().unwrap().generation.is_none());
+        assert_alive(&mut browser);
+        fail.store(false, Ordering::Release);
+        assert_eq!(
+            runtime.control(&json!({"type":"clink-restart"}))["result"],
+            "started"
+        );
+        assert_eq!(
+            builds.lock().unwrap().last().unwrap().as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        assert_alive(&mut browser);
         let pins = runtime
             .current
             .lock()
             .unwrap()
+            .generation
             .as_ref()
             .unwrap()
             .pins
@@ -2642,16 +2773,17 @@ malformed",
             "cancelled"
         );
         assert!(waiter.join().unwrap().is_none());
-        send(&mut browser, 9, b"after cancel");
-        loop {
-            let (opcode, payload) = read(&mut browser);
-            assert_ne!(opcode, 8);
-            if opcode == 10 {
-                assert_eq!(payload, b"after cancel");
-                break;
-            }
-        }
-        assert!(runtime.current.lock().unwrap().is_none());
+        assert_alive(&mut browser);
+        assert!(runtime.current.lock().unwrap().generation.is_none());
+        assert_eq!(
+            runtime.control(&json!({"type":"clink-restart"}))["result"],
+            "started"
+        );
+        assert_eq!(
+            builds.lock().unwrap().last().unwrap().as_deref(),
+            Some("aa:bb:cc:dd:ee:ff")
+        );
+        assert_alive(&mut browser);
         hub.close();
         runtime.factory.trace.summary.shutdown();
         std::fs::remove_dir_all(root).unwrap();
