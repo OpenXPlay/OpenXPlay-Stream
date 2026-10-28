@@ -69,6 +69,8 @@ pub trait PinProvider: Send + Sync {
     }
     /// A supplied PIN was rejected; the shell may prompt again for a new session.
     fn pin_incorrect(&self, _: &str) {}
+    /// Interrupt a pending request when its output is retired.
+    fn cancel(&self) {}
 }
 pub trait TrustStore: Send + Sync {
     fn load_identity(&self) -> Result<Option<AuthIdentity>>;
@@ -104,6 +106,9 @@ pub trait ClinkListener: Send + Sync {
     /// Head-unit view size on the first UIBC touch of a session and whenever it changes.
     fn view_size(&self, _: u32, _: u32) {}
     fn statistics(&self, _: ClinkStatistics) {}
+    /// Raw vehicle reports, with no unit conversion or routing to the input.
+    fn vehicle(&self, _: crate::model::Origin, _: crate::model::VehicleData) {}
+    fn vehicle_state(&self, _: bool, _: u64) {}
     fn profile_mismatch(&self, _: &str, _: &[String]) {}
 }
 impl ClinkListener for () {}
@@ -112,6 +117,7 @@ pub enum ClinkHevcMode {
     #[default]
     Auto,
     Off,
+    Signal,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct ClinkPorts {
@@ -122,6 +128,8 @@ pub struct ClinkPorts {
     pub rtsp: u16,
     pub uibc: u16,
     pub rtp: u16,
+    /// Reverse connection for logical channel 8, category 2 (SENSOR).
+    pub sensor: u16,
 }
 impl Default for ClinkPorts {
     fn default() -> Self {
@@ -133,6 +141,7 @@ impl Default for ClinkPorts {
             rtsp: 7236,
             uibc: 4321,
             rtp: 15550,
+            sensor: 57239,
         }
     }
 }
@@ -146,6 +155,7 @@ impl ClinkPorts {
             self.rtsp,
             self.uibc,
             self.rtp,
+            self.sensor,
         ];
         require(
             ports.iter().all(|p| *p > 0)

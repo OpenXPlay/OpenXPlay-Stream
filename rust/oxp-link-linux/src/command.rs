@@ -46,7 +46,10 @@ fn run_with_cancel(
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| "system_tool_unavailable")?,
+            .map_err(|error| crate::diagnostics::PlatformFailure {
+                operation: Some(program.into()),
+                ..crate::diagnostics::PlatformFailure::io("system_tool_unavailable", error)
+            })?,
     );
     let mut pipe = child.0.stdout.take().ok_or("system_tool_failed")?;
     let reader = thread::spawn(move || {
@@ -64,7 +67,13 @@ fn run_with_cancel(
         if let Some(status) = child.0.try_wait()? {
             let out = reader.join().map_err(|_| "system_tool_failed")??;
             if !status.success() || out.len() > 1024 * 1024 {
-                return Err("system_tool_failed".into());
+                return Err(crate::diagnostics::PlatformFailure {
+                    code: "system_tool_failed",
+                    operation: Some(program.into()),
+                    status: status.code(),
+                    os_code: None,
+                }
+                .into());
             }
             return Ok(out);
         }
@@ -72,5 +81,25 @@ fn run_with_cancel(
             return Err("command_timeout".into());
         }
         thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn tool_exit_status_is_kept_but_output_is_not_exposed() {
+        let error = run(
+            "sh",
+            &["-c", "echo private-credential >&2; exit 7"],
+            Instant::now() + Duration::from_secs(3),
+        )
+        .unwrap_err();
+        let failure = error
+            .downcast_ref::<crate::diagnostics::PlatformFailure>()
+            .unwrap();
+        assert_eq!(failure.operation.as_deref(), Some("sh"));
+        assert_eq!(failure.status, Some(7));
+        assert_eq!(failure.to_string(), "system_tool_failed");
     }
 }

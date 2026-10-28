@@ -257,7 +257,7 @@ fn bad_trusted_pem_falls_back_for_all_clients_but_pem_alone_still_fails() {
         }
         let identity = load(&tls).unwrap().unwrap();
         assert_eq!(identity.fingerprint, local_fingerprint);
-        assert_eq!(identity.fingerprint_event()["trustedName"], "relay.test");
+        assert!(identity.fingerprint_event()["trustedName"].is_null());
         assert!(identity.fingerprint_event()["trustedFingerprint"].is_null());
         assert_eq!(fs::read(state_dir.join("cert.pem")).unwrap(), local_bytes);
         for name in ["relay.test", "127.0.0.1"] {

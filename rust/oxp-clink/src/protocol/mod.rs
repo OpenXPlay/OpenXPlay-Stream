@@ -59,3 +59,4 @@ pub(crate) fn json_object(
         .cloned()
         .ok_or_else(|| "invalid_json_object".into())
 }
+pub mod vehicle;

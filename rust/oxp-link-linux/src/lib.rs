@@ -4,6 +4,11 @@
 
 #[cfg(any(target_os = "linux", test))]
 mod att;
+mod diagnostics;
+pub mod join_policy;
+mod retry;
+pub use diagnostics::LinkFailure;
+pub use retry::LinkBackoff;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod bluez;
@@ -16,6 +21,9 @@ mod network;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod peers;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod raw;
 #[cfg(unix)]
 mod signals;
 #[cfg(target_os = "linux")]
@@ -76,6 +84,7 @@ pub struct Config {
     pub join_timeout: Duration,
     pub command_timeout: Duration,
     pub connect_attempts: u32,
+    /// Initial retry delay, clamped to Android's 1–15 second range.
     pub retry_delay: Duration,
     pub link_check_interval: Duration,
 }
@@ -89,7 +98,7 @@ impl Default for Config {
             device_name: "OpenXPlay".into(),
             device_model: "Linux adapter".into(),
             band: 1,
-            scan_timeout: Duration::from_secs(5),
+            scan_timeout: Duration::from_secs(8),
             scan_mode: ScanMode::Window,
             state_dir: None,
             phone_mac: None,
@@ -99,7 +108,7 @@ impl Default for Config {
             join_timeout: Duration::from_secs(15),
             command_timeout: Duration::from_secs(3),
             connect_attempts: 3,
-            retry_delay: Duration::from_millis(250),
+            retry_delay: Duration::from_secs(1),
             link_check_interval: Duration::from_secs(1),
         }
     }
@@ -162,6 +171,11 @@ pub struct Device {
 
 #[derive(Clone, Debug)]
 pub enum LinkEvent {
+    Failure(LinkFailure),
+    Trace {
+        stage: String,
+        fields: std::collections::BTreeMap<String, String>,
+    },
     Diagnostic {
         reason: String,
     },
@@ -325,15 +339,21 @@ pub struct LinuxClinkLink {
     address: Option<String>,
     listener: Option<LinkListener>,
     #[cfg(target_os = "linux")]
+    backoff: std::sync::Mutex<LinkBackoff>,
+    #[cfg(target_os = "linux")]
     active: Mutex<Option<Active>>,
 }
 impl LinuxClinkLink {
     pub fn new(config: Config) -> Result<Self> {
         config.validate()?;
+        #[cfg(target_os = "linux")]
+        let backoff = std::sync::Mutex::new(LinkBackoff::with_initial_delay(config.retry_delay));
         Ok(Self {
             config,
             address: None,
             listener: None,
+            #[cfg(target_os = "linux")]
+            backoff,
             #[cfg(target_os = "linux")]
             active: Mutex::new(None),
         })
@@ -354,17 +374,7 @@ impl LinuxClinkLink {
     }
     fn report_connect_result<T>(&self, result: Result<T>) -> Result<T> {
         if let Err(error) = &result {
-            // Only this typed, credential-free error may be exposed to listeners.
-            let reason = error
-                .downcast_ref::<UnsupportedBand>()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| {
-                    if error.to_string() == "head_unit_rejected_request" {
-                        "head_unit_rejected_request".into()
-                    } else {
-                        "link_connect_failed".into()
-                    }
-                });
+            let reason = diagnostics::code(error.as_ref());
             self.notify(LinkEvent::Lost { reason });
         }
         result
@@ -373,7 +383,7 @@ impl LinuxClinkLink {
         self.notify(LinkEvent::Scanning);
         #[cfg(target_os = "linux")]
         {
-            self.scan_selected(None)
+            self.scan_selected(None, None)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -381,14 +391,20 @@ impl LinuxClinkLink {
         }
     }
     #[cfg(target_os = "linux")]
-    fn scan_selected(&self, address: Option<&str>) -> Result<Vec<Device>> {
+    fn scan_selected(&self, address: Option<&str>, car_id: Option<&str>) -> Result<Vec<Device>> {
         let peers = self.load_peers()?;
-        bluez::scan(&self.config, address, &mut |device| {
-            self.notify(LinkEvent::Advertisement {
-                serial_same: peers.serial_same(device),
-                advertisement: device.advertisement.clone(),
-            });
-        })
+        bluez::scan(
+            &self.config,
+            address,
+            car_id,
+            &mut |device| {
+                self.notify(LinkEvent::Advertisement {
+                    serial_same: peers.serial_same(device),
+                    advertisement: device.advertisement.clone(),
+                });
+            },
+            &mut |event| self.notify(event),
+        )
     }
     #[cfg(target_os = "linux")]
     fn load_peers(&self) -> Result<peers::Peers> {
@@ -407,12 +423,21 @@ impl LinuxClinkLink {
         address: Option<&str>,
         on_link_lost: Arc<dyn Fn(Option<String>) + Send + Sync>,
     ) -> Result<ClinkAddresses> {
-        self.report_connect_result(self.try_connect_address(address, on_link_lost))
+        let started = std::time::Instant::now();
+        let result = diagnostics::diagnosed(
+            "link_start",
+            0,
+            started,
+            &mut |event| self.notify(event),
+            || self.try_connect_address(address, on_link_lost, started),
+        );
+        self.report_connect_result(result)
     }
     fn try_connect_address(
         &self,
         address: Option<&str>,
         on_link_lost: Arc<dyn Fn(Option<String>) + Send + Sync>,
+        started: std::time::Instant,
     ) -> Result<ClinkAddresses> {
         #[cfg(target_os = "linux")]
         {
@@ -424,112 +449,32 @@ impl LinuxClinkLink {
                 mac_bytes(address)?;
             }
             network::leave(&self.config)?;
-            self.notify(LinkEvent::Scanning);
-            let devices = self.scan_selected(address)?;
-            let device = select_device(devices, address)?;
-            self.notify(LinkEvent::Connecting {
-                address: device.address.clone(),
-                name: device.advertisement.name.clone(),
+            let (device, socket, reply, attempt) = self.handoff(address, started)?;
+            self.notify(LinkEvent::Trace {
+                stage: "ble_exchange_done".into(),
+                fields: [
+                    ("frequency".into(), reply.freq.to_string()),
+                    ("replyType".into(), reply.kind.to_string()),
+                ]
+                .into(),
             });
-            let local = bluez::adapter_address(&self.config)?;
-            let mac = if let Some(mac) = &self.config.phone_mac {
-                normalized_bluetooth_address(mac)?
-            } else {
-                std::fs::read_to_string(format!(
-                    "/sys/class/net/{}/address",
-                    self.config.wifi_interface
-                ))?
-            };
-            mac_bytes(mac.trim())?;
-            let mut peers = if self.config.state_dir.is_some() {
-                self.load_peers()?
-            } else {
-                // The static map preserves the original behaviour without a state directory.
-                peers::Peers::default()
-            };
-            let key = device_key(&device);
-            let policies = peers::memory();
-            let mut policy = policies
-                .lock()
-                .map_err(|_| "link_lock_poisoned")?
-                .known_choice(&key)
-                .unwrap_or_else(|| peers.choice(&key, self.config.state_dir.is_some()));
-            let persisted_legacy = self.config.state_dir.is_some()
-                && peers.known_choice(&key).is_some_and(|choice| choice.legacy);
-            let end = Instant::now() + self.config.handoff_timeout.min(Duration::from_secs(15));
-            let result = exchange(
-                &self.config,
-                mac.trim(),
-                &mut policy,
-                end,
+            // Join immediately: the head unit's network may expire quickly.
+            let (network, addresses) = diagnostics::diagnosed(
+                "wifi_join",
+                attempt,
+                started,
+                &mut |event| self.notify(event),
                 || {
-                    let mut failure = None;
-                    for attempt in 0..self.config.connect_attempts {
-                        signals::check()?;
-                        if Instant::now() >= end {
-                            break;
-                        }
-                        match socket::NativeSocket::connect(
-                            &local,
-                            &device.address,
-                            self.config.address_type,
-                            end.min(Instant::now() + self.config.connect_timeout),
-                        ) {
-                            Ok(s) => return Ok(s),
-                            Err(e) => failure = Some(e),
-                        }
-                        if attempt + 1 < self.config.connect_attempts {
-                            std::thread::sleep(
-                                self.config
-                                    .retry_delay
-                                    .min(end.saturating_duration_since(Instant::now())),
-                            );
-                        }
-                    }
-                    Err(failure.unwrap_or_else(|| "bluetooth_connect_failed".into()))
-                },
-                &mut |reason| {
-                    self.notify(LinkEvent::Diagnostic {
-                        reason: reason.into(),
+                    join_after_handoff(&self.config, socket, &reply, || {
+                        network::join(
+                            &self.config,
+                            &reply,
+                            device.advertisement.car_id.clone(),
+                            &mut |event| self.notify(event),
+                        )
                     })
                 },
-            );
-            if result.is_err() && persisted_legacy {
-                policy.legacy = false;
-            }
-            if let Some(directory) = &self.config.state_dir {
-                if result.is_ok() || persisted_legacy {
-                    // A rejection toggles only the in-process retry, never the saved successful type.
-                    let saved = if result.is_ok() {
-                        policy
-                    } else {
-                        HandoffPolicy {
-                            legacy: false,
-                            ..peers.choice(&key, true)
-                        }
-                    };
-                    peers.remember(
-                        key.clone(),
-                        saved,
-                        result.as_ref().ok().map(|_| device.advertisement.serial),
-                    );
-                    if peers.save(directory).is_err() {
-                        self.notify(LinkEvent::Diagnostic {
-                            reason: "ble_peer_save_failed".into(),
-                        });
-                    }
-                }
-            }
-            policies.lock().map_err(|_| "link_lock_poisoned")?.remember(
-                key,
-                policy,
-                result.as_ref().ok().map(|_| device.advertisement.serial),
-            );
-            let (socket, reply) = result?;
-            // Join immediately: the head unit's network may expire quickly.
-            let (network, addresses) = join_after_handoff(&self.config, socket, &reply, || {
-                network::join(&self.config, &reply, device.advertisement.car_id)
-            })?;
+            )?;
             let network = Arc::new(network);
             let stop = Arc::new(AtomicBool::new(false));
             let monitor_network = network.clone();
@@ -552,23 +497,45 @@ impl LinuxClinkLink {
                                     .min(next.saturating_duration_since(Instant::now())),
                             );
                         }
-                        if !monitor_network.alive(&expected) {
+                        if let Err(error) = monitor_network.alive(&expected) {
                             if !monitor_stop.swap(true, Ordering::AcqRel) {
+                                let result = diagnostics::diagnosed::<()>(
+                                    "link_lost",
+                                    attempt,
+                                    started,
+                                    &mut |event| {
+                                        if let Some(listener) = &listener {
+                                            listener(event);
+                                        }
+                                    },
+                                    || Err(error),
+                                );
+                                let reason = result.unwrap_err().to_string();
                                 if let Some(listener) = &listener {
                                     listener(LinkEvent::Lost {
-                                        reason: "network_link_lost".into(),
+                                        reason: reason.clone(),
                                     });
                                 }
-                                on_link_lost(Some("network_link_lost".into()));
+                                on_link_lost(Some(reason));
                             }
                             return;
                         }
                     }
                 });
-            if worker.is_err() {
+            if let Err(error) = worker {
                 let _ = network.leave();
-                return Err("link_monitor_failed".into());
+                return diagnostics::diagnosed(
+                    "link_monitor",
+                    attempt,
+                    started,
+                    &mut |event| self.notify(event),
+                    || Err(error.into()),
+                );
             }
+            self.backoff
+                .lock()
+                .map_err(|_| "link_lock_poisoned")?
+                .succeeded();
             self.notify(LinkEvent::Joined {
                 address: device.address,
                 name: device.advertisement.name,
@@ -581,9 +548,181 @@ impl LinuxClinkLink {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (address, on_link_lost);
+            let _ = (address, on_link_lost, started);
             Err("linux_link_unavailable".into())
         }
+    }
+    #[cfg(target_os = "linux")]
+    fn handoff(
+        &self,
+        address: Option<&str>,
+        started: Instant,
+    ) -> Result<(
+        Device,
+        socket::NativeSocket,
+        oxp_clink::ble::HeadUnitReply,
+        u32,
+    )> {
+        retry::discover(
+            self.config.connect_attempts,
+            |attempt, car_id| {
+                self.notify(LinkEvent::Scanning);
+                let device = diagnostics::diagnosed(
+                    "ble_scan",
+                    attempt,
+                    started,
+                    &mut |event| self.notify(event),
+                    || {
+                        // A remembered car identity follows rotating addresses; never reuse the old address.
+                        let devices = self.scan_selected(
+                            if car_id.is_some() { None } else { address },
+                            car_id.as_deref(),
+                        )?;
+                        retry::select(devices, address, car_id.as_deref())
+                    },
+                )?;
+                *car_id = Some(device.advertisement.car_id.clone());
+                self.notify(LinkEvent::Connecting {
+                    address: device.address.clone(),
+                    name: device.advertisement.name.clone(),
+                });
+                let (local, mac) = diagnostics::diagnosed(
+                    "link_start",
+                    attempt,
+                    started,
+                    &mut |event| self.notify(event),
+                    || {
+                        let local = bluez::adapter_address(&self.config)?;
+                        let mac = if let Some(mac) = &self.config.phone_mac {
+                            normalized_bluetooth_address(mac)?
+                        } else {
+                            std::fs::read_to_string(format!(
+                                "/sys/class/net/{}/address",
+                                self.config.wifi_interface
+                            ))?
+                        };
+                        mac_bytes(mac.trim())?;
+                        Ok((local, mac))
+                    },
+                )?;
+                let (socket, reply) =
+                    self.exchange_device(&device, &local, mac.trim(), attempt, started)?;
+                Ok((device, socket, reply, attempt))
+            },
+            || self.wait_retry(),
+        )
+    }
+    #[cfg(target_os = "linux")]
+    fn exchange_device(
+        &self,
+        device: &Device,
+        local: &str,
+        mac: &str,
+        attempt: u32,
+        started: Instant,
+    ) -> Result<(socket::NativeSocket, oxp_clink::ble::HeadUnitReply)> {
+        let mut peers = if self.config.state_dir.is_some() {
+            self.load_peers()?
+        } else {
+            // The static map preserves the original behaviour without a state directory.
+            peers::Peers::default()
+        };
+        let key = device_key(device);
+        let policies = peers::memory();
+        let mut policy = policies
+            .lock()
+            .map_err(|_| "link_lock_poisoned")?
+            .known_choice(&key)
+            .unwrap_or_else(|| peers.choice(&key, self.config.state_dir.is_some()));
+        let persisted_legacy = self.config.state_dir.is_some()
+            && peers.known_choice(&key).is_some_and(|choice| choice.legacy);
+        let end = Instant::now() + self.config.handoff_timeout.min(Duration::from_secs(15));
+        let result = diagnostics::diagnosed(
+            "ble_exchange",
+            attempt,
+            started,
+            &mut |event| self.notify(event),
+            || {
+                exchange(
+                    &self.config,
+                    mac.trim(),
+                    &mut policy,
+                    end,
+                    || {
+                        diagnostics::diagnosed(
+                            "gatt_connect",
+                            attempt,
+                            started,
+                            &mut |event| self.notify(event),
+                            || {
+                                socket::NativeSocket::connect(
+                                    local,
+                                    &device.address,
+                                    self.config.address_type,
+                                    end.min(Instant::now() + self.config.connect_timeout),
+                                )
+                            },
+                        )
+                    },
+                    &mut |reason| {
+                        self.notify(LinkEvent::Diagnostic {
+                            reason: reason.into(),
+                        })
+                    },
+                )
+            },
+        );
+        if result.is_err() && persisted_legacy {
+            policy.legacy = false;
+        }
+        if let Some(directory) = &self.config.state_dir {
+            if result.is_ok() || persisted_legacy {
+                // A rejection toggles only the in-process retry, never the saved successful type.
+                let saved = if result.is_ok() {
+                    policy
+                } else {
+                    HandoffPolicy {
+                        legacy: false,
+                        ..peers.choice(&key, true)
+                    }
+                };
+                peers.remember(
+                    key.clone(),
+                    saved,
+                    result.as_ref().ok().map(|_| device.advertisement.serial),
+                );
+                if peers.save(directory).is_err() {
+                    self.notify(LinkEvent::Diagnostic {
+                        reason: "ble_peer_save_failed".into(),
+                    });
+                }
+            }
+        }
+        policies.lock().map_err(|_| "link_lock_poisoned")?.remember(
+            key,
+            policy,
+            result.as_ref().ok().map(|_| device.advertisement.serial),
+        );
+        result
+    }
+    #[cfg(target_os = "linux")]
+    fn wait_retry(&self) -> Result<()> {
+        let delay = self
+            .backoff
+            .lock()
+            .map_err(|_| "link_lock_poisoned")?
+            .next_delay();
+        self.notify(retry::retry_event(delay));
+        let end = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < end {
+            #[cfg(target_os = "linux")]
+            signals::check()?;
+            std::thread::sleep(
+                Duration::from_millis(50)
+                    .min(end.saturating_duration_since(std::time::Instant::now())),
+            );
+        }
+        Ok(())
     }
     /// Remove this crate's temporary profiles on the configured Wi-Fi interface.
     pub fn leave(&self) -> Result<()> {
@@ -628,7 +767,7 @@ impl Drop for LinuxClinkLink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn device(address: &str) -> Device {
+    pub(super) fn device(address: &str) -> Device {
         Device {
             address: address.into(),
             advertisement: Advertisement {
@@ -945,7 +1084,7 @@ mod tests {
             .with_listener(Arc::new(move |event| sink.lock().unwrap().push(event)));
         let _ = link.report_connect_result::<()>(Err("secret-password".into()));
         assert!(
-            matches!(&events.lock().unwrap()[0], LinkEvent::Lost { reason } if reason == "link_connect_failed")
+            matches!(&events.lock().unwrap()[0], LinkEvent::Lost { reason } if reason == "unknown_error")
         );
     }
     #[test]

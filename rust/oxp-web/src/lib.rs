@@ -5,15 +5,21 @@
 // Only send_buffer may use unsafe code, for socket options that std does not expose.
 #![deny(unsafe_code)]
 mod audio_queue;
+mod host_queue;
+#[cfg(test)]
+mod host_queue_tests;
 mod pairing;
 mod plugins;
 pub use plugins::PluginsConfig;
 mod send_buffer;
 use audio_queue::{valid_mic_packet, AudioQueue};
+use host_queue::{HostQueue, QueuedHost};
 use pairing::{constant_time_token, HelloRateLimit};
 pub mod http;
 pub mod json;
 pub mod tls;
+#[cfg(test)]
+mod tls_update_tests;
 use oxp_core::{model::*, FrameQueue, ProjectionOutput};
 use oxp_wire::{Header, Kind, Result};
 use serde_json::{json, Value};
@@ -29,6 +35,9 @@ use std::{
     time::{Duration, Instant},
 };
 pub use tls::Tls;
+/// Pairing required/rejected (including rate limiting). Other policy failures use 1008, as in
+/// Kotlin. Receivers should prompt for a code only on 4401 and reconnect after ordinary 1008 closes.
+pub const PAIRING_REQUIRED: u16 = 4401;
 use tungstenite::{
     protocol::{frame::coding::CloseCode, CloseFrame, Role, WebSocketConfig},
     Error, Message, WebSocket,
@@ -258,6 +267,9 @@ pub struct WebOutput {
     state: Arc<Mutex<State>>,
     runtime: Mutex<Option<Arc<Runtime>>>,
     hello_rate_limit: Arc<Mutex<HelloRateLimit>>,
+    tls: Arc<Mutex<Option<tls::Identity>>>,
+    tls_update: Mutex<()>,
+    host_queue: Mutex<Option<HostQueue>>,
 }
 impl WebOutput {
     pub fn new(config: WebOutputConfig) -> Result<Self> {
@@ -276,6 +288,7 @@ impl WebOutput {
             .transpose()?
             .map(Arc::new);
         let receiver_build = receiver_build(&config.static_root);
+        let tls = Arc::new(Mutex::new(tls::load(&config.tls)?));
         Ok(Self {
             plugins,
             config,
@@ -301,7 +314,25 @@ impl WebOutput {
             })),
             runtime: Mutex::new(None),
             hello_rate_limit: Arc::new(Mutex::new(HelloRateLimit::default())),
+            tls,
+            tls_update: Mutex::new(()),
+            host_queue: Mutex::new(None),
         })
+    }
+    /// Replaces both TLS identities for new connections, leaving existing TLS sessions intact.
+    /// Requires a self-signed state directory at startup. Covered SANs stay cached across address
+    /// removal/flapping; new SANs regenerate the pair using the existing cache and key rules.
+    /// A failed replacement leaves the served identities unchanged.
+    pub fn update_tls(&self, trusted: Option<tls::TrustedPem>, sans: Vec<String>) -> Result<Value> {
+        let state_dir = match &self.config.tls {
+            Tls::SelfSigned { state_dir, .. } | Tls::Sni { state_dir, .. } => state_dir.clone(),
+            _ => return Err("TLS updates require self-signed TLS at startup".into()),
+        };
+        let _update = self.tls_update.lock().unwrap();
+        let identity = tls::replacement(&state_dir, trusted.as_ref(), &sans)?;
+        let event = identity.fingerprint_event();
+        *self.tls.lock().unwrap() = Some(identity);
+        Ok(event)
     }
     pub fn await_listening(&self, timeout: Duration) -> Result<SocketAddr> {
         let run = self
@@ -416,18 +447,31 @@ impl ProjectionOutput for WebOutput {
             listening: Condvar::new(),
             connections: AtomicUsize::new(0),
         });
-        self.state.lock().unwrap().host = Some(host);
+        let queue = HostQueue::new(256)?;
+        self.state.lock().unwrap().host = Some(Arc::new(QueuedHost {
+            queue: queue.clone(),
+            host,
+        }));
+        *self.host_queue.lock().unwrap() = Some(queue.clone());
         *current = Some(run.clone());
-        let config = self.config.clone();
+        let mut config = self.config.clone();
+        config.diagnostics = config
+            .diagnostics
+            .map(|callback| queue.diagnostics(callback));
+        let tls = self.tls.clone();
         let plugins = self.plugins.clone();
         let state = self.state.clone();
         let hello_rate_limit = self.hello_rate_limit.clone();
         std::thread::spawn(move || {
             report_caps(&state);
             let result = (|| -> Result<()> {
-                let identity = tls::load(&config.tls)?;
-                if let Some(i) = &identity {
-                    eprintln!("{}", i.fingerprint_event());
+                let fingerprint = tls
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(tls::Identity::fingerprint_event);
+                if let Some(fingerprint) = fingerprint {
+                    eprintln!("{fingerprint}");
                 }
                 let listener = TcpListener::bind(config.bind)?;
                 listener.set_nonblocking(true)?;
@@ -436,7 +480,7 @@ impl ProjectionOutput for WebOutput {
                 run.listening.notify_all();
                 eprintln!(
                     "{}",
-                    json!({"type":"web-listening","address":addr.to_string(),"tls":identity.is_some()})
+                    json!({"type":"web-listening","address":addr.to_string(),"tls":!matches!(config.tls, Tls::Disabled)})
                 );
                 while run.active.load(Ordering::Acquire) {
                     match listener.accept() {
@@ -457,8 +501,9 @@ impl ProjectionOutput for WebOutput {
                             let config = config.clone();
                             let plugins = plugins.clone();
                             let hello_rate_limit = hello_rate_limit.clone();
-                            let tls = identity.as_ref().map(|i| i.config.clone());
+                            let tls = tls.clone();
                             std::thread::spawn(move || {
+                                let tls = tls.lock().unwrap().as_ref().map(|i| i.config.clone());
                                 let _ = connection(
                                     socket,
                                     &config,
@@ -651,6 +696,9 @@ impl ProjectionOutput for WebOutput {
         if let Some(run) = self.runtime.lock().unwrap().take() {
             run.active.store(false, Ordering::Release);
             run.listening.notify_all();
+        }
+        if let Some(queue) = self.host_queue.lock().unwrap().take() {
+            queue.shutdown();
         }
         let mut s = self.state.lock().unwrap();
         s.host = None;
@@ -945,7 +993,7 @@ fn client_loop<S: Read + Write>(
                                 Instant::now(),
                                 || constant_time_token(token, v["token"].as_str().unwrap()),
                             ) {
-                                return close(ws, 1008);
+                                return close(ws, PAIRING_REQUIRED);
                             }
                         }
                     }

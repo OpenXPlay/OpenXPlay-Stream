@@ -195,7 +195,7 @@ impl WfdSource {
         }
     }
     pub fn hevc_enabled(&self) -> bool {
-        self.hevc == ClinkHevcMode::Auto && self.iccoa_support_hevc.as_deref() == Some("supported")
+        self.hevc != ClinkHevcMode::Off && self.iccoa_support_hevc.as_deref() == Some("supported")
     }
     fn request(
         &mut self,
@@ -226,13 +226,17 @@ impl WfdSource {
         std::mem::take(&mut self.keyframe)
     }
     pub fn capabilities(&self, d: &DisplayInfo) -> BTreeMap<String, String> {
-        BTreeMap::from([
+        let mut capabilities = BTreeMap::from([
             ("wfd_video_formats".into(),format!("{:02x} 00 {:02x} {:02x} {:08x} 00000000 00000000 00 0000 0000 00 none none",self.mode.cea<<3,self.mode.profile,self.mode.level,1u64<<self.mode.cea)),
             ("wfd_audio_codecs".into(),if self.audio {"AAC 00000001 00"} else {"none"}.into()),("wfd_client_rtp_ports".into(),self.advertised_rtp.clone()),
             ("wfd_uibc_capability".into(),format!("input_category_list=GENERIC;generic_cap_list=Keyboard, MultiTouch;hidc_cap_list=none;port={};uibc_encrypted=true",self.ports.uibc)),
             ("wfd_uibc_setting".into(),"enable".into()),("wfd_content_protection".into(),"none".into()),("wfd_standby_resume_capability".into(),"none".into()),
             ("wfd_presentation_URL".into(),format!("rtsp://{}:{}/wfd1.0/streamid=0 none",self.address,self.ports.rtsp)),
-            ("wfd_car_display_mode".into(),format!("mode=0;display={}:{};dpi={};fps={}",self.mode.width,self.mode.height,d.density_dpi,self.mode.fps))])
+            ("wfd_car_display_mode".into(),format!("mode=0;display={}:{};dpi={};fps={}",self.mode.width,self.mode.height,d.density_dpi,self.mode.fps))]);
+        if self.hevc_enabled() && self.hevc == ClinkHevcMode::Signal {
+            capabilities.insert("iccoa_support_hevc".into(), "supported".into());
+        }
+        capabilities
     }
     fn negotiate(&mut self, body: &str) -> Result<()> {
         let peer = parameters(body);
@@ -283,6 +287,8 @@ impl WfdSource {
         }
         self.mode = selected.ok_or("projection_timing_mismatch")?;
         if self.hevc_enabled() {
+            // Only the selected codec constrains the input's canvas and frame rate.
+            supported.clear();
             supported.push(DecoderSupport {
                 codec_string: "hvc1.1.6.L123.B0".into(),
                 hardware: true,

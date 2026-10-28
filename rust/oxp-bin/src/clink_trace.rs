@@ -3,6 +3,22 @@
 // Created by riko chen on 2026-10-22
 
 //! Bounded, asynchronous Carlink trace and MPEG-TS recording.
+mod privacy;
+mod summary;
+pub use privacy::{redact, remember_secret};
+pub use summary::SummaryTrace;
+pub struct SessionTrace {
+    pub summary: Arc<SummaryTrace>,
+    pub recorder: Option<Arc<TraceRecorder>>,
+}
+impl ClinkTrace for SessionTrace {
+    fn record(&self, event: ClinkTraceEvent) {
+        self.summary.record(event.clone());
+        if let Some(recorder) = &self.recorder {
+            recorder.record(event);
+        }
+    }
+}
 use oxp_clink::trace::{ClinkMediaTap, ClinkTrace, ClinkTraceEvent};
 use serde_json::{json, Value};
 use std::{
@@ -20,7 +36,7 @@ use std::{
 };
 
 type Callback = Arc<dyn Fn(Value) + Send + Sync>;
-const TRACE_LIMIT: u64 = 8 * 1024 * 1024;
+const TRACE_LIMIT: u64 = 16 * 1024 * 1024;
 const CAPTURE_LIMIT: u64 = 64 * 1024 * 1024;
 // Buffer ~2.7 s at 8 Mbit/s because trace sync_data can stall for hundreds of ms on eMMC.
 const CAPTURE_QUEUE: usize = 2048;
@@ -32,7 +48,7 @@ struct Shared {
     status: Mutex<Value>,
 }
 enum Command {
-    Event(ClinkTraceEvent),
+    Event(ClinkTraceEvent, u128),
     Clear,
     Start(Duration),
     Stop,
@@ -118,7 +134,11 @@ impl TraceRecorder {
 }
 impl ClinkTrace for TraceRecorder {
     fn record(&self, event: ClinkTraceEvent) {
-        if self.sender.try_send(Command::Event(event)).is_err() {
+        if self
+            .sender
+            .try_send(Command::Event(event, unix_ms()))
+            .is_err()
+        {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -282,9 +302,9 @@ impl Writer {
     }
     fn command(&mut self, c: Command, packets: &Receiver<Vec<u8>>) -> bool {
         match c {
-            Command::Event(e) => {
+            Command::Event(e, wall) => {
                 if self.status["failure"].is_null() {
-                    if let Err(e) = self.write_event(e) {
+                    if let Err(e) = self.write_event(e, wall) {
                         self.fail(e);
                         self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                     }
@@ -331,8 +351,11 @@ impl Writer {
         }
         false
     }
-    fn write_event(&mut self, e: ClinkTraceEvent) -> io::Result<()> {
-        let mut line = serde_json::to_vec(&e.to_json())?;
+    fn write_event(&mut self, e: ClinkTraceEvent, wall: u128) -> io::Result<()> {
+        let mut value = e.to_json();
+        value["atMillis"] = json!(wall);
+        redact(&mut value);
+        let mut line = serde_json::to_vec(&value)?;
         line.push(b'\n');
         let bytes = self.status["bytes"].as_u64().unwrap();
         if self.trace.is_none() || (bytes > 0 && bytes + line.len() as u64 > self.trace_limit) {
@@ -929,14 +952,16 @@ mod tests {
         assert_eq!(r.status()["capture"]["reason"], "error");
     }
     #[test]
-    fn default_rotation_boundary_is_eight_mib() {
+    fn default_rotation_boundary_is_sixteen_mib() {
         let dir = Temp::new();
         let r = TraceRecorder::new(&dir.0, Arc::new(|_| {}));
         let mut e = event(1);
         if let ClinkTraceEvent::Link { fields, .. } = &mut e {
             fields.insert("payload".into(), String::new());
         }
-        let overhead = serde_json::to_vec(&e.to_json()).unwrap().len() + 1;
+        let mut encoded = e.to_json();
+        encoded["atMillis"] = json!(unix_ms());
+        let overhead = serde_json::to_vec(&encoded).unwrap().len() + 1;
         if let ClinkTraceEvent::Link { fields, .. } = &mut e {
             fields.insert(
                 "payload".into(),
@@ -976,7 +1001,7 @@ mod tests {
         );
         directory(&dir.0).unwrap();
         w.publish(true);
-        w.write_event(event(1)).unwrap();
+        w.write_event(event(1), unix_ms()).unwrap();
         w.publish(false);
         let (_, packets) = mpsc::sync_channel(CAPTURE_QUEUE);
         w.command(Command::Clear, &packets);
@@ -984,11 +1009,33 @@ mod tests {
         w.last_status = Instant::now() - Duration::from_secs(1);
         w.publish(false);
         assert_eq!(events.lock().unwrap().len(), 1); // Clear restored the published counters.
-        w.write_event(event(2)).unwrap();
+        w.write_event(event(2), unix_ms()).unwrap();
         w.publish(false);
         assert_eq!(events.lock().unwrap().len(), 2);
         w.start_capture(Duration::from_secs(60), &packets);
         w.finish_capture("stop");
         assert_eq!(events.lock().unwrap().len(), 4);
+    }
+    #[test]
+    fn persisted_events_are_redacted_and_have_wall_clock_correlation() {
+        let dir = Temp::new();
+        let recorder = TraceRecorder::new(&dir.0, Arc::new(|_| {}));
+        let before = unix_ms();
+        recorder.record(ClinkTraceEvent::Rtsp {
+            at_nanos: 123,
+            session: 1,
+            direction: "RX".into(),
+            start_line: "RTSP/1.0 200 OK".into(),
+            headers: BTreeMap::from([("authorization".into(), "Bearer do-not-save".into())]),
+            body: "wpa_psk: never-persist\r\nwfd_uibc_capability: keep\r\n".into(),
+        });
+        recorder.shutdown();
+        let path = matching(&dir.0, "trace-", ".jsonl").unwrap().remove(0);
+        let line = fs::read_to_string(path).unwrap();
+        assert!(!line.contains("never-persist") && !line.contains("do-not-save"));
+        let value: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["atNanos"], 123);
+        assert!(value["atMillis"].as_u64().unwrap() as u128 >= before);
+        assert!(value["atMillis"].as_u64().unwrap() as u128 <= unix_ms());
     }
 }

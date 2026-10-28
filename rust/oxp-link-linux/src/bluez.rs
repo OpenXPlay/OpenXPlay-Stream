@@ -4,7 +4,7 @@
 
 use crate::{
     command::{run, Process},
-    Config, Device, ScanMode,
+    Config, Device, LinkEvent, ScanMode,
 };
 use oxp_clink::{ble, Result};
 use serde_json::Value;
@@ -41,14 +41,34 @@ fn bytes(v: &Value) -> Option<Vec<u8>> {
         .map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
         .collect()
 }
+fn carlink_properties(properties: &serde_json::Map<String, Value>) -> bool {
+    properties
+        .get("UUIDs")
+        .and_then(Value::as_array)
+        .is_some_and(|uuids| {
+            uuids.iter().any(|uuid| {
+                uuid.as_str()
+                    .is_some_and(|uuid| uuid.eq_ignore_ascii_case(ble::ADVERTISEMENT_SERVICE))
+            })
+        })
+        || properties
+            .get("ServiceData")
+            .and_then(Value::as_object)
+            .is_some_and(|data| {
+                data.keys()
+                    .any(|uuid| uuid.eq_ignore_ascii_case(ble::IDENTITY_SERVICE))
+            })
+}
 #[derive(Default)]
 struct Entry {
     properties: serde_json::Map<String, Value>,
     fresh: bool,
+    observed: u64,
 }
 struct Window {
     prefix: String,
     devices: BTreeMap<String, Entry>,
+    sequence: u64,
 }
 impl Window {
     fn new(adapter: &str, snapshot: Value) -> Self {
@@ -61,19 +81,31 @@ impl Window {
         if let Some(objects) = objects.as_object() {
             for (path, interfaces) in objects {
                 if path.starts_with(&prefix) {
-                    if let Some(p) = interfaces.get(DEVICE).and_then(Value::as_object) {
+                    if let Some(p) = interfaces
+                        .get(DEVICE)
+                        .and_then(Value::as_object)
+                        .filter(|p| carlink_properties(p))
+                    {
                         devices.insert(
                             path.clone(),
                             Entry {
                                 properties: p.clone(),
                                 fresh: false,
+                                observed: 0,
                             },
                         );
                     }
                 }
             }
         }
-        Self { prefix, devices }
+        while devices.len() > 128 {
+            devices.pop_first();
+        }
+        Self {
+            prefix,
+            devices,
+            sequence: 0,
+        }
     }
     fn update(&mut self, message: &Value) -> Result<()> {
         if message.get("type").and_then(Value::as_str) != Some("signal") {
@@ -135,7 +167,28 @@ impl Window {
         let p = properties
             .as_object()
             .ok_or("bluetooth_scan_invalid_signal")?;
+        // Raw records use the HCI observer; discovery retains only Carlink candidates.
+        if !self.devices.contains_key(path) && !carlink_properties(p) {
+            return Ok(());
+        }
+        if !self.devices.contains_key(path) && self.devices.len() >= 128 {
+            if let Some(oldest) = self
+                .devices
+                .iter()
+                .min_by_key(|(_, entry)| entry.observed)
+                .map(|(path, _)| path.clone())
+            {
+                self.devices.remove(&oldest);
+            }
+        }
+        self.sequence = self.sequence.saturating_add(1);
         let entry = self.devices.entry(path.into()).or_default();
+        if p.contains_key("ServiceData")
+            || p.contains_key("ManufacturerData")
+            || p.contains_key("RSSI")
+        {
+            entry.observed = self.sequence;
+        }
         entry.fresh |= p.contains_key("ServiceData") || p.contains_key("ManufacturerData");
         entry.properties.extend(p.clone());
         if let Some(a) = invalidated.and_then(Value::as_array) {
@@ -146,7 +199,7 @@ impl Window {
         Ok(())
     }
     fn result(&self) -> Vec<Device> {
-        let mut out = Vec::new();
+        let mut newest = BTreeMap::new();
         for entry in self.devices.values().filter(|e| e.fresh) {
             let p = &entry.properties;
             let Some(address) = p.get("Address").and_then(Value::as_str) else {
@@ -177,12 +230,24 @@ impl Window {
             };
             let name = lookup(ble::NAME_SERVICE).unwrap_or_default();
             if let Ok(advertisement) = ble::advertisement(&identity, &name) {
-                out.push(Device {
+                let device = Device {
                     address: address.to_lowercase(),
                     advertisement,
-                });
+                };
+                let key = if device.advertisement.car_id.is_empty() {
+                    device.address.clone()
+                } else {
+                    device.advertisement.car_id.clone()
+                };
+                if newest
+                    .get(&key)
+                    .is_none_or(|(sequence, _)| *sequence < entry.observed)
+                {
+                    newest.insert(key, (entry.observed, device));
+                }
             }
         }
+        let mut out: Vec<Device> = newest.into_values().map(|(_, device)| device).collect();
         out.sort_by(|a, b| {
             (&a.advertisement.car_id, &a.address).cmp(&(&b.advertisement.car_id, &b.address))
         });
@@ -199,7 +264,9 @@ fn next(rx: &Receiver<Result<Value>>, wait: Duration) -> Result<Option<Value>> {
 pub(crate) fn scan(
     c: &Config,
     address: Option<&str>,
+    car_id: Option<&str>,
     advertisement: &mut dyn FnMut(&Device),
+    trace: &mut dyn FnMut(LinkEvent),
 ) -> Result<Vec<Device>> {
     let setup = Instant::now() + c.command_timeout;
     let mut monitor = Process(
@@ -300,10 +367,27 @@ pub(crate) fn scan(
             }
         }
     });
+    let service = if c.trace_advertisements {
+        ""
+    } else {
+        ble::ADVERTISEMENT_SERVICE
+    };
     let script = format!(
         "select {adapter}\nmenu scan\nuuids {}\ntransport le\nduplicate-data on\nback\nscan on\n",
-        ble::ADVERTISEMENT_SERVICE
+        service
     );
+    #[cfg(target_os = "linux")]
+    let raw = if c.trace_advertisements {
+        match crate::raw::RawSocket::open(&c.bluetooth_adapter) {
+            Ok(socket) => Some(socket),
+            Err(error) => {
+                raw_failure(error.as_ref(), trace);
+                None
+            }
+        }
+    } else {
+        None
+    };
     let input = discovery
         .0
         .stdin
@@ -319,8 +403,18 @@ pub(crate) fn scan(
         overflow,
         start: Instant::now(),
         command_timeout: c.command_timeout,
+        #[cfg(target_os = "linux")]
+        raw,
     };
-    scan_discovery(c, address, window, &mut discovery, advertisement)
+    scan_discovery(
+        c,
+        address,
+        car_id,
+        window,
+        &mut discovery,
+        advertisement,
+        trace,
+    )
 }
 fn wait_started(
     rx: &Receiver<std::result::Result<(), &'static str>>,
@@ -337,7 +431,23 @@ fn wait_started(
         }
     }
 }
+fn raw_failure(error: &(dyn std::error::Error + 'static), trace: &mut dyn FnMut(LinkEvent)) {
+    let mut fields = BTreeMap::from([("code".into(), crate::diagnostics::code(error))]);
+    if let Some(code) = error
+        .downcast_ref::<std::io::Error>()
+        .and_then(|e| e.raw_os_error())
+    {
+        fields.insert("osCode".into(), code.to_string());
+    }
+    trace(LinkEvent::Trace {
+        stage: "ble_raw_failed".into(),
+        fields,
+    });
+}
 trait Discovery {
+    fn raw(&mut self, _: &mut dyn FnMut(BTreeMap<String, String>)) -> Result<()> {
+        Ok(())
+    }
     fn elapsed(&self) -> Duration;
     fn receive(&mut self, wait: Duration) -> Result<Option<Value>>;
     fn restart(&mut self) -> Result<()>;
@@ -350,8 +460,22 @@ struct NativeDiscovery {
     overflow: std::sync::Arc<std::sync::atomic::AtomicBool>,
     start: Instant,
     command_timeout: Duration,
+    #[cfg(target_os = "linux")]
+    raw: Option<crate::raw::RawSocket>,
 }
 impl Discovery for NativeDiscovery {
+    fn raw(&mut self, emit: &mut dyn FnMut(BTreeMap<String, String>)) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(raw) = &self.raw {
+            if let Err(error) = raw.drain(emit) {
+                self.raw = None;
+                return Err(error);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = emit;
+        Ok(())
+    }
     fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
@@ -389,14 +513,55 @@ impl Discovery for NativeDiscovery {
 fn scan_discovery(
     c: &Config,
     address: Option<&str>,
+    car_id: Option<&str>,
     mut window: Window,
     discovery: &mut dyn Discovery,
     advertisement: &mut dyn FnMut(&Device),
+    trace: &mut dyn FnMut(LinkEvent),
+) -> Result<Vec<Device>> {
+    let mut capture = crate::raw::Capture::default();
+    let mut drain = |discovery: &mut dyn Discovery| {
+        if !c.trace_advertisements {
+            return;
+        }
+        let now = discovery.elapsed();
+        let mut records = vec![];
+        if let Err(error) = discovery.raw(&mut |fields| records.push(fields)) {
+            raw_failure(error.as_ref(), trace);
+        }
+        for fields in records {
+            capture.record(fields, now, trace);
+        }
+    };
+    let result = scan_loop(
+        c,
+        address,
+        car_id,
+        &mut window,
+        discovery,
+        advertisement,
+        &mut drain,
+    );
+    drain(discovery);
+    if c.trace_advertisements {
+        capture.finish(trace);
+    }
+    result
+}
+fn scan_loop(
+    c: &Config,
+    address: Option<&str>,
+    car_id: Option<&str>,
+    window: &mut Window,
+    discovery: &mut dyn Discovery,
+    advertisement: &mut dyn FnMut(&Device),
+    drain: &mut dyn FnMut(&mut dyn Discovery),
 ) -> Result<Vec<Device>> {
     let mut renewal = Duration::from_secs(600);
     let mut seen = HashSet::new();
     loop {
         discovery.check()?;
+        drain(discovery);
         let now = discovery.elapsed();
         if c.scan_mode == ScanMode::Window && now >= c.scan_timeout {
             break;
@@ -412,23 +577,27 @@ fn scan_discovery(
         }
         .min(Duration::from_millis(200));
         if let Some(value) = discovery.receive(wait)? {
+            drain(discovery);
             window.update(&value)?;
             let devices = window.result();
+            if seen.len() >= 128 {
+                seen.clear();
+            }
             for device in &devices {
-                if c.trace_advertisements
-                    && seen.insert((
-                        device.advertisement.car_id.clone(),
-                        device.advertisement.serial,
-                    ))
-                {
+                if seen.insert((
+                    device.advertisement.car_id.clone(),
+                    device.advertisement.serial,
+                )) {
                     advertisement(device);
                 }
             }
             if c.scan_mode == ScanMode::Continuous {
-                if let Some(device) = devices
-                    .into_iter()
-                    .find(|d| address.is_none_or(|a| a.eq_ignore_ascii_case(&d.address)))
-                {
+                if let Some(device) = devices.into_iter().find(|d| {
+                    car_id.map_or_else(
+                        || address.is_none_or(|a| a.eq_ignore_ascii_case(&d.address)),
+                        |id| d.advertisement.car_id == id,
+                    )
+                }) {
                     return Ok(vec![device]);
                 }
             }
@@ -438,12 +607,10 @@ fn scan_discovery(
     while let Some(value) = discovery.receive(Duration::ZERO)? {
         window.update(&value)?;
         for device in window.result() {
-            if c.trace_advertisements
-                && seen.insert((
-                    device.advertisement.car_id.clone(),
-                    device.advertisement.serial,
-                ))
-            {
+            if seen.insert((
+                device.advertisement.car_id.clone(),
+                device.advertisement.serial,
+            )) {
                 advertisement(&device);
             }
         }
@@ -557,9 +724,11 @@ mod tests {
         let devices = scan_discovery(
             &c,
             None,
+            None,
             Window::new("hci0", json!({})),
             &mut discovery,
             &mut |d| traces.push(d.advertisement.serial),
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(discovery.restarts, 2);
@@ -575,7 +744,7 @@ mod tests {
                 (Duration::ZERO, Some(signal(1))),
                 (Duration::ZERO, Some(signal(1))),
                 (Duration::ZERO, Some(signal(2))),
-                (Duration::from_secs(5), None),
+                (Duration::from_secs(8), None),
             ]
             .into(),
             restarts: 0,
@@ -589,9 +758,11 @@ mod tests {
         scan_discovery(
             &c,
             None,
+            None,
             Window::new("hci0", json!({})),
             &mut discovery,
             &mut |d| traces.push(d.advertisement.serial),
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(traces, [1, 2]);
@@ -606,14 +777,123 @@ mod tests {
                 scan_discovery(
                     &c,
                     None,
+                    None,
                     Window::new("hci0", json!({})),
                     &mut discovery,
+                    &mut |_| {},
                     &mut |_| {}
                 )
                 .unwrap_err()
                 .to_string(),
                 error
             );
+        }
+    }
+    #[test]
+    fn latest_address_for_the_same_car_wins() {
+        let mut window = Window::new("hci0", json!({}));
+        window.update(&signal(1)).unwrap();
+        let mut moved = signal(2);
+        moved["payload"]["data"][0] = json!("/org/bluez/hci0/dev_rotated");
+        moved["payload"]["data"][1][DEVICE]["Address"] = json!("aa:bb:cc:dd:ee:02");
+        window.update(&moved).unwrap();
+        let devices = window.result();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].address, "aa:bb:cc:dd:ee:02");
+    }
+    #[test]
+    fn continuous_retry_ignores_other_cars_and_accepts_rotated_address() {
+        let mut other = signal(1);
+        other["payload"]["data"][1][DEVICE]["ServiceData"][ble::IDENTITY_SERVICE][3] = json!(99);
+        let mut target = signal(2);
+        target["payload"]["data"][0] = json!("/org/bluez/hci0/dev_rotated");
+        target["payload"]["data"][1][DEVICE]["Address"] = json!("aa:bb:cc:dd:ee:02");
+        let mut discovery = FakeDiscovery {
+            now: Duration::ZERO,
+            events: [
+                (Duration::ZERO, Some(other)),
+                (Duration::ZERO, Some(target)),
+            ]
+            .into(),
+            restarts: 0,
+            error: None,
+        };
+        let c = Config {
+            scan_mode: ScanMode::Continuous,
+            ..Config::default()
+        };
+        let devices = scan_discovery(
+            &c,
+            Some("aa:bb:cc:dd:ee:01"),
+            Some("000102030405"),
+            Window::new("hci0", json!({})),
+            &mut discovery,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(devices[0].address, "aa:bb:cc:dd:ee:02");
+        assert!(discovery.events.is_empty());
+    }
+    #[test]
+    fn raw_capture_only_runs_with_trace_and_always_reports_drops() {
+        struct RawDiscovery {
+            calls: usize,
+            now: Duration,
+        }
+        impl Discovery for RawDiscovery {
+            fn elapsed(&self) -> Duration {
+                self.now
+            }
+            fn receive(&mut self, _: Duration) -> Result<Option<Value>> {
+                self.now += Duration::from_secs(8);
+                Ok(None)
+            }
+            fn restart(&mut self) -> Result<()> {
+                Ok(())
+            }
+            fn check(&mut self) -> Result<()> {
+                Ok(())
+            }
+            fn raw(&mut self, emit: &mut dyn FnMut(BTreeMap<String, String>)) -> Result<()> {
+                self.calls += 1;
+                emit(
+                    [
+                        ("address".into(), "aa:bb:cc:dd:ee:ff".into()),
+                        ("raw".into(), "0100".into()),
+                    ]
+                    .into(),
+                );
+                Ok(())
+            }
+        }
+        for trace in [false, true] {
+            let mut discovery = RawDiscovery {
+                calls: 0,
+                now: Duration::ZERO,
+            };
+            let mut events = vec![];
+            let c = Config {
+                trace_advertisements: trace,
+                ..Config::default()
+            };
+            scan_discovery(
+                &c,
+                None,
+                None,
+                Window::new("hci0", json!({})),
+                &mut discovery,
+                &mut |_| {},
+                &mut |e| events.push(e),
+            )
+            .unwrap();
+            assert_eq!(discovery.calls > 0, trace);
+            assert_eq!(events.is_empty(), !trace);
+            if trace {
+                assert!(
+                    matches!(events.last(),Some(LinkEvent::Trace{stage,..}) if stage=="ble_raw_dropped")
+                );
+            }
         }
     }
     #[test]
