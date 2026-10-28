@@ -117,6 +117,20 @@ mod tests {
     use std::io::{BufReader, Cursor};
 
     #[test]
+    fn session_commands_work_without_trace_and_share_the_line_bound() {
+        let mut events = Vec::new();
+        read_control_with(Cursor::new(b"{\"type\":\"clink-pairing\",\"request\":1,\"action\":\"cancel\"}\n{\"type\":\"clink-restart\"}\n"), None,
+            |line| { let value: Value = serde_json::from_slice(line).unwrap(); Some(json!({"type":value["type"],"result":"handled"})) }, |value|events.push(value));
+        assert_eq!(
+            events,
+            vec![
+                json!({"type":"clink-pairing","result":"handled"}),
+                json!({"type":"clink-restart","result":"handled"})
+            ]
+        );
+    }
+
+    #[test]
     fn commands_and_seconds_validation() {
         for (line, command) in [
             (r#"{"type":"clink-trace","action":"clear"}"#, Command::Clear),

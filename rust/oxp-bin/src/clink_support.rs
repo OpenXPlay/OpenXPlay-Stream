@@ -10,16 +10,17 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::SyncSender,
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 pub struct Pin {
     pub digits: Option<String>,
     pub file: Option<String>,
     pub stopped: Arc<AtomicBool>,
-    /// The user's PIN entry or Connect action already confirms pairing.
+    /// Only a host that has already obtained explicit pairing consent may set this.
     pub auto_confirm: bool,
+    pub requests: Option<Arc<PairingRequests>>,
 }
 impl Pin {
     pub fn request_with(
@@ -28,6 +29,44 @@ impl Pin {
         timeout: Duration,
         emit: impl Fn(serde_json::Value),
     ) -> Option<String> {
+        if let Some(requests) = &self.requests {
+            if let Some(pin) = &self.digits {
+                crate::clink_trace::remember_secret(pin);
+                return Some(pin.clone());
+            }
+            if let Some(path) = &self.file {
+                if let Err(e) = std::fs::remove_file(path) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        return None;
+                    }
+                }
+            }
+            let pin = requests.ask_poll(id, false, timeout, &self.stopped, emit, || {
+                let path = self.file.as_ref()?;
+                match std::fs::read_to_string(path) {
+                    Ok(pin) => {
+                        let removed = std::fs::remove_file(path).is_ok();
+                        let pin = pin.trim();
+                        Some(
+                            (removed
+                                && !pin.is_empty()
+                                && pin.len() <= 128
+                                && pin.bytes().all(|b| b.is_ascii_digit()))
+                            .then(|| pin.to_owned()),
+                        )
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(_) => Some(None),
+                }
+            });
+            if let Some(pin) = &pin {
+                crate::clink_trace::remember_secret(pin);
+            }
+            if let Some(path) = &self.file {
+                let _ = std::fs::remove_file(path);
+            }
+            return pin;
+        }
         if let Some(path) = &self.file {
             if let Err(e) = std::fs::remove_file(path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
@@ -74,6 +113,7 @@ impl Pin {
             emit(json!({"type":"error","message":"PIN must contain digits"}));
             return None;
         }
+        crate::clink_trace::remember_secret(&pin);
         Some(pin)
     }
 }
@@ -81,12 +121,149 @@ impl PinProvider for Pin {
     fn request_pin(&self, id: &str) -> Option<String> {
         self.request_with(id, Duration::from_secs(120), event)
     }
-    fn confirm_pairing(&self, _: &str) -> bool {
-        self.auto_confirm && !self.stopped.load(Ordering::Acquire)
+    fn confirm_pairing(&self, id: &str) -> bool {
+        if let Some(requests) = &self.requests {
+            requests
+                .ask(id, true, Duration::from_secs(120), &self.stopped, event)
+                .as_deref()
+                == Some("approved")
+        } else {
+            self.auto_confirm && !self.stopped.load(Ordering::Acquire)
+        }
+    }
+    fn cancel(&self) {
+        self.stopped.store(true, Ordering::Release);
+        if let Some(requests) = &self.requests {
+            requests.cancel();
+        }
     }
     fn pin_incorrect(&self, id: &str) {
         event(json!({"type":"clink-pin","result":"incorrect","client":id}));
     }
+}
+
+struct PendingPairing {
+    id: u64,
+    confirmation: bool,
+    answer: Option<Option<String>>,
+}
+/// One output generation owns one prompt. Request IDs never repeat within this process.
+#[derive(Default)]
+pub struct PairingRequests {
+    generation: u64,
+    pending: Mutex<Option<PendingPairing>>,
+    wake: Condvar,
+}
+impl PairingRequests {
+    pub fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            ..Default::default()
+        }
+    }
+    pub fn ask(
+        &self,
+        client: &str,
+        confirmation: bool,
+        timeout: Duration,
+        stopped: &AtomicBool,
+        emit: impl Fn(serde_json::Value),
+    ) -> Option<String> {
+        self.ask_poll(client, confirmation, timeout, stopped, emit, || None)
+    }
+    #[allow(clippy::too_many_arguments)] // The optional legacy PIN-file poll shares this prompt lifecycle.
+    fn ask_poll(
+        &self,
+        client: &str,
+        confirmation: bool,
+        timeout: Duration,
+        stopped: &AtomicBool,
+        emit: impl Fn(serde_json::Value),
+        mut poll: impl FnMut() -> Option<Option<String>>,
+    ) -> Option<String> {
+        use std::sync::atomic::AtomicU64;
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if stopped.load(Ordering::Acquire) || pending.is_some() {
+                return None;
+            }
+            *pending = Some(PendingPairing {
+                id,
+                confirmation,
+                answer: None,
+            });
+        }
+        emit(
+            json!({"type":"pin-request","client":client,"request":id,"generation":self.generation,"confirmation":confirmation}),
+        );
+        let deadline = Instant::now() + timeout;
+        let mut pending = self.pending.lock().unwrap();
+        let result = loop {
+            if stopped.load(Ordering::Acquire) {
+                break None;
+            }
+            if let Some(answer) = pending.as_mut().and_then(|p| p.answer.take()) {
+                break answer;
+            }
+            if let Some(answer) = poll() {
+                break answer;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break None;
+            }
+            pending = self
+                .wake
+                .wait_timeout(pending, remaining.min(Duration::from_millis(25)))
+                .unwrap()
+                .0;
+        };
+        *pending = None;
+        drop(pending);
+        emit(
+            json!({"type":"clink-pairing","request":id,"generation":self.generation,"result":if result.is_some() {"answered"} else {"cancelled"}}),
+        );
+        result
+    }
+    /// Returns an error for stale IDs, duplicate responses, or a response of the wrong kind.
+    pub fn respond(&self, value: &serde_json::Value) -> std::result::Result<bool, &'static str> {
+        let id = value["request"].as_u64().ok_or("invalid_request")?;
+        let mut pending = self.pending.lock().unwrap();
+        let p = pending
+            .as_mut()
+            .filter(|p| p.id == id && p.answer.is_none())
+            .ok_or("stale_request")?;
+        let cancelled = value["action"] == "cancel";
+        let answer = match value["action"].as_str() {
+            Some("cancel") => None,
+            Some("approve") if p.confirmation => Some("approved".into()),
+            Some("pin") if !p.confirmation => {
+                let pin = value["pin"]
+                    .as_str()
+                    .filter(|s| {
+                        !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_digit())
+                    })
+                    .ok_or("invalid_pin")?;
+                Some(pin.into())
+            }
+            _ => return Err("invalid_response"),
+        };
+        p.answer = Some(answer);
+        self.wake.notify_all();
+        Ok(cancelled)
+    }
+    pub fn cancel(&self) {
+        if let Some(pending) = self.pending.lock().unwrap().as_mut() {
+            pending.answer = Some(None);
+            self.wake.notify_all();
+        }
+    }
+}
+pub fn private_event(mut value: serde_json::Value) {
+    crate::clink_trace::redact(&mut value);
+    event(value);
 }
 pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
     use oxp_link_linux::LinkEvent;
@@ -122,6 +299,58 @@ pub fn link_event(state: oxp_link_linux::LinkEvent) -> serde_json::Value {
         }
     }
 }
+/// Relay-shell event, deliberately outside the media wire protocol. Timestamps stay lossless in JS.
+pub fn vehicle_event(origin: Origin, data: VehicleData) -> serde_json::Value {
+    let data = match data {
+        VehicleData::Gps {
+            height,
+            latitude,
+            longitude,
+            antenna_state,
+            pdop,
+            speed,
+            heading,
+            satellites_used,
+            satellites_visible,
+            timestamp,
+        } => json!({"type":"Gps", "height":height,
+            "latitude":latitude,"longitude":longitude,"antennaState":antenna_state,"pdop":pdop,"speed":speed,
+            "heading":heading,"satellitesUsed":satellites_used,"satellitesVisible":satellites_visible,"timestamp":timestamp.to_string()}),
+        VehicleData::Lights {
+            low_beam,
+            high_beam,
+            position_lamp,
+            reverse_lamp,
+            brake_lamp,
+        } => json!({"type":"Lights",
+            "lowBeam":low_beam,"highBeam":high_beam,"positionLamp":position_lamp,"reverseLamp":reverse_lamp,"brakeLamp":brake_lamp}),
+        VehicleData::Gyroscope {
+            kind,
+            x,
+            y,
+            z,
+            timestamp,
+        } => json!({"type":"Gyroscope","gyroscopeType":match kind {
+            GyroscopeType::Unknown => "UNKNOWN", GyroscopeType::Single => "SINGLE", GyroscopeType::ThreeAxis => "THREE_AXIS" },
+            "x":x,"y":y,"z":z,"timestamp":timestamp.to_string()}),
+        VehicleData::Acceleration { x, y, z, timestamp } => {
+            json!({"type":"Acceleration","x":x,"y":y,"z":z,"timestamp":timestamp.to_string()})
+        }
+        VehicleData::Fuel { max, current } => json!({"type":"Fuel","max":max,"current":current}),
+        VehicleData::Gear { gear, speed } => json!({"type":"Gear","gear":match gear {
+            GearPosition::Unknown => "UNKNOWN", GearPosition::P => "P", GearPosition::D => "D", GearPosition::R => "R", GearPosition::N => "N" },"speed":speed}),
+        VehicleData::LightSensor {
+            max_lux,
+            min_lux,
+            current_lux,
+        } => {
+            json!({"type":"LightSensor","maxLux":max_lux,"minLux":min_lux,"currentLux":current_lux})
+        }
+        VehicleData::DayNight { mode } => json!({"type":"DayNight","mode":match mode {
+            DayNightMode::Unknown => "UNKNOWN", DayNightMode::Day => "DAY", DayNightMode::Night => "NIGHT" }}),
+    };
+    json!({"type":"clink-vehicle","atMillis":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),"origin":{"outputId":origin.output_id,"clientId":origin.client_id},"data":data})
+}
 pub struct Listener;
 fn view_size_event(width: u32, height: u32) -> serde_json::Value {
     json!({"type":"clink-view-size","width":width,"height":height})
@@ -150,16 +379,24 @@ impl ClinkListener for Listener {
         event(json!({"type":"state","state":format!("{s:?}")}));
     }
     fn error(&self, e: &str) {
-        event(json!({"type":"error","message":e}));
+        private_event(json!({"type":"error","message":e}));
     }
     fn diagnostic(&self, message: &str) {
-        event(json!({"type":"diagnostic","message":message}));
+        private_event(json!({"type":"diagnostic","message":message}));
     }
     fn view_size(&self, width: u32, height: u32) {
         event(view_size_event(width, height));
     }
     fn statistics(&self, stats: ClinkStatistics) {
         event(media_stats_event(stats));
+    }
+    fn vehicle(&self, origin: Origin, data: VehicleData) {
+        event(vehicle_event(origin, data));
+    }
+    fn vehicle_state(&self, active: bool, malformed: u64) {
+        event(
+            json!({"type":"clink-vehicle-state","sensorActive":active,"malformedFrames":malformed}),
+        );
     }
     fn profile_mismatch(&self, input: &str, decoders: &[String]) {
         event(json!({"type":"profile-mismatch","input":input,"decoders":decoders}));
@@ -324,7 +561,8 @@ pub fn hevc_mode(value: Option<&str>) -> Result<ClinkHevcMode> {
     match value.unwrap_or("auto") {
         "auto" => Ok(ClinkHevcMode::Auto),
         "off" => Ok(ClinkHevcMode::Off),
-        _ => Err("--clink-hevc must be auto or off".into()),
+        "signal" => Ok(ClinkHevcMode::Signal),
+        _ => Err("--clink-hevc must be auto, off or signal".into()),
     }
 }
 /// Wraps an output so decisions and failures appear as relay diagnostics. The factory is probed
@@ -359,6 +597,7 @@ pub fn parse_ports(value: Option<&str>) -> Result<ClinkPorts> {
                 "rtsp" => ports.rtsp = port,
                 "uibc" => ports.uibc = port,
                 "rtp" => ports.rtp = port,
+                "sensor" => ports.sensor = port,
                 _ => return Err(format!("Unknown port service: {name}").into()),
             }
         }
@@ -552,6 +791,7 @@ mod tests {
             ),
             stopped: Arc::new(AtomicBool::new(false)),
             auto_confirm: false,
+            requests: None,
         }
     }
     #[test]
@@ -657,14 +897,15 @@ mod tests {
         assert!(!pin.confirm_pairing("unit"));
     }
     #[test]
-    fn hevc_defaults_to_auto_and_rejects_experimental_or_unknown_modes() {
+    fn hevc_defaults_to_auto_and_accepts_signal() {
         assert_eq!(hevc_mode(None).unwrap(), ClinkHevcMode::Auto);
         assert_eq!(hevc_mode(Some("auto")).unwrap(), ClinkHevcMode::Auto);
         assert_eq!(hevc_mode(Some("off")).unwrap(), ClinkHevcMode::Off);
-        for value in ["", "on", "signal", "AUTO"] {
+        assert_eq!(hevc_mode(Some("signal")).unwrap(), ClinkHevcMode::Signal);
+        for value in ["", "on", "AUTO"] {
             assert_eq!(
                 hevc_mode(Some(value)).unwrap_err().to_string(),
-                "--clink-hevc must be auto or off"
+                "--clink-hevc must be auto, off or signal"
             );
         }
     }
@@ -740,5 +981,93 @@ mod tests {
             }),
             json!({"type":"link","state":"lost","reason":"network_link_lost"})
         );
+    }
+    #[test]
+    fn pairing_responses_require_the_current_request_and_explicit_approval() {
+        for confirmation in [false, true] {
+            let requests = Arc::new(PairingRequests::default());
+            let r = requests.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                r.ask(
+                    "car",
+                    confirmation,
+                    Duration::from_secs(2),
+                    &AtomicBool::new(false),
+                    |v| {
+                        tx.send(v).unwrap();
+                    },
+                )
+            });
+            let request = rx.recv().unwrap();
+            let id = request["request"].as_u64().unwrap();
+            assert_eq!(request["confirmation"], confirmation);
+            assert_eq!(
+                requests.respond(&json!({"request":id+1,"action":"approve"})),
+                Err("stale_request")
+            );
+            assert_eq!(requests.respond(&json!({"request":id,"action":if confirmation {"pin"} else {"approve"},"pin":"001234"})),Err("invalid_response"));
+            assert_eq!(requests.respond(&json!({"request":id,"action":if confirmation {"approve"} else {"pin"},"pin":"001234"})),Ok(false));
+            assert_eq!(
+                worker.join().unwrap().as_deref(),
+                Some(if confirmation { "approved" } else { "001234" })
+            );
+            assert_eq!(
+                requests.respond(&json!({"request":id,"action":"approve"})),
+                Err("stale_request")
+            );
+        }
+    }
+    #[test]
+    fn cancelling_a_pin_file_prompt_wakes_it_and_keeps_late_responses_stale() {
+        let mut pin = pin();
+        let requests = Arc::new(PairingRequests::default());
+        pin.requests = Some(requests.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        let worker = std::thread::spawn(move || {
+            pin.request_with("car", Duration::from_secs(120), |v| {
+                tx.send(v).unwrap();
+            })
+        });
+        let request = rx.recv().unwrap();
+        assert_eq!(
+            requests.respond(&json!({"request":request["request"],"action":"cancel"})),
+            Ok(true)
+        );
+        assert!(worker.join().unwrap().is_none());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            requests.respond(&json!({"request":request["request"],"action":"pin","pin":"001234"})),
+            Err("stale_request")
+        );
+    }
+    #[test]
+    fn vehicle_event_preserves_origin_and_lossless_sensor_timestamp() {
+        let event = vehicle_event(
+            Origin {
+                output_id: "clink".into(),
+                client_id: "car".into(),
+            },
+            VehicleData::Gps {
+                height: -12,
+                latitude: 45,
+                longitude: -123,
+                antenna_state: u32::MAX,
+                pdop: 9,
+                speed: 72,
+                heading: 180,
+                satellites_used: 8,
+                satellites_visible: 12,
+                timestamp: u64::MAX,
+            },
+        );
+        assert_eq!(event["type"], "clink-vehicle");
+        assert_eq!(
+            event["origin"],
+            json!({"outputId":"clink","clientId":"car"})
+        );
+        assert_eq!(event["data"]["latitude"], 45);
+        assert_eq!(event["data"]["timestamp"], u64::MAX.to_string());
     }
 }

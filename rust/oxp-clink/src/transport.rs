@@ -45,14 +45,19 @@ pub trait ClinkTransport: Send + Sync {
     /// Accept an offered service or dial a remote service. A timeout is retryable.
     fn open(&self, service: u16, timeout: Duration) -> Result<Arc<dyn ClinkStream>>;
     fn authenticated(&self) -> Result<()>;
+    /// Allow another reverse connection after an optional channel closes.
+    fn release(&self, _: u16) {}
 }
 
-type OfferedStream = Arc<Mutex<Receiver<Result<Arc<dyn ClinkStream>>>>>;
+struct OfferedStream {
+    receiver: Mutex<Receiver<Result<Arc<dyn ClinkStream>>>>,
+    accepted: Arc<AtomicBool>,
+}
 
 pub struct TcpTransport {
     addresses: ClinkAddresses,
     sockets: Arc<dyn SocketProvider>,
-    listeners: Mutex<BTreeMap<u16, OfferedStream>>,
+    listeners: Mutex<BTreeMap<u16, Arc<OfferedStream>>>,
     stopped: Arc<AtomicBool>,
 }
 impl TcpTransport {
@@ -75,14 +80,15 @@ impl ClinkTransport for TcpTransport {
         let (tx, rx) = mpsc::channel();
         let stopped = self.stopped.clone();
         let peer = self.addresses.head_unit_ipv4;
+        let accepted = Arc::new(AtomicBool::new(false));
+        let gate = accepted.clone();
         thread::Builder::new()
             .name(format!("clink-tcp-accept-{service}"))
             .spawn(move || {
-                let mut accepted = false;
                 while !stopped.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((socket, address)) => {
-                            if accepted || address.ip() != IpAddr::V4(peer) {
+                            if gate.load(Ordering::Acquire) || address.ip() != IpAddr::V4(peer) {
                                 continue;
                             }
                             // BSD accepted sockets inherit nonblocking mode; session readers block.
@@ -92,10 +98,10 @@ impl ClinkTransport for TcpTransport {
                             }
                             let _ = socket.set_nodelay(true);
                             let stream: Arc<dyn ClinkStream> = Arc::new(socket);
+                            gate.store(true, Ordering::Release);
                             if tx.send(Ok(stream)).is_err() {
                                 break;
                             }
-                            accepted = true;
                         }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10))
@@ -107,16 +113,19 @@ impl ClinkTransport for TcpTransport {
                     }
                 }
             })?;
-        self.listeners
-            .lock()
-            .unwrap()
-            .insert(service, Arc::new(Mutex::new(rx)));
+        self.listeners.lock().unwrap().insert(
+            service,
+            Arc::new(OfferedStream {
+                receiver: Mutex::new(rx),
+                accepted,
+            }),
+        );
         Ok(())
     }
     fn open(&self, service: u16, timeout: Duration) -> Result<Arc<dyn ClinkStream>> {
         let listener = self.listeners.lock().unwrap().get(&service).cloned();
         if let Some(listener) = listener {
-            return match listener.lock().unwrap().recv_timeout(timeout) {
+            return match listener.receiver.lock().unwrap().recv_timeout(timeout) {
                 Ok(result) => result,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     Err(io::Error::from(io::ErrorKind::TimedOut).into())
@@ -140,6 +149,11 @@ impl ClinkTransport for TcpTransport {
     }
     fn authenticated(&self) -> Result<()> {
         Ok(())
+    }
+    fn release(&self, service: u16) {
+        if let Some(listener) = self.listeners.lock().unwrap().get(&service) {
+            listener.accepted.store(false, Ordering::Release);
+        }
     }
 }
 
