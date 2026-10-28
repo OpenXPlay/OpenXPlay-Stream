@@ -245,6 +245,7 @@ impl ClinkOutput {
                     match options.hevc {
                         ClinkHevcMode::Auto => "AUTO",
                         ClinkHevcMode::Off => "OFF",
+                        ClinkHevcMode::Signal => "SIGNAL",
                     }
                     .into(),
                 )]
@@ -602,6 +603,12 @@ impl Drop for ClinkOutput {
 }
 struct SessionListener(Arc<dyn ClinkListener>);
 impl ClinkListener for SessionListener {
+    fn vehicle(&self, origin: Origin, data: VehicleData) {
+        self.0.vehicle(origin, data);
+    }
+    fn vehicle_state(&self, active: bool, malformed: u64) {
+        self.0.vehicle_state(active, malformed);
+    }
     fn state(&self, s: ClinkState) {
         if s != ClinkState::Ended {
             self.0.state(s);

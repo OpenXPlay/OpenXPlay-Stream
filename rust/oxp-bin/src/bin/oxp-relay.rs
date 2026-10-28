@@ -4,7 +4,10 @@
 
 #![forbid(unsafe_code)]
 
-use oxp_bin::{clink_control::read_control, clink_trace::TraceRecorder};
+use oxp_bin::{
+    clink_control::read_control_with,
+    clink_trace::{SessionTrace, SummaryTrace, TraceRecorder},
+};
 use oxp_bin::{clink_support::*, *};
 use oxp_clink::trace::{now_nanos, ClinkTrace, ClinkTraceEvent};
 use oxp_clink::{
@@ -19,13 +22,13 @@ use std::{
     net::Ipv4Addr,
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{sync_channel, RecvTimeoutError},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off] [--clink-trace DIR] [--control-stdin]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to a 5 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. PIN entry or Connect confirms Carlink pairing automatically (auto_confirm). Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture commands and requires --unix.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR] [--control-stdin]]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to a 5 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON trace, capture, pairing and Carlink-only restart commands and requires --unix.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\n--clink-transcode auto (default) converts video the head unit cannot decode with the hardware transcoder, when one exists; off forwards it unchanged.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -86,6 +89,7 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--port",
             "--clink-transcode",
             "--clink-hevc",
+            "--clink-vehicle-data",
             "--clink-trace",
             "--control-stdin",
         ],
@@ -153,6 +157,7 @@ fn clink_link_traced(
             "--port",
             "--clink-transcode",
             "--clink-hevc",
+            "--clink-vehicle-data",
             "--clink-trace",
             "--control-stdin",
         ]
@@ -193,6 +198,7 @@ fn clink_link_traced(
     parse_ports(args.get("--port"))?;
     transcode_enabled(args.get("--clink-transcode"))?;
     hevc_mode(args.get("--clink-hevc"))?;
+    vehicle_enabled(args.get("--clink-vehicle-data"))?;
     if mode == "static" {
         return Ok(Some(Arc::new(StaticClinkLink(ClinkAddresses::new(
             args.need("--clink-head-unit")?.parse()?,
@@ -233,16 +239,14 @@ fn clink_link_traced(
         .get("--clink-phone-mac")
         .map(oxp_link_linux::normalized_bluetooth_address)
         .transpose()?;
-    config.trace_advertisements = trace.is_some();
+    config.trace_advertisements = args.get("--clink-trace").is_some();
     let mut link = oxp_link_linux::LinuxClinkLink::new(config)
         .map_err(|_| "Invalid BLE adapter, interface, or relay identity")?
         .with_listener(Arc::new(move |state| {
             if let Some(trace) = &trace {
                 trace_link(trace.as_ref(), &state);
             }
-            if !matches!(state, oxp_link_linux::LinkEvent::Advertisement { .. }) {
-                event(link_event(state));
-            }
+            private_event(link_event(state));
         }));
     if let Some(address) = args.get("--clink-address") {
         link = link
@@ -415,6 +419,9 @@ type WireShutdown = Arc<dyn Fn() + Send + Sync>;
 struct RelayShutdown {
     stopped: Arc<AtomicBool>,
     session_failed: AtomicBool,
+    keep_running: AtomicBool,
+    generation: AtomicU64,
+    session_trace: OnceLock<Arc<SessionTrace>>,
     ended: AtomicBool,
     has_output: AtomicBool,
     link: Mutex<Option<Arc<dyn ClinkLink>>>,
@@ -442,10 +449,13 @@ impl RelayShutdown {
         if let Some(trace) = self.trace.get() {
             trace.shutdown();
         }
+        if let Some(trace) = self.session_trace.get() {
+            trace.summary.shutdown();
+        }
         cleanup.unwrap_or(Ok(()))
     }
     fn trace_state(&self, state: ClinkState) {
-        if let Some(trace) = self.trace.get() {
+        if let Some(trace) = self.session_trace.get() {
             trace.record(ClinkTraceEvent::Link {
                 at_nanos: now_nanos(),
                 session: 0,
@@ -454,10 +464,15 @@ impl RelayShutdown {
             });
         }
     }
+    fn state_event(&self, state: ClinkState) {
+        event(
+            json!({"type":"state","state":format!("{state:?}"),"generation":self.generation.load(Ordering::Acquire)}),
+        );
+    }
     fn emit_ended(&self) {
         if self.has_output.load(Ordering::Acquire) && !self.ended.swap(true, Ordering::AcqRel) {
             self.trace_state(ClinkState::Ended);
-            Listener.state(ClinkState::Ended);
+            self.state_event(ClinkState::Ended);
         }
     }
 }
@@ -466,16 +481,18 @@ impl ClinkListener for RelayListener {
     fn state(&self, state: ClinkState) {
         if state == ClinkState::Ended {
             self.0.emit_ended();
-            if !self.0.stopped.load(Ordering::Acquire) {
+            if !self.0.stopped.load(Ordering::Acquire)
+                && !self.0.keep_running.load(Ordering::Acquire)
+            {
                 self.0.session_failed.store(true, Ordering::Release);
             }
         } else {
             self.0.trace_state(state);
-            Listener.state(state);
+            self.0.state_event(state);
         }
     }
     fn error(&self, message: &str) {
-        if let Some(trace) = self.0.trace.get() {
+        if let Some(trace) = self.0.session_trace.get() {
             // Listener failures arrive as text; keep a bounded stable description.
             trace.record(ClinkTraceEvent::Error {
                 at_nanos: now_nanos(),
@@ -486,10 +503,12 @@ impl ClinkListener for RelayListener {
             });
         }
         Listener.error(message);
-        self.0.session_failed.store(true, Ordering::Release);
+        if !self.0.keep_running.load(Ordering::Acquire) {
+            self.0.session_failed.store(true, Ordering::Release);
+        }
     }
     fn diagnostic(&self, message: &str) {
-        if let Some(trace) = self.0.trace.get() {
+        if let Some(trace) = self.0.session_trace.get() {
             trace.record(ClinkTraceEvent::Link {
                 at_nanos: now_nanos(),
                 session: 0,
@@ -500,13 +519,268 @@ impl ClinkListener for RelayListener {
         Listener.diagnostic(message);
     }
     fn view_size(&self, width: u32, height: u32) {
+        if let Some(trace) = self.0.session_trace.get() {
+            trace.record(ClinkTraceEvent::Link {
+                at_nanos: now_nanos(),
+                session: 0,
+                stage: "view".into(),
+                fields: [("size".into(), format!("{width}x{height}"))].into(),
+            });
+        }
         Listener.view_size(width, height);
     }
     fn statistics(&self, stats: ClinkStatistics) {
+        if let Some(trace) = self.0.session_trace.get() {
+            trace.record(ClinkTraceEvent::Link {
+                at_nanos: now_nanos(),
+                session: 0,
+                stage: "statistics".into(),
+                fields: [
+                    ("stream".into(), format!("{}x{}", stats.width, stats.height)),
+                    (
+                        "codec".into(),
+                        stats
+                            .codec
+                            .map_or("unknown", |codec| match codec {
+                                oxp_clink::model::VideoCodec::H264 => "H264",
+                                oxp_clink::model::VideoCodec::H265 => "H265",
+                            })
+                            .into(),
+                    ),
+                    ("liveFrames".into(), stats.live_frames.to_string()),
+                ]
+                .into(),
+            });
+        }
         Listener.statistics(stats);
+    }
+    fn vehicle(&self, origin: oxp_clink::model::Origin, data: oxp_clink::model::VehicleData) {
+        let mut value = vehicle_event(origin, data);
+        value["generation"] = json!(self.0.generation.load(Ordering::Acquire));
+        event(value);
+    }
+    fn vehicle_state(&self, active: bool, malformed: u64) {
+        event(
+            json!({"type":"clink-vehicle-state","generation":self.0.generation.load(Ordering::Acquire),"sensorActive":active,"malformedFrames":malformed}),
+        );
     }
     fn profile_mismatch(&self, input: &str, decoders: &[String]) {
         Listener.profile_mismatch(input, decoders);
+    }
+}
+
+fn vehicle_enabled(value: Option<&str>) -> Result<bool> {
+    match value.unwrap_or("off") {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err("--clink-vehicle-data must be on or off".into()),
+    }
+}
+struct CarlinkFactory {
+    link: Arc<dyn ClinkLink>,
+    trust: Arc<dyn oxp_clink::TrustStore>,
+    digits: Option<String>,
+    file: Option<String>,
+    options: oxp_clink::session::SessionOptions,
+    trace: Arc<SessionTrace>,
+    transcode: bool,
+    controlled: bool,
+}
+struct CarlinkGeneration {
+    active: Arc<Mutex<bool>>,
+    stopped: Arc<AtomicBool>,
+    pins: Arc<PairingRequests>,
+    options: oxp_clink::session::SessionOptions,
+}
+struct CarlinkRuntime {
+    factory: CarlinkFactory,
+    shutdown: Arc<RelayShutdown>,
+    hub: Arc<Hub>,
+    // Serializes controls, retirement, and replacement. Media callbacks never take this lock.
+    current: Mutex<Option<CarlinkGeneration>>,
+}
+impl CarlinkRuntime {
+    fn retire(&self, current: &mut Option<CarlinkGeneration>) -> Result<()> {
+        if let Some(old) = current.as_ref() {
+            *old.active.lock().unwrap() = false;
+            old.stopped.store(true, Ordering::Release);
+            old.pins.cancel();
+        }
+        self.hub.remove_output("clink");
+        let output = self.shutdown.output.lock().unwrap().clone();
+        if let Some(output) = output {
+            output.close();
+            // Cancel a platform join as well as the session's sockets.
+            self.factory.link.disconnect()?;
+            if !output.await_closed(Duration::from_secs(2)) {
+                return Err("carlink_retirement_timeout".into());
+            }
+        }
+        self.shutdown.output.lock().unwrap().take();
+        current.take();
+        Ok(())
+    }
+    fn restart(&self, value: &serde_json::Value) -> Result<u64> {
+        let mut current = self.current.lock().unwrap();
+        let mut options = current
+            .as_ref()
+            .map(|g| g.options.clone())
+            .unwrap_or_else(|| self.factory.options.clone());
+        if let Some(picture) = value.get("picture") {
+            options.picture_size = if picture.is_null() {
+                None
+            } else {
+                let width = picture["width"]
+                    .as_u64()
+                    .filter(|n| (320..=3840).contains(n) && n % 2 == 0)
+                    .ok_or("invalid_picture")?;
+                let height = picture["height"]
+                    .as_u64()
+                    .filter(|n| (240..=2160).contains(n) && n % 2 == 0)
+                    .ok_or("invalid_picture")?;
+                Some((width as u32, height as u32))
+            };
+        }
+        if let Some(hevc) = value.get("hevc") {
+            options.hevc = hevc_mode(Some(hevc.as_str().ok_or("invalid_hevc")?))?;
+        }
+        if let Some(vehicle) = value.get("vehicleData") {
+            options.vehicle_data = vehicle.as_bool().ok_or("invalid_vehicle_data")?;
+        }
+        if self.shutdown.stopped.load(Ordering::Acquire) {
+            return Err("relay_stopped".into());
+        }
+        self.retire(&mut current)?;
+        let generation = self.shutdown.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let active = Arc::new(Mutex::new(true));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let pins = Arc::new(PairingRequests::new(generation));
+        self.shutdown.ended.store(false, Ordering::Release);
+        self.shutdown.session_failed.store(false, Ordering::Release);
+        self.factory.trace.record(ClinkTraceEvent::Link {
+            at_nanos: now_nanos(),
+            session: 0,
+            stage: "link_start".into(),
+            fields: Default::default(),
+        });
+        let mut output = ClinkOutput::new(
+            self.factory.link.clone(),
+            Arc::new(Pin {
+                digits: self.factory.digits.clone(),
+                file: self.factory.file.clone(),
+                stopped: stopped.clone(),
+                auto_confirm: false,
+                requests: self.factory.controlled.then_some(pins.clone()),
+            }),
+            self.factory.trust.clone(),
+        )?
+        .with_options(options.clone())?
+        .with_listener(Arc::new(GenerationListener {
+            active: active.clone(),
+            listener: RelayListener(self.shutdown.clone()),
+        }))
+        .with_trace(Arc::new(GenerationTrace {
+            active: active.clone(),
+            trace: self.factory.trace.clone(),
+        }));
+        if let Some(recorder) = &self.factory.trace.recorder {
+            output = output.with_media_tap(recorder.capture());
+        }
+        let output = Arc::new(output);
+        self.shutdown.has_output.store(true, Ordering::Release);
+        *self.shutdown.output.lock().unwrap() = Some(output.clone());
+        let projection: Arc<dyn ProjectionOutput> = if self.factory.transcode {
+            with_transcoding(
+                output,
+                oxp_transcode_linux::default_factory(),
+                Arc::new(diagnostic),
+            )
+        } else {
+            output
+        };
+        *current = Some(CarlinkGeneration {
+            active,
+            stopped,
+            pins,
+            options,
+        });
+        self.hub.add_output(projection)?;
+        Ok(generation)
+    }
+    fn control(&self, value: &serde_json::Value) -> serde_json::Value {
+        let result = if value["type"] == "clink-restart" {
+            self.restart(value)
+                .map(|generation| json!({"generation":generation,"result":"started"}))
+        } else {
+            let mut current = self.current.lock().unwrap();
+            let answer = current
+                .as_ref()
+                .ok_or("stale_request")
+                .and_then(|g| g.pins.respond(value));
+            match answer {
+                Ok(true) => self.retire(&mut current).map(|()| {
+                    self.shutdown.emit_ended();
+                    json!({"result":"cancelled"})
+                }),
+                Ok(false) => Ok(json!({"result":"accepted"})),
+                Err(error) => Err(error.into()),
+            }
+        };
+        let mut response = result.unwrap_or_else(|e| json!({"error":e.to_string()}));
+        response["type"] = value["type"].clone();
+        response["request"] = value["request"].clone();
+        response["generation"] = json!(self.shutdown.generation.load(Ordering::Acquire));
+        response
+    }
+}
+struct GenerationTrace {
+    active: Arc<Mutex<bool>>,
+    trace: Arc<SessionTrace>,
+}
+impl ClinkTrace for GenerationTrace {
+    fn record(&self, event: ClinkTraceEvent) {
+        let active = self.active.lock().unwrap();
+        if *active {
+            self.trace.record(event);
+        }
+    }
+}
+struct GenerationListener {
+    active: Arc<Mutex<bool>>,
+    listener: RelayListener,
+}
+impl GenerationListener {
+    fn deliver(&self, callback: impl FnOnce(&RelayListener)) {
+        let active = self.active.lock().unwrap();
+        if *active {
+            callback(&self.listener);
+        }
+    }
+}
+impl ClinkListener for GenerationListener {
+    fn state(&self, state: ClinkState) {
+        self.deliver(|l| l.state(state));
+    }
+    fn error(&self, error: &str) {
+        self.deliver(|l| l.error(error));
+    }
+    fn diagnostic(&self, message: &str) {
+        self.deliver(|l| l.diagnostic(message));
+    }
+    fn view_size(&self, width: u32, height: u32) {
+        self.deliver(|l| l.view_size(width, height));
+    }
+    fn statistics(&self, stats: ClinkStatistics) {
+        self.deliver(|l| l.statistics(stats));
+    }
+    fn profile_mismatch(&self, input: &str, decoders: &[String]) {
+        self.deliver(|l| l.profile_mismatch(input, decoders));
+    }
+    fn vehicle(&self, origin: oxp_clink::model::Origin, data: oxp_clink::model::VehicleData) {
+        self.deliver(|l| l.vehicle(origin, data));
+    }
+    fn vehicle_state(&self, active: bool, malformed: u64) {
+        self.deliver(|l| l.vehicle_state(active, malformed));
     }
 }
 
@@ -594,21 +868,21 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
     if let Some(trace) = &trace {
         let _ = shutdown.trace.set(trace.clone());
     }
-    let link = clink_link_traced(&args, trace.clone().map(|t| t as Arc<dyn ClinkTrace>))?;
-    if args.get("--control-stdin").is_some() {
-        let trace = trace.clone();
-        std::thread::Builder::new()
-            .name("clink-control".into())
-            .spawn(move || {
-                read_control(std::io::stdin().lock(), trace.as_deref(), event);
-            })?;
-    }
+    let session_trace = Arc::new(SessionTrace {
+        summary: Arc::new(SummaryTrace::new(Arc::new(event))),
+        recorder: trace.clone(),
+    });
+    let _ = shutdown.session_trace.set(session_trace.clone());
+    let link = clink_link_traced(&args, Some(session_trace.clone()))?;
+    shutdown.keep_running.store(
+        web || args.get("--control-stdin").is_some(),
+        Ordering::Release,
+    );
     *shutdown.link.lock().unwrap() = link.clone();
     let clink = link.is_some();
     if !web && !clink {
         return Err("At least one output is required".into());
     }
-    let pin_stopped = shutdown.stopped.clone();
     if !web
         && (!sans.is_empty()
             || [
@@ -698,43 +972,25 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
         web_output = Some(output.clone());
         outputs.push(output);
     }
-    if clink {
-        let output = ClinkOutput::new(
-            link.unwrap(),
-            Arc::new(Pin {
-                digits: args.get("--pin").map(str::to_owned),
-                file: args.get("--pin-file").map(str::to_owned),
-                stopped: pin_stopped.clone(),
-                auto_confirm: true,
-            }),
-            Arc::new(FileTrust::new(Path::new(args.need("--state-dir")?))?),
-        )?
-        .with_options(oxp_clink::session::SessionOptions {
-            ports: parse_ports(args.get("--port"))?,
-            hevc: hevc_mode(args.get("--clink-hevc"))?,
-            ..Default::default()
-        })?
-        .with_listener(Arc::new(RelayListener(shutdown.clone())));
-        let output = if let Some(trace) = &trace {
-            output
-                .with_trace(trace.clone())
-                .with_media_tap(trace.capture())
-        } else {
-            output
-        };
-        let output = Arc::new(output);
-        shutdown.has_output.store(true, Ordering::Release);
-        *shutdown.output.lock().unwrap() = Some(output.clone());
-        if transcode_enabled(args.get("--clink-transcode"))? {
-            outputs.push(with_transcoding(
-                output,
-                oxp_transcode_linux::default_factory(),
-                Arc::new(diagnostic),
-            ));
-        } else {
-            outputs.push(output);
-        }
-    }
+    let carlink_factory = if let Some(link) = link {
+        Some(CarlinkFactory {
+            link,
+            trust: Arc::new(FileTrust::new(Path::new(args.need("--state-dir")?))?),
+            digits: args.get("--pin").map(str::to_owned),
+            file: args.get("--pin-file").map(str::to_owned),
+            options: oxp_clink::session::SessionOptions {
+                ports: parse_ports(args.get("--port"))?,
+                hevc: hevc_mode(args.get("--clink-hevc"))?,
+                vehicle_data: vehicle_enabled(args.get("--clink-vehicle-data"))?,
+                ..Default::default()
+            },
+            trace: session_trace,
+            transcode: transcode_enabled(args.get("--clink-transcode"))?,
+            controlled: args.get("--control-stdin").is_some(),
+        })
+    } else {
+        None
+    };
     let mut connection = connect(&args, true)?;
     *shutdown.wire.lock().unwrap() = Some(connection.shutdown.clone());
     if shutdown.stopped.load(Ordering::Acquire) {
@@ -775,12 +1031,48 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
     });
     let hub = Hub::new(host);
     *shutdown.hub.lock().unwrap() = Some(hub.clone());
+    let carlink = carlink_factory.map(|factory| {
+        Arc::new(CarlinkRuntime {
+            factory,
+            shutdown: shutdown.clone(),
+            hub: hub.clone(),
+            current: Mutex::new(None),
+        })
+    });
     let result = (|| -> Result<()> {
         for output in outputs {
             if shutdown.stopped.load(Ordering::Acquire) {
                 return Ok(());
             }
             hub.add_output(output)?;
+        }
+        if let Some(carlink) = &carlink {
+            carlink.restart(&json!({}))?;
+        }
+        if args.get("--control-stdin").is_some() {
+            let carlink = carlink.clone();
+            let trace = trace.clone();
+            std::thread::Builder::new()
+                .name("relay-control".into())
+                .spawn(move || {
+                    read_control_with(
+                        std::io::stdin().lock(),
+                        trace.as_deref(),
+                        |value| {
+                            if !matches!(
+                                value["type"].as_str(),
+                                Some("clink-restart" | "clink-pairing")
+                            ) {
+                                return None;
+                            }
+                            Some(match &carlink {
+                                Some(carlink) => carlink.control(value),
+                                None => json!({"type":value["type"],"error":"carlink_off"}),
+                            })
+                        },
+                        event,
+                    );
+                })?;
         }
         if let Some(web) = web_output {
             let addr = web.await_listening(Duration::from_secs(5))?;
@@ -1339,7 +1631,7 @@ mod tests {
 
     #[test]
     fn clink_hevc_argument_accepts_auto_or_off_and_requires_a_clink_link() {
-        for value in ["auto", "off"] {
+        for value in ["auto", "off", "signal"] {
             let args = args(&[
                 "--clink-link",
                 "ble",
@@ -1351,7 +1643,7 @@ mod tests {
             assert!(clink_link(&args).unwrap().is_some());
             assert_eq!(args.get("--clink-hevc"), Some(value));
         }
-        for value in ["", "on", "signal", "AUTO"] {
+        for value in ["", "on", "AUTO"] {
             let args = args(&[
                 "--clink-link",
                 "ble",
@@ -1362,7 +1654,7 @@ mod tests {
             ]);
             assert_eq!(
                 clink_link(&args).err().unwrap().to_string(),
-                "--clink-hevc must be auto or off"
+                "--clink-hevc must be auto, off or signal"
             );
         }
         assert!(clink_link(&args(&["--clink-hevc", "off"])).is_err());
@@ -1372,7 +1664,7 @@ mod tests {
         ] {
             assert!(parse_arguments(values.into_iter().map(str::to_owned)).is_err());
         }
-        assert!(USAGE.contains("--clink-hevc auto|off"));
+        assert!(USAGE.contains("--clink-hevc auto|off|signal"));
     }
     #[test]
     fn clink_modes_and_option_combinations() {
@@ -1717,5 +2009,164 @@ malformed",
             values[0]["fields"],
             json!({"major":"1","minor":"2","serial":"3","carId":"car","modelId":"model","serialSame":"true"})
         );
+    }
+    #[test]
+    fn carlink_restart_failure_and_pairing_cancel_keep_the_browser_socket_alive() {
+        use oxp_core::model::*;
+        use std::io::{Read, Write};
+        struct Host;
+        impl OutputHost for Host {
+            fn capabilities(&self, _: OutputCapabilities) {}
+            fn control(&self, _: ControlEvent) {}
+            fn stats(&self, _: OutputStats) {}
+        }
+        fn send(stream: &mut std::net::TcpStream, opcode: u8, payload: &[u8]) {
+            let mut frame = vec![0x80 | opcode];
+            if payload.len() < 126 {
+                frame.push(0x80 | payload.len() as u8);
+            } else {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            }
+            frame.extend_from_slice(&[0; 4]);
+            frame.extend_from_slice(payload);
+            stream.write_all(&frame).unwrap();
+        }
+        fn read(stream: &mut std::net::TcpStream) -> (u8, Vec<u8>) {
+            let mut header = [0; 2];
+            stream.read_exact(&mut header).unwrap();
+            let mut length = (header[1] & 127) as usize;
+            if length == 126 {
+                let mut n = [0; 2];
+                stream.read_exact(&mut n).unwrap();
+                length = u16::from_be_bytes(n) as usize;
+            }
+            assert!(length < 65536);
+            let mut payload = vec![0; length];
+            stream.read_exact(&mut payload).unwrap();
+            (header[0] & 15, payload)
+        }
+        let root = std::env::temp_dir().join(format!("oxp-w4-browser-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let shutdown = Arc::new(RelayShutdown::default());
+        shutdown.keep_running.store(true, Ordering::Release);
+        let hub = Hub::new(Arc::new(Host));
+        let web = Arc::new(
+            WebOutput::new(WebOutputConfig::new(
+                "127.0.0.1:0".parse().unwrap(),
+                root.clone(),
+                Pairing::Disabled,
+                Tls::Disabled,
+            ))
+            .unwrap(),
+        );
+        hub.add_output(web.clone()).unwrap();
+        let address = web.await_listening(Duration::from_secs(3)).unwrap();
+        let mut browser = std::net::TcpStream::connect(address).unwrap();
+        browser
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        browser.write_all(b"GET /oxp/v0 HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            browser.read_exact(&mut byte).unwrap();
+            headers.push(byte[0]);
+        }
+        assert!(String::from_utf8(headers)
+            .unwrap()
+            .contains("101 Switching Protocols"));
+        send(
+            &mut browser,
+            1,
+            include_bytes!("../../../web-receiver/spec/vectors/web/hello.json"),
+        );
+        let (_, welcome) = read(&mut browser);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&welcome).unwrap()["type"],
+            "welcome"
+        );
+        let runtime = CarlinkRuntime {
+            factory: CarlinkFactory {
+                link: Arc::new(FakeLink(Arc::new(std::sync::atomic::AtomicUsize::new(0)))),
+                trust: Arc::new(FileTrust::new(&root.join("trust")).unwrap()),
+                digits: None,
+                file: None,
+                options: Default::default(),
+                trace: Arc::new(SessionTrace {
+                    summary: Arc::new(SummaryTrace::new(Arc::new(|_| {}))),
+                    recorder: None,
+                }),
+                transcode: false,
+                controlled: true,
+            },
+            shutdown: shutdown.clone(),
+            hub: hub.clone(),
+            current: Mutex::new(None),
+        };
+        for picture in [
+            json!({"width":1280,"height":720}),
+            json!({"width":1920,"height":1080}),
+        ] {
+            let result = runtime.control(&json!({"type":"clink-restart","picture":picture}));
+            assert_eq!(result["result"], "started");
+            send(&mut browser, 9, b"alive");
+            loop {
+                let (opcode, payload) = read(&mut browser);
+                assert_ne!(opcode, 8);
+                if opcode == 10 {
+                    assert_eq!(payload, b"alive");
+                    break;
+                }
+            }
+            assert!(!shutdown.session_failed.load(Ordering::Acquire));
+        }
+        let generation = shutdown.generation.load(Ordering::Acquire);
+        assert!(runtime
+            .control(&json!({"type":"clink-restart","picture":{"width":321,"height":240}}))
+            ["error"]
+            .is_string());
+        assert_eq!(shutdown.generation.load(Ordering::Acquire), generation);
+        let pins = runtime
+            .current
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .pins
+            .clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            pins.ask(
+                "car",
+                true,
+                Duration::from_secs(120),
+                &AtomicBool::new(false),
+                |v| {
+                    let _ = tx.send(v);
+                },
+            )
+        });
+        let prompt = rx.recv().unwrap();
+        assert_eq!(
+            runtime.control(
+                &json!({"type":"clink-pairing","request":prompt["request"],"action":"cancel"})
+            )["result"],
+            "cancelled"
+        );
+        assert!(waiter.join().unwrap().is_none());
+        send(&mut browser, 9, b"after cancel");
+        loop {
+            let (opcode, payload) = read(&mut browser);
+            assert_ne!(opcode, 8);
+            if opcode == 10 {
+                assert_eq!(payload, b"after cancel");
+                break;
+            }
+        }
+        assert!(runtime.current.lock().unwrap().is_none());
+        hub.close();
+        runtime.factory.trace.summary.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

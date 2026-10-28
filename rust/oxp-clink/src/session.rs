@@ -15,7 +15,7 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
         Arc, Mutex,
     },
@@ -33,6 +33,10 @@ pub trait SessionCallbacks: Send + Sync {
 pub struct SessionOptions {
     pub ports: ClinkPorts,
     pub hevc: ClinkHevcMode,
+    /// Disabled by default; reports go only to the listener, never the input.
+    pub vehicle_data: bool,
+    /// Requested input canvas; the measured head-unit window stays in viewport.
+    pub picture_size: Option<(u32, u32)>,
     pub trace: Option<Arc<dyn ClinkTrace>>,
     pub trace_session: Option<u64>,
     pub media_tap: Option<Arc<dyn ClinkMediaTap>>,
@@ -47,6 +51,8 @@ impl Default for SessionOptions {
         Self {
             ports: Default::default(),
             hevc: Default::default(),
+            vehicle_data: false,
+            picture_size: None,
             trace: None,
             trace_session: None,
             media_tap: None,
@@ -128,6 +134,7 @@ impl LinkHealth {
     }
 }
 struct Shared {
+    malformed_sensor: AtomicU64,
     stalled: AtomicBool,
     stopped: AtomicBool,
     stop_requested: AtomicBool,
@@ -170,6 +177,15 @@ impl ClinkSession {
         mut options: SessionOptions,
     ) -> Result<Self> {
         options.ports.validate()?;
+        if let Some((width, height)) = options.picture_size {
+            require(
+                (320..=3840).contains(&width)
+                    && (240..=2160).contains(&height)
+                    && width.is_multiple_of(2)
+                    && height.is_multiple_of(2),
+                "invalid_picture",
+            )?;
+        }
         if options.trace.is_some() && options.trace_session.is_none() {
             options.trace_session = Some(next_session());
         }
@@ -187,6 +203,7 @@ impl ClinkSession {
             options,
             started: AtomicBool::new(false),
             shared: Arc::new(Shared {
+                malformed_sensor: AtomicU64::new(0),
                 stalled: AtomicBool::new(false),
                 stopped: AtomicBool::new(false),
                 stop_requested: AtomicBool::new(false),
@@ -218,6 +235,8 @@ impl ClinkSession {
             "rtsp"
         } else if port == p.uibc {
             "uibc"
+        } else if port == p.sensor {
+            "sensor"
         } else {
             "rtp"
         }
@@ -291,6 +310,7 @@ impl ClinkSession {
     pub fn stop(&self) {
         let _ = self.microphone(None);
         self.shared.stop_requested.store(true, Ordering::Release);
+        self.pin.cancel();
     }
     pub(crate) fn stream_size(&self) -> (u32, u32) {
         *self.shared.stream_size.lock().unwrap()
@@ -526,7 +546,8 @@ impl ClinkSession {
         let remote: Option<String> = None;
         let transport = a.transport.clone();
         let shared = self.shared.clone();
-        spawn(format!("clink-accept-{service}"), move || {
+        let sensor = service == self.options.ports.sensor;
+        spawn(format!("clink-accept-{service}"), move || loop {
             let socket = loop {
                 if stopped(&shared) {
                     return;
@@ -565,7 +586,6 @@ impl ClinkSession {
                 let _ = socket.shutdown();
                 return;
             }
-            drop(transport);
             if let Some(trace) = &trace {
                 trace.record(ClinkTraceEvent::Socket {
                     at_nanos: now_nanos(),
@@ -596,12 +616,16 @@ impl ClinkSession {
                     session: trace_session,
                     service: name.into(),
                     event: if cause.is_some() { "ERROR" } else { "CLOSED" }.into(),
-                    remote_address: remote,
+                    remote_address: remote.clone(),
                     port: service,
                     error_class: cause.as_ref().map(|s| s.chars().take(120).collect()),
                 });
             }
             enqueue(&shared, &tx, Event::Closed(service, cause));
+            if !sensor {
+                return;
+            }
+            transport.release(service);
         });
         Ok(())
     }
@@ -620,6 +644,8 @@ impl ClinkSession {
                 .or_else(|| self.pin.request_pin(&a.head_unit_id))
                 .ok_or("pin_cancelled")
         };
+        let trusted = pinned.is_some();
+        let mut replacement_approved = false;
         let mut full = pinned.is_none();
         let mut pin = if full { Some(request_pin()?) } else { None };
         let mut auth = Auth::new(
@@ -695,7 +721,11 @@ impl ClinkSession {
                         return Err(reason.into());
                     }
                     // A head unit may rebuild its pairing store at boot. Pair again once on this socket.
-                    self.trust.forget_peer(&a.head_unit_id)?;
+                    require(
+                        replacement_approved || self.pin.confirm_pairing(&a.head_unit_id),
+                        "pairing_confirmation_cancelled",
+                    )?;
+                    replacement_approved = true;
                     self.listener
                         .diagnostic(&format!("auth repin reason={reason}"));
                     repinned = true;
@@ -740,9 +770,12 @@ impl ClinkSession {
                     retries += 1;
                     require(old < 3, "auth_confirmation_required")?;
                     require(
-                        a.auto_confirm || self.pin.confirm_pairing(&a.head_unit_id),
+                        replacement_approved
+                            || (a.auto_confirm && !trusted)
+                            || self.pin.confirm_pairing(&a.head_unit_id),
                         "pairing_confirmation_cancelled",
                     )?;
+                    replacement_approved = true;
                     sequence = sequence.wrapping_add(2);
                     attempt = auth.start(now(), sequence, pin.as_deref(), full, true)?;
                     deadline = (self.options.clock)() + Duration::from_secs(20);
@@ -812,6 +845,10 @@ impl ClinkSession {
             }
         }
         self.shared.connection.lock().unwrap().take();
+        if self.options.vehicle_data {
+            self.listener
+                .vehicle_state(false, self.shared.malformed_sensor.load(Ordering::Acquire));
+        }
         self.callbacks.play(false);
         let origin = origin.lock().unwrap().take();
         if let Some(origin) = origin {
@@ -860,6 +897,10 @@ impl ClinkSession {
         ] {
             self.listen(service, &a, tx.clone())?;
         }
+        if self.options.vehicle_data {
+            self.listen(ports.sensor, &a, tx.clone())?;
+            self.listener.vehicle_state(false, 0);
+        }
         let identity = match self.trust.load_identity()? {
             Some(i) => i,
             None => {
@@ -898,6 +939,7 @@ impl ClinkSession {
             ciphers: BTreeMap::new(),
             display: control::head_unit_fallback_display(),
             malformed_records: VecDeque::new(),
+            malformed_sensor: 0,
         };
         let mut rtsp = RtspReader::default();
         let mut input_cipher = SecureRecord::new(&key)?;
@@ -923,9 +965,12 @@ impl ClinkSession {
                     if let Some(a) = self.shared.audio.lock().unwrap().as_mut() {
                         a.sockets.insert(service, socket.clone());
                     }
-                    if service == ports.control || service == ports.cert || service == ports.media {
+                    if [ports.control, ports.cert, ports.media, ports.sensor].contains(&service) {
                         owner.ciphers.insert(service, SecureRecord::new(&key)?);
                         owner.readers.insert(service, FrameReader::default());
+                    }
+                    if service == ports.sensor {
+                        owner.report_sensor();
                     }
                     if service == ports.control {
                         health = LinkHealth::new(Instant::now());
@@ -960,7 +1005,17 @@ impl ClinkSession {
                                                     .clone()
                                                     .unwrap_or_else(|| "absent".into()),
                                             ),
-                                            ("variant".into(), "unchanged".into()),
+                                            (
+                                                "variant".into(),
+                                                if wfd.hevc_enabled()
+                                                    && self.options.hevc == ClinkHevcMode::Signal
+                                                {
+                                                    "signal"
+                                                } else {
+                                                    "unchanged"
+                                                }
+                                                .into(),
+                                            ),
                                         ]),
                                     });
                                 }
@@ -1042,6 +1097,9 @@ impl ClinkSession {
                         }
                     }
                 }
+                Some(Event::Bytes(service, bytes)) if service == ports.sensor => {
+                    owner.sensor_bytes(&bytes, &wfd, &origin);
+                }
                 Some(Event::Bytes(service, bytes)) => {
                     let frames = owner
                         .readers
@@ -1053,7 +1111,9 @@ impl ClinkSession {
                     }
                 }
                 Some(Event::Closed(service, cause)) => {
-                    if service != ports.cert || !owner.certified {
+                    if service == ports.sensor {
+                        owner.close_sensor(true);
+                    } else if service != ports.cert || !owner.certified {
                         return Err(cause
                             .unwrap_or_else(|| "vehicle_channel_closed".into())
                             .into());
@@ -1127,8 +1187,69 @@ struct Owner<'a> {
     ciphers: BTreeMap<u16, SecureRecord>,
     display: DisplayInfo,
     malformed_records: VecDeque<Instant>,
+    malformed_sensor: u64,
 }
 impl Owner<'_> {
+    fn report_sensor(&self) {
+        self.session.listener.vehicle_state(
+            self.sockets
+                .contains_key(&self.session.options.ports.sensor),
+            self.malformed_sensor,
+        );
+    }
+    fn malformed_sensor(&mut self) {
+        self.malformed_sensor += 1;
+        self.session
+            .shared
+            .malformed_sensor
+            .store(self.malformed_sensor, Ordering::Release);
+        self.session.listener.diagnostic("malformed_sensor");
+        self.report_sensor();
+    }
+    fn close_sensor(&mut self, eof: bool) {
+        let port = self.session.options.ports.sensor;
+        if eof
+            && self
+                .readers
+                .get(&port)
+                .is_some_and(|r| r.pending_bytes() > 0)
+        {
+            self.malformed_sensor();
+        }
+        if let Some(socket) = self.sockets.remove(&port) {
+            let _ = socket.shutdown();
+        }
+        self.readers.remove(&port);
+        self.ciphers.remove(&port);
+        self.report_sensor();
+    }
+    fn sensor_bytes(&mut self, bytes: &[u8], wfd: &WfdSource, origin: &Origin) {
+        let port = self.session.options.ports.sensor;
+        let Some(reader) = self.readers.get_mut(&port) else {
+            return;
+        };
+        let mut malformed = 0;
+        let frames = reader.feed_isolated(bytes, |_| {
+            malformed += 1;
+            Ok(())
+        });
+        for _ in 0..malformed {
+            self.malformed_sensor();
+        }
+        match frames {
+            Ok(frames) => {
+                for frame in frames {
+                    if self.handle(port, &frame, wfd, origin).is_err() {
+                        self.malformed_sensor();
+                    }
+                }
+            }
+            Err(_) => {
+                self.malformed_sensor();
+                self.close_sensor(false);
+            }
+        }
+    }
     fn update_microphone(&mut self) -> Result<()> {
         let change = {
             let mut mic = self.session.shared.microphone.lock().unwrap();
@@ -1245,7 +1366,7 @@ impl Owner<'_> {
     }
     fn report(&self, wfd: &WfdSource) {
         self.session.shared.snapshot.lock().unwrap().decoders = wfd.decoders.clone();
-        let display = DisplayInfo {
+        let mut display = DisplayInfo {
             viewport: Some(Viewport {
                 width_px: self.display.width_px,
                 height_px: self.display.height_px,
@@ -1254,6 +1375,10 @@ impl Owner<'_> {
             fullscreen_preferred: None,
             ..self.display.clone()
         };
+        if let Some((width, height)) = self.session.options.picture_size {
+            display.width_px = width;
+            display.height_px = height;
+        }
         self.session.callbacks.capabilities(OutputCapabilities {
             prefers_h264: false,
             latency: LatencyClass::Interactive,
@@ -1305,6 +1430,9 @@ impl Owner<'_> {
             Err(e) => {
                 self.session
                     .frame_event("RX", service, frame, &frame.body, false);
+                if service == ports.sensor {
+                    return Err(e);
+                }
                 // Log only record headers; authentication and replay failures still count.
                 let record = &frame.body;
                 let number = |at| {
@@ -1341,6 +1469,41 @@ impl Owner<'_> {
                 "invalid_acknowledgement",
             )?;
             self.acknowledge(service, frame.sequence);
+            return Ok(());
+        }
+        if service == ports.sensor {
+            require(
+                self.session.options.vehicle_data
+                    && frame.format == 1
+                    && frame.category == 2
+                    && [0, 3].contains(&frame.kind),
+                "invalid_sensor_frame",
+            )?;
+            if let Some(data) = vehicle::sensor(frame.method, &body)? {
+                self.session.listener.vehicle(origin.clone(), data);
+            }
+            if frame.kind == 3 {
+                self.send(service, 7, 0, &[], 2, Some(frame.sequence), 0)?;
+            }
+            return Ok(());
+        }
+        if service == ports.control && frame.category == 1 && frame.method == 15 {
+            if self.session.options.vehicle_data {
+                let report = (|| {
+                    require(
+                        frame.format == 1 && [0, 3].contains(&frame.kind),
+                        "invalid_day_night_frame",
+                    )?;
+                    vehicle::day_night(&body)
+                })();
+                match report {
+                    Ok(data) => self.session.listener.vehicle(origin.clone(), data),
+                    Err(_) => self.session.listener.diagnostic("malformed_day_night"),
+                }
+            }
+            if frame.kind == 3 {
+                self.send(service, 7, 0, &[], 2, Some(frame.sequence), 0)?;
+            }
             return Ok(());
         }
         if service == ports.media {
@@ -1383,6 +1546,7 @@ impl Owner<'_> {
                         &control::server_response(match request {
                             3 => ports.uibc,
                             2 => ports.media,
+                            8 if self.session.options.vehicle_data => ports.sensor,
                             _ => 0,
                         })?,
                         2,
@@ -1708,6 +1872,7 @@ mod tests {
                 .collect(),
             display: DisplayInfo::default(),
             malformed_records: VecDeque::new(),
+            malformed_sensor: 0,
         }
     }
     fn origin() -> Origin {
@@ -1988,6 +2153,7 @@ mod tests {
             ]),
             display: DisplayInfo::default(),
             malformed_records: VecDeque::new(),
+            malformed_sensor: 0,
         };
         let mut wfd = WfdSource::new("127.0.0.1".into(), ports);
         wfd.playing = true;
@@ -2252,6 +2418,7 @@ mod audio_tests {
             ]),
             display: DisplayInfo::default(),
             malformed_records: VecDeque::new(),
+            malformed_sensor: 0,
         }
     }
     fn incoming(
@@ -2613,6 +2780,7 @@ fn hevc_name(mode: ClinkHevcMode) -> &'static str {
     match mode {
         ClinkHevcMode::Auto => "AUTO",
         ClinkHevcMode::Off => "OFF",
+        ClinkHevcMode::Signal => "SIGNAL",
     }
 }
 

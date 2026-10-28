@@ -521,7 +521,7 @@ fn relay_events_use_stdout_for_unix_and_preserve_stdio_wire_transport() {
 }
 
 #[test]
-fn carlink_repin_diagnostic_auto_confirmation_and_incorrect_pin_reach_stdout() {
+fn carlink_repin_without_relay_approval_aborts_and_preserves_trust() {
     use oxp_clink::protocol::{AuthIdentity, FieldValue, Fields, Frame};
     use std::{
         collections::BTreeMap,
@@ -648,22 +648,6 @@ fn carlink_repin_diagnostic_auto_confirmation_and_incorrect_pin_reach_stdout() {
             (7, FieldValue::Varint(0)),
         ]),
     );
-    let request = read_frame(&mut socket);
-    assert_eq!(request.sequence, 3);
-    assert!(Fields::decode(&request.body).unwrap().0.contains_key(&2));
-    reply(
-        &mut socket,
-        &request,
-        BTreeMap::from([(1, FieldValue::Varint(1)), (7, FieldValue::Varint(2))]),
-    );
-    let request = read_frame(&mut socket);
-    assert_eq!(request.sequence, 5);
-    assert_eq!(Fields::decode(&request.body).unwrap().number(9).unwrap(), 1);
-    reply(
-        &mut socket,
-        &request,
-        BTreeMap::from([(1, FieldValue::Varint(1)), (7, FieldValue::Varint(1))]),
-    );
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = child.0.try_wait().unwrap() {
@@ -694,11 +678,11 @@ fn carlink_repin_diagnostic_auto_confirmation_and_incorrect_pin_reach_stdout() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let diagnostic =
-        json!({"type":"diagnostic","message":"auth repin reason=auth_signature_failed"});
-    assert_eq!(events.iter().filter(|e| **e == diagnostic).count(), 1);
-    assert!(events.contains(&json!({"type":"clink-pin","result":"incorrect","client":"127.0.0.1"})));
+    assert!(events
+        .iter()
+        .any(|event| event["type"] == "error"
+            && event["message"] == "pairing_confirmation_cancelled"));
     assert!(!stdout.contains("123456"));
-    assert!(store.load_peer_key("127.0.0.1").unwrap().is_none());
+    assert!(store.load_peer_key("127.0.0.1").unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }

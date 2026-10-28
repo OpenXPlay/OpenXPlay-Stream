@@ -33,9 +33,15 @@ fn parse(line: &[u8]) -> Result<Command, &'static str> {
 }
 
 /// Keeps at most 4 KiB while draining oversized lines through the next newline.
-pub fn read_control(
+pub fn read_control(input: impl BufRead, trace: Option<&TraceRecorder>, emit: impl FnMut(Value)) {
+    read_control_with(input, trace, |_| None, emit);
+}
+
+/// Session commands are handled by the shell; trace commands retain their existing contract.
+pub fn read_control_with(
     mut input: impl BufRead,
     trace: Option<&TraceRecorder>,
+    mut session: impl FnMut(&Value) -> Option<Value>,
     mut emit: impl FnMut(Value),
 ) {
     let mut line = Vec::with_capacity(4096);
@@ -66,6 +72,18 @@ pub fn read_control(
         };
         input.consume(consumed);
         if newline || eof && (!line.is_empty() || oversized) {
+            if !oversized {
+                if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                    if let Some(response) = session(&value) {
+                        emit(response);
+                        line.clear();
+                        if eof {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
             let command = if oversized {
                 Err("line_too_long")
             } else {
@@ -99,6 +117,20 @@ pub fn read_control(
 mod tests {
     use super::*;
     use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn session_commands_work_without_trace_and_share_the_line_bound() {
+        let mut events = Vec::new();
+        read_control_with(Cursor::new(b"{\"type\":\"clink-pairing\",\"request\":1,\"action\":\"cancel\"}\n{\"type\":\"clink-restart\"}\n"), None,
+            |value| Some(json!({"type":value["type"],"result":"handled"})), |value|events.push(value));
+        assert_eq!(
+            events,
+            vec![
+                json!({"type":"clink-pairing","result":"handled"}),
+                json!({"type":"clink-restart","result":"handled"})
+            ]
+        );
+    }
 
     #[test]
     fn commands_and_seconds_validation() {

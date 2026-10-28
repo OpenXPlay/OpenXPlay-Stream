@@ -89,6 +89,14 @@ impl FrameReader {
         self.buffer.clear();
     }
     pub fn feed(&mut self, b: &[u8]) -> Result<Vec<Frame>> {
+        self.feed_isolated(b, Err)
+    }
+    /// Only SENSOR tolerates invalid headers with an intact length boundary.
+    pub fn feed_isolated(
+        &mut self,
+        b: &[u8],
+        mut malformed: impl FnMut(crate::Error) -> Result<()>,
+    ) -> Result<Vec<Frame>> {
         require(
             b.len() <= MAX_BYTES && self.buffer.len() + b.len() <= MAX_BYTES + 65536,
             "invalid_packet_length",
@@ -102,7 +110,10 @@ impl FrameReader {
             if self.buffer.len() - pos < n {
                 break;
             }
-            out.push(Frame::decode(&self.buffer[pos..pos + n])?);
+            match Frame::decode(&self.buffer[pos..pos + n]) {
+                Ok(frame) => out.push(frame),
+                Err(error) => malformed(error)?,
+            }
             pos += n;
         }
         self.buffer.drain(..pos);
