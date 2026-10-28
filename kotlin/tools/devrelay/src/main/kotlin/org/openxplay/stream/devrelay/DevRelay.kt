@@ -25,7 +25,7 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
     private val closed = AtomicBoolean(false)
     private val replay = AnnexBFileInput(requireNotNull(options.clip) { "Replay requires --clip" }, options.fps, audio = options.audio, micSummary = log::microphoneStats)
     private val input: ProjectionInput = LoggedInput(replay, log)
-    private val hub = ProjectionHub(input, clock = MonotonicClock.system, listener = object : HubListener {
+    private val hub = ProjectionHub(input, policy = ReplaySessionPolicy, clock = MonotonicClock.system, listener = object : HubListener {
         override fun outputFailed(outputId: String, failure: Throwable) {
             log.event("output-failed", "output" to outputId, "message" to failure.message)
             log.error(outputId, failure)
@@ -126,6 +126,15 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
             }
             return relay
         }
+    }
+}
+
+internal object ReplaySessionPolicy : SessionPolicy {
+    override fun derive(input: InputCapabilities, outputs: List<OutputCapabilities>): SessionConfig {
+        // A file cannot change codec; use default display negotiation without requiring an AVC fallback.
+        val display = DefaultSessionPolicy.derive(input.copy(codecs = setOf(VideoCodec.H264)), outputs)
+        val codec = input.codecs.single()
+        return SessionConfig(display.screens.mapValues { (_, screen) -> screen.copy(codec = codec) })
     }
 }
 

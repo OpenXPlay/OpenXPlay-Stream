@@ -112,7 +112,7 @@ class CastOutputLoopbackTest {
             } finally { output.close(); threads.awaitEnded() }
         }
     }
-    @Test fun capabilitiesAudioStatisticsPauseAndUnsupportedVideo() {
+    @Test fun capabilitiesAudioStatisticsAndPause() {
         FakeRenderer().use { fixture ->
             val reports = CopyOnWriteArrayList<CastStatistics>(); val states = CopyOnWriteArrayList<CastState>()
             val failures = CopyOnWriteArrayList<CastFailure>(); val caps = CopyOnWriteArrayList<OutputCapabilities>(); val threads = TrackedThreads()
@@ -124,12 +124,9 @@ class CastOutputLoopbackTest {
             try {
                 output.open(object : OutputHost by NO_HOST { override fun capabilities(capabilities: OutputCapabilities) { caps += capabilities } })
                 assertEquals(LatencyClass.BUFFERED, caps.single().latency); assertTrue(caps.single().prefersH264)
-                assertEquals(listOf(DecoderSupport("avc1.64002a", true)), caps.single().decoders)
+                assertEquals(listOf(DecoderSupport("avc1.64002a", true), DecoderSupport("hvc1.1.6.L150", true)), caps.single().decoders)
                 assertEquals(setOf(AudioCodec.AAC_LC), caps.single().audio); assertEquals(0, caps.single().touch)
                 output.onSession(SessionState(SessionId(1), SessionPhase.ACTIVE), SESSION_CONFIG)
-                val hevc = VideoFormat.create(ScreenId.MAIN, VideoCodec.H265, vector("hevc-main-1920x1080"))
-                output.onVideoFormat(ScreenId.MAIN, hevc)
-                await("H.265 not rejected") { failures.any { it.code == "unsupported_video" } }
                 output.onVideoFormat(ScreenId.MAIN, videoFormat()); output.onVideoFrame(frame())
                 output.onAudioFormat(0, AudioFormat(0, AudioRole.MEDIA, AudioCodec.AAC_LC, 48000, 2, byteArrayOf(0x11, 0x90.toByte())))
                 output.onAudioPacket(AudioPacket(0, SessionId(1), SILENT_AAC, 0))
@@ -139,6 +136,7 @@ class CastOutputLoopbackTest {
                 val pushes = fixture.uris.size; Thread.sleep(100); assertEquals(pushes, fixture.uris.size)
                 output.onVideoFormat(ScreenId.MAIN, null)
                 await("Null format did not stop") { states.lastOrNull() == CastState.WAITING_FOR_VIDEO }
+                assertTrue(failures.isEmpty(), failures.joinToString())
             } finally { output.close(); threads.awaitEnded() }
         }
     }
