@@ -75,6 +75,7 @@ internal class FakeRenderer(private val transport: Boolean = true) : AutoCloseab
     val metadata = CopyOnWriteArrayList<String>()
     val errors = CopyOnWriteArrayList<Throwable>()
     val packets = CopyOnWriteArrayList<ByteArray>()
+    val streams = ConcurrentHashMap<String, CopyOnWriteArrayList<ByteArray>>()
     val rejections = ConcurrentHashMap<String, Int>()
     @Volatile var transportState = "STOPPED"
     @Volatile var unavailable = false
@@ -128,6 +129,7 @@ internal class FakeRenderer(private val transport: Boolean = true) : AutoCloseab
     }
     private fun startPlayer(url: String) {
         start("fixture-player") {
+            val stream = streams.computeIfAbsent(url) { CopyOnWriteArrayList() }
             val uri = URI(url); val socket = Socket(); sockets += socket; players += socket
             try {
                 socket.use {
@@ -135,7 +137,9 @@ internal class FakeRenderer(private val transport: Boolean = true) : AutoCloseab
                     socket.getOutputStream().apply { write("GET ${uri.rawPath} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".toByteArray()); flush() }
                     val input = HttpInput(socket, 2000, 10_000)
                     check(input.head().start == "HTTP/1.1 200 OK")
-                    while (active.get()) packets += input.exact(188)
+                    while (active.get()) {
+                        val packet = input.exact(188); packets += packet; stream += packet
+                    }
                 }
             } finally { sockets.remove(socket); players.remove(socket) }
         }

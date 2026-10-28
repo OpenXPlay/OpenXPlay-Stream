@@ -7,11 +7,11 @@ package org.openxplay.stream.replay
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Inspects an Annex B H.264 file; relay shells are responsible for wiring outputs. */
+/** Inspects an Annex B H.264/H.265 file; relay shells are responsible for wiring outputs. */
 public object ReplayMain {
     @JvmStatic
     public fun main(args: Array<String>): Unit {
-        require(args.isNotEmpty()) { "Usage: replay <annex-b.h264> [--audio-media aac] [--audio-voice wav] [--audio-voice-every seconds] [--mic-rate hz] [--mic-out wav]" }
+        require(args.isNotEmpty()) { "Usage: replay <annex-b.h264|annex-b.h265> [--audio-media aac] [--audio-voice wav] [--audio-voice-every seconds] [--mic-rate hz] [--mic-out wav]" }
         val values = mutableMapOf<String, String>()
         var index = 1
         while (index < args.size) {

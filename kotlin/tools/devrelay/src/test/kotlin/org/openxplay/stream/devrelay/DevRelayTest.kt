@@ -21,11 +21,34 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
 import org.openxplay.stream.core.TouchContact
+import org.openxplay.stream.core.codec.HevcConfig
 import org.openxplay.stream.core.wire.*
 import kotlin.test.*
 
 class DevRelayTest {
     @TempDir lateinit var assets: Path
+
+    @Test
+    @Timeout(value = 8, unit = TimeUnit.SECONDS)
+    fun hevcReplayStartsBeforeAnyOutputAttaches() {
+        val bytes = Files.readString(repositoryRoot().resolve("../spec/vectors/hevc-main-1920x1080.hex"))
+            .trim().split(Regex("\\s+")).map { it.toInt(16).toByte() }.toByteArray()
+        val config = HevcConfig.parse(bytes)
+        val units = config.vps + config.sps + config.pps + listOf(byteArrayOf(0x26, 1, 0x80.toByte()))
+        val clip = assets.resolve("capture.h265")
+        Files.write(clip, units.fold(ByteArray(0)) { data, nal -> data + byteArrayOf(0, 0, 1) + nal })
+        val capture = ByteArrayOutputStream()
+        PrintStream(capture, true, Charsets.UTF_8).use { stdout ->
+            DevRelay.start(RelayOptions(clip = clip), stdout).use {
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (!capture.toString(Charsets.UTF_8).contains("\"phase\":\"ACTIVE\"") && System.nanoTime() < deadline) Thread.sleep(5)
+                assertContains(capture.toString(Charsets.UTF_8), "\"phase\":\"ACTIVE\"")
+            }
+        }
+        val log = capture.toString(Charsets.UTF_8)
+        assertFalse(log.contains("\"event\":\"error\""), log)
+        assertEquals("{\"event\":\"shutdown\"}", log.trim().lines().last())
+    }
 
     @Test
     @Timeout(value = 12, unit = TimeUnit.SECONDS)

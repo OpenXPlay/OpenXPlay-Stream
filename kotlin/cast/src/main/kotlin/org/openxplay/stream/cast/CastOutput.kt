@@ -27,7 +27,7 @@ internal data class CastOptions(
 )
 internal val CAST_THREADS = ThreadFactory { task -> Thread(task).apply { isDaemon = true } }
 
-/** Buffered H.264/AAC output. Reopen only after the preceding lifecycle reports ENDED. */
+/** Buffered H.264/H.265 and AAC output. Reopen only after the preceding lifecycle reports ENDED. */
 public class CastOutput internal constructor(
     private val config: CastOutputConfig,
     private val network: CastNetwork,
@@ -56,8 +56,6 @@ public class CastOutput internal constructor(
         var timeline: CastTimeline? = null
         var audioStream: Int? = null
         val audioFormats = linkedMapOf<Int, AudioFormat>()
-        var unsupported = false
-        var unsupportedPending = false
         var dropped = 0L
         var videoFrames = 0L
         var audioFrames = 0L
@@ -77,7 +75,8 @@ public class CastOutput internal constructor(
         check(opened.compareAndSet(false, true)) { "output_already_open" }
         val run = Run(host, CastStreamServer(config.port, "", threadFactory, options.server, options.now)); current = run
         try {
-            host.capabilities(OutputCapabilities(LatencyClass.BUFFERED, listOf(DecoderSupport("avc1.64002a", true)),
+            host.capabilities(OutputCapabilities(LatencyClass.BUFFERED,
+                listOf(DecoderSupport("avc1.64002a", true), DecoderSupport("hvc1.1.6.L150", true)),
                 mapOf(ScreenId.MAIN to DisplayInfo(config.width, config.height, 160, config.fps.toDouble(),
                     frameRate = if (config.fps == 60) FrameRatePreference.FPS_60 else FrameRatePreference.FPS_30)),
                 0, emptySet(), if (config.audio) setOf(AudioCodec.AAC_LC) else emptySet(), false, prefersH264 = true))
@@ -114,10 +113,7 @@ public class CastOutput internal constructor(
         val run = current ?: return
         synchronized(run.lock) {
             if (!run.active.get()) return
-            run.unsupported = format != null && format.codec != VideoCodec.H264
-            if (run.unsupported) run.unsupportedPending = true
-            val supported = format?.takeIf { it.codec == VideoCodec.H264 }
-            if (!sameVideoFormat(run.format, supported)) reset(run, supported)
+            if (!sameVideoFormat(run.format, format)) reset(run, format)
             run.lock.notifyAll()
         }
     }
@@ -213,11 +209,8 @@ public class CastOutput internal constructor(
                     val serverRequest = run.server.needsKeyframe.getAndSet(false)
                     val request = timeline != null && (timeline.requestKeyframe || serverRequest)
                     if (timeline != null) timeline.requestKeyframe = false
-                    val unsupported = run.unsupported || run.unsupportedPending
-                    run.unsupportedPending = false
-                    Triple(timeline?.take(now).orEmpty(), request, unsupported)
+                    Pair(timeline?.take(now).orEmpty(), request)
                 }
-                if (snapshot.third) failure(run, "unsupported_video", "H.264 required; H.265 ignored") else recovered(run, "unsupported_video")
                 val requests = if (snapshot.second) limiter.request(ControlEvent.KeyFrameRequest(ScreenId.MAIN, Origin(id, "renderer")), now) else limiter.poll(now)
                 requests.forEach { event -> host(run) { it.control(event) } }
                 for (event in snapshot.first) {
