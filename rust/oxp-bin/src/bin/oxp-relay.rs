@@ -31,7 +31,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink; omitted picture/hevc/vehicleData settings retain their current choices. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities status events report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
+const USAGE: &str = "oxp-relay (--unix PATH | --stdio) [--relay-name NAME --relay-version VERSION] [--web-port N --web-root DIR [--web-bind ADDR] [--web-transcode auto|off] [--plugins-root DIR --plugins-enabled IDS --plugins-state-dir DIR [--plugins-topics a,b,c]] [--advertise-address IPV4] [--pairing] [--token T] [--source-url URL] (--tls-cert PEM --tls-key PEM [--tls-name NAME --tls-self-signed STATE_DIR [--tls-san NAME]...] | --tls-self-signed STATE_DIR [--tls-san NAME]... | --no-tls)] [--clink-link static|ble --state-dir DIR [--pin DIGITS | --pin-file PATH] [--port k=v,...] [--clink-transcode auto|off] [--clink-hevc auto|off|signal] [--clink-vehicle-data on|off] [--clink-trace DIR]] [--control-stdin]\nStatic (default): --clink-head-unit IP --clink-local IP. BLE: [--clink-adapter NAME (hci0)] [--clink-interface NAME (wlan0)] [--clink-address MAC] [--clink-name NAME] [--clink-model MODEL] [--clink-id ID] [--clink-band 0|1] [--clink-p2p-reserved on|off]. --clink-state-dir DIR saves handoff choices in DIR/carlink/ble-peers.json; absent keeps in-memory choices. --clink-scan window|continuous defaults to an 8 s window; continuous waits for the first match and renews discovery every 10 min. --clink-phone-mac MAC sends a validated unicast Bluetooth address instead of the Wi-Fi MAC. --clink-identity ble|legacy defaults to ble for BLE links: ble uses --clink-id/name for AUTH and keeps separate car trust; legacy restores the original AUTH defaults and pairing. BLE forbids static addresses. --clink-p2p-reserved defaults to off; the host must pass on while CarPlay reserves Wi-Fi Direct. Otherwise P2P requires supplicant D-Bus access, iw-confirmed interface/channel capacity and BusyBox udhcpc/ifconfig/mv; failures clean up before infrastructure fallback. Browser socket termination emits receiver-disconnected with client, code and reason (closed, timeout or error), using the receiver-info client ID. --pin-file clears stale input and waits up to 120 seconds per request. Replacement pairing requires explicit approval through --control-stdin. Incorrect PINs emit type=clink-pin, result=incorrect; session diagnostics emit type=diagnostic. Events use stdout with --unix, stderr with --stdio.\n--clink-trace DIR records Carlink JSONL and enables TS capture; --control-stdin reads JSON clear/capture, web-tls, clink-restart and clink-pairing commands and requires --unix.\nweb-tls replaces the trusted identity and self-signed SANs for new handshakes without disconnecting clients; requires --tls-self-signed at startup. Send one JSON line (4096 bytes maximum): {\"type\":\"web-tls\",\"id\":\"revision\",\"trusted\":{\"name\":\"relay.example\",\"cert\":\"/cert.pem\",\"key\":\"/key.pem\"},\"sans\":[\"192.168.1.1\"]}. trusted:null removes trusted TLS; sans is required (at most 24 DNS/IP names). Replies echo id with type=web-tls, applied=true and the served fingerprints/name, or error; advertise the new name only after success.\n--clink-hevc auto (default) uses H.265 for head units advertising iccoa_support_hevc: supported; off uses H.264; signal also sends the M4 support flag. The session codec stays fixed until reconnect.\nclink-restart replaces only Carlink; omitted picture/hevc/vehicleData settings retain their current choices. clink-pairing answers the matching request with approve, pin or cancel. --clink-vehicle-data on|off defaults to off.\n--clink-transcode auto (default) uses a suitable V4L2 M2M encoder for Carlink codec/profile conversion and active-area crop/stretch with touch remapping. A clink-restart picture fixes the outgoing frame size (for example 1280x720), independently of the input canvas. H.264 input can become H.265 for an HEVC Carlink session while web keeps H.264. off forwards unchanged.\n--web-transcode auto (default) converts incompatible iPhone codecs/profiles (including H.265 to H.264) for the browser when a suitable encoder exists; off forwards unchanged. Without an encoder both outputs retain passthrough behavior. type=transcode-capabilities status events report output, enabled, available, decode, encode (codec/maxWidth/maxHeight), scaling and description; null maxima mean unknown.\n--advertise-address overrides the IPv4 address in the pairing URL. Otherwise prefer the default-route interface, then Wi-Fi/Ethernet, then private address range.\n--tls-name requires PEM and self-signed TLS together: matching SNI uses PEM, ignoring ASCII case and a trailing dot; all other clients use self-signed TLS. NAME must be a DNS name with LDH labels, at most 253 characters. Unloadable PEM falls back to self-signed TLS. Without --tls-name, PEM is served to every client.\n--host-ui advertises receiver UI support and forwards one-shot host-ui requests to the recent touch client (5 s), otherwise all clients.\nPairing is off by default. --pairing generates an 8-digit code; --token T enables pairing with T and takes precedence over --pairing.";
 fn arguments() -> Result<(Args, Vec<String>)> {
     parse_arguments(std::env::args().skip(1))
 }
@@ -81,6 +81,7 @@ fn parse_arguments(raw: impl IntoIterator<Item = String>) -> Result<(Args, Vec<S
             "--clink-link",
             "--clink-adapter",
             "--clink-interface",
+            "--clink-p2p-reserved",
             "--clink-address",
             "--clink-name",
             "--clink-model",
@@ -144,6 +145,7 @@ fn clink_link_factory(args: &Args) -> Result<Option<LinkFactory>> {
     let ble_options = [
         "--clink-adapter",
         "--clink-interface",
+        "--clink-p2p-reserved",
         "--clink-address",
         "--clink-name",
         "--clink-model",
@@ -274,6 +276,8 @@ fn ble_config(args: &Args) -> Result<oxp_link_linux::Config> {
         .map(oxp_link_linux::normalized_bluetooth_address)
         .transpose()?;
     config.trace_advertisements = args.get("--clink-trace").is_some();
+    config.p2p_reserved_by_carplay =
+        oxp_link_linux::p2p_reserved(args.get("--clink-p2p-reserved").unwrap_or("off"))?;
     Ok(config)
 }
 
@@ -1095,6 +1099,7 @@ fn run_relay(shutdown: Arc<RelayShutdown>) -> Result<()> {
                 info.as_object_mut().unwrap().remove("type");
                 event(json!({"type":"receiver-info","client":id,"info":info}));
             } else {
+                // Host-only receiver-disconnected records use the same client ID as receiver-info.
                 let mut stats = value.clone();
                 stats["client"] = json!(id);
                 event(stats);
@@ -1934,6 +1939,37 @@ mod tests {
         parse_arguments(values.iter().map(|v| (*v).to_owned()))
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn p2p_reservation_flag_is_strict_ble_only_and_reaches_the_link_config() {
+        for (value, expected) in [("on", true), ("off", false)] {
+            let values = args(&[
+                "--clink-link",
+                "ble",
+                "--state-dir",
+                "/tmp/state",
+                "--clink-p2p-reserved",
+                value,
+            ]);
+            assert_eq!(
+                ble_config(&values).unwrap().p2p_reserved_by_carplay,
+                expected
+            );
+            assert!(clink_link(&values).unwrap().is_some());
+        }
+        assert!(!ble_config(&args(&[])).unwrap().p2p_reserved_by_carplay);
+        assert!(clink_link(&args(&["--clink-p2p-reserved", "on"])).is_err());
+        assert!(clink_link(&args(&[
+            "--clink-link",
+            "ble",
+            "--state-dir",
+            "/tmp/state",
+            "--clink-p2p-reserved",
+            "true"
+        ]))
+        .is_err());
+        assert!(parse_arguments(["--clink-p2p-reserved"].map(str::to_owned)).is_err());
     }
 
     #[test]

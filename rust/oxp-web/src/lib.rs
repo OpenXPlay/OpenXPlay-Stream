@@ -5,6 +5,9 @@
 // Only send_buffer may use unsafe code, for socket options that std does not expose.
 #![deny(unsafe_code)]
 mod audio_queue;
+mod disconnect;
+#[cfg(test)]
+mod disconnect_tests;
 mod host_queue;
 #[cfg(test)]
 mod host_queue_tests;
@@ -13,6 +16,8 @@ mod plugins;
 pub use plugins::PluginsConfig;
 mod send_buffer;
 use audio_queue::{valid_mic_packet, AudioQueue};
+use disconnect::Disconnect;
+use disconnect::WriteProgress;
 use host_queue::{HostQueue, QueuedHost};
 use pairing::{constant_time_token, HelloRateLimit};
 pub mod http;
@@ -135,6 +140,7 @@ struct Client {
     closing: bool,
     /// A handle on the client's TCP socket for kernel queue diagnostics.
     socket: Option<TcpStream>,
+    write_progress: Option<Arc<Mutex<WriteProgress>>>,
     /// Worst time from a video frame's receipt until its last byte was written to the socket, since
     /// the previous stats report.
     send_latency_us: Option<i64>,
@@ -158,6 +164,7 @@ impl Client {
             touched: BTreeSet::new(),
             closing: false,
             socket: None,
+            write_progress: None,
             send_latency_us: None,
             #[cfg(test)]
             written: Vec::new(),
@@ -727,6 +734,7 @@ impl Drop for WebOutput {
 struct SocketIo {
     socket: TcpStream,
     deadline: Option<Instant>,
+    write_progress: Arc<Mutex<WriteProgress>>,
 }
 impl Read for SocketIo {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -742,7 +750,12 @@ impl Read for SocketIo {
 }
 impl Write for SocketIo {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.socket.write(b)
+        let result = self.socket.write(b);
+        self.write_progress
+            .lock()
+            .unwrap()
+            .attempted(Instant::now(), &result, b.len());
+        result
     }
     fn flush(&mut self) -> io::Result<()> {
         self.socket.flush()
@@ -809,9 +822,11 @@ fn connection(
     socket.set_nodelay(true)?;
     let send_bound = send_buffer::bound(&socket, config.unsent_limit_bytes);
     socket.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let write_progress = Arc::new(Mutex::new(WriteProgress::default()));
     let socket = SocketIo {
         socket,
         deadline: Some(Instant::now() + Duration::from_secs(5)),
+        write_progress: write_progress.clone(),
     };
     let mut transport = if let Some(t) = tls {
         Transport::Secure(Box::new(rustls::StreamOwned::new(
@@ -928,16 +943,23 @@ fn connection(
     eprintln!("{log}");
     let mut client = Client::new(config.queue_duration_us);
     client.socket = ws.get_ref().socket().try_clone().ok();
+    client.write_progress = Some(write_progress);
     state.lock().unwrap().clients.insert(id.clone(), client);
     let result = client_loop(&mut ws, &id, config, state, run, hello_rate_limit, address);
-    if result.is_err() {
+    let disconnected = if let Ok(disconnected) = &result {
+        *disconnected
+    } else {
         let _ = close(&mut ws, 1002);
-    }
+        Disconnect::error(result.as_ref().unwrap_err().as_ref())
+    };
     let (host, touched) = {
         let mut s = state.lock().unwrap();
         let c = s.clients.remove(&id);
         (s.host.clone(), c.map(|c| c.touched).unwrap_or_default())
     };
+    if let Some(callback) = &config.diagnostics {
+        callback(&id, &disconnected.json());
+    }
     if let Some(host) = host {
         for screen in touched {
             host.control(ControlEvent::Touch {
@@ -951,7 +973,7 @@ fn connection(
         }
     }
     report_caps(state);
-    result
+    result.map(|_| ())
 }
 fn transient(e: &Error) -> bool {
     matches!(e,Error::Io(e) if matches!(e.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::TimedOut))
@@ -971,13 +993,24 @@ fn client_loop<S: Read + Write>(
     run: &Runtime,
     hello_rate_limit: &Mutex<HelloRateLimit>,
     address: std::net::IpAddr,
-) -> Result<()> {
+) -> Result<Disconnect> {
     let clock = Instant::now();
     let mut sequences = [0u32; 256];
     let mut audio_sequences = [0u32; 256];
     // The video frame (screen, pts, receipt) whose bytes may still wait in user-space buffers.
     let mut unwritten = None;
     while run.active.load(Ordering::Acquire) {
+        let timed_out = state
+            .lock()
+            .unwrap()
+            .clients
+            .get(id)
+            .and_then(|c| c.write_progress.as_ref())
+            .is_some_and(|p| p.lock().unwrap().timed_out(Instant::now()));
+        if timed_out {
+            // A close frame cannot reach a peer that stopped reading. Drop this socket only.
+            return Ok(Disconnect::timeout(1011));
+        }
         // Limit each batch so a continuously sending client cannot starve media or close handling.
         for _ in 0..32 {
             match ws.read() {
@@ -1073,9 +1106,9 @@ fn client_loop<S: Read + Write>(
                         host.control(event);
                     }
                 }
-                Ok(Message::Close(_)) => {
+                Ok(Message::Close(frame)) => {
                     let _ = ws.flush();
-                    return Ok(());
+                    return Ok(Disconnect::closed(frame.map_or(1005, |f| f.code.into())));
                 }
                 Ok(_) => {}
                 Err(e) if transient(&e) => break,
@@ -1089,7 +1122,8 @@ fn client_loop<S: Read + Write>(
             .get(id)
             .is_some_and(|c| c.hello.is_some());
         if !established && clock.elapsed() > Duration::from_secs(5) {
-            return close(ws, 1008);
+            let _ = close(ws, 1008);
+            return Ok(Disconnect::timeout(1008));
         }
         // A congested socket must not delay the request that recovers from its own drops.
         request_keyframes(id, state);
@@ -1111,7 +1145,7 @@ fn client_loop<S: Read + Write>(
             let (message, frame, audio, closing) = {
                 let mut s = state.lock().unwrap();
                 let Some(c) = s.clients.get_mut(id) else {
-                    return Ok(());
+                    return Ok(Disconnect::closed(1001));
                 };
                 let (message, frame, audio) = c.poll();
                 (message, frame, audio, c.closing)
@@ -1220,12 +1254,12 @@ fn request_keyframes(id: &str, state: &Mutex<State>) {
         }
     }
 }
-fn close<S: Read + Write>(ws: &mut WebSocket<S>, code: u16) -> Result<()> {
+fn close<S: Read + Write>(ws: &mut WebSocket<S>, code: u16) -> Result<Disconnect> {
     let _ = ws.close(Some(CloseFrame {
         code: CloseCode::from(code),
         reason: "".into(),
     }));
-    Ok(())
+    Ok(Disconnect::closed(code))
 }
 fn handle(
     v: Value,

@@ -20,6 +20,18 @@ mod command;
 mod network;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod p2p;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod p2p_dhcp;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod p2p_radio;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod p2p_supplicant;
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod peers;
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -65,10 +77,20 @@ impl ScanMode {
     }
 }
 
+pub fn p2p_reserved(value: &str) -> Result<bool> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err("P2P reservation must be on or off".into()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bluetooth_adapter: String,
     pub wifi_interface: String,
+    /// The relay must reserve P2P while CarPlay owns or is about to own Wi-Fi Direct.
+    pub p2p_reserved_by_carplay: bool,
     pub address_type: AddressType,
     pub device_id: String,
     pub device_name: String,
@@ -93,6 +115,7 @@ impl Default for Config {
         Self {
             bluetooth_adapter: "hci0".into(),
             wifi_interface: "wlan0".into(),
+            p2p_reserved_by_carplay: false,
             address_type: AddressType::Random,
             device_id: "openxplay-pi".into(),
             device_name: "OpenXPlay".into(),
@@ -540,7 +563,7 @@ impl LinuxClinkLink {
                 address: device.address,
                 name: device.advertisement.name,
                 ssid: reply.ssid,
-                interface: self.config.wifi_interface.clone(),
+                interface: network.interface().into(),
                 addresses: addresses.clone(),
             });
             *active = Some(Active { network, stop });

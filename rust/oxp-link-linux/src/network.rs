@@ -16,9 +16,16 @@ pub(crate) struct Network {
     pub id: String,
     interface: String,
     timeout: Duration,
+    p2p: Option<crate::p2p::P2pNetwork>,
 }
 impl Network {
+    pub(crate) fn interface(&self) -> &str {
+        self.p2p.as_ref().map_or(&self.interface, |p| p.interface())
+    }
     pub(crate) fn leave(&self) -> Result<()> {
+        if let Some(p2p) = &self.p2p {
+            return p2p.leave();
+        }
         self.leave_before(Instant::now() + self.timeout.min(Duration::from_millis(800)))
     }
     fn leave_before(&self, deadline: Instant) -> Result<()> {
@@ -35,6 +42,9 @@ impl Network {
         Ok(())
     }
     pub(crate) fn alive(&self, expected: &ClinkAddresses) -> Result<()> {
+        if let Some(p2p) = &self.p2p {
+            return p2p.alive(expected);
+        }
         let end = Instant::now() + self.timeout;
         let active = run(
             "nmcli",
@@ -109,24 +119,46 @@ pub(crate) fn join(
     struct Backend<'a> {
         config: &'a Config,
         device_id: String,
+        capability: crate::join_policy::P2pCapability,
+        supplicant: Option<crate::p2p_supplicant::WpaSupplicant>,
     }
     impl crate::join_policy::WifiJoinBackend for Backend<'_> {
         type Connection = (Network, ClinkAddresses);
         fn p2p_capability(&self) -> crate::join_policy::P2pCapability {
-            // A radio alone is insufficient: the Linux P2P client arrives in wave 3.
-            crate::join_policy::P2pCapability::Unavailable
+            self.capability
         }
-        fn join_p2p(&mut self, _: &HeadUnitReply) -> Result<Self::Connection> {
-            Err("wifi_join_p2p_unsupported".into())
+        fn join_p2p(&mut self, reply: &HeadUnitReply) -> Result<Self::Connection> {
+            let (p2p, addresses) = crate::p2p::P2pNetwork::join(
+                self.supplicant.take().ok_or("p2p_device_unavailable")?,
+                self.config,
+                reply,
+                self.device_id.clone(),
+            )?;
+            Ok((
+                Network {
+                    id: String::new(),
+                    interface: self.config.wifi_interface.clone(),
+                    timeout: self.config.command_timeout,
+                    p2p: Some(p2p),
+                },
+                addresses,
+            ))
         }
         fn join_infrastructure(&mut self, reply: &HeadUnitReply) -> Result<Self::Connection> {
             join_infrastructure(self.config, reply, self.device_id.clone())
         }
     }
+    #[cfg(target_os = "linux")]
+    crate::signals::check()?;
+    let (capability, supplicant) = crate::p2p::probe(c, reply, emit);
+    #[cfg(target_os = "linux")]
+    crate::signals::check()?;
     crate::join_policy::join_with(
         &mut Backend {
             config: c,
             device_id,
+            capability,
+            supplicant,
         },
         reply,
         emit,
@@ -143,6 +175,7 @@ fn join_infrastructure(
         id,
         interface: c.wifi_interface.clone(),
         timeout: c.command_timeout,
+        p2p: None,
     };
     let deadline = Instant::now() + c.join_timeout;
     let result = (|| {
@@ -243,6 +276,7 @@ pub(crate) fn leave(c: &Config) -> Result<()> {
             id: id.into(),
             interface: c.wifi_interface.clone(),
             timeout: c.command_timeout,
+            p2p: None,
         }
         .leave_before(deadline)?;
     }

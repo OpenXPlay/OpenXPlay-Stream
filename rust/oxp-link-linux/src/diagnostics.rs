@@ -143,6 +143,14 @@ pub(crate) fn code(error: &(dyn Error + 'static)) -> String {
         | "network_ipv4_unavailable"
         | "network_link_lost"
         | "phone_bootstrap_limit"
+        | "p2p_bus_invalid"
+        | "p2p_device_unavailable"
+        | "p2p_dhcp_failed"
+        | "p2p_dhcp_invalid"
+        | "p2p_dhcp_stopped"
+        | "p2p_group_mismatch"
+        | "p2p_join_timeout"
+        | "p2p_phy_unavailable"
         | "selected_vehicle_not_discovered"
         | "shutdown_requested"
         | "system_tool_failed"
@@ -150,6 +158,7 @@ pub(crate) fn code(error: &(dyn Error + 'static)) -> String {
         | "unexpected_bluetooth_notification"
         | "unexpected_bluetooth_response"
         | "vehicle_not_discovered"
+        | "wifi_join_p2p_cleanup_failed"
         | "wifi_join_p2p_unsupported" => text,
         _ => "unknown_error".into(),
     }

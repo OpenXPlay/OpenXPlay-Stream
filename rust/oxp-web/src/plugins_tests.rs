@@ -524,6 +524,7 @@ fn socket_channel(
         ready.send(()).unwrap();
         let _ = p.channel_with_timing(
             Transport::Plain(crate::SocketIo {
+                write_progress: Arc::new(Mutex::new(crate::WriteProgress::default())),
                 socket,
                 deadline: None,
             }),

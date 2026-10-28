@@ -27,6 +27,7 @@ impl JoinMethod {
 }
 /// A backend owns and cleans up its P2P attempt before returning an error.
 /// Unavailable includes platforms without a P2P client implementation.
+/// wifi_join_p2p_cleanup_failed prevents fallback when resources could not be released safely.
 pub trait WifiJoinBackend {
     type Connection;
     fn p2p_capability(&self) -> P2pCapability;
@@ -72,7 +73,10 @@ pub fn join_with<B: WifiJoinBackend>(
             Ok(connection) => return Ok(connection),
             Err(error) => {
                 let code = diagnostics::code(error.as_ref());
-                if code == "shutdown_requested" {
+                if matches!(
+                    code.as_str(),
+                    "shutdown_requested" | "wifi_join_p2p_cleanup_failed"
+                ) {
                     return Err(error);
                 }
                 emit(LinkEvent::Trace {
