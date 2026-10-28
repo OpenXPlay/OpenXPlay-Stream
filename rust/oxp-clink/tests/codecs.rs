@@ -759,7 +759,11 @@ fn aac_negotiation_requires_lc_bit_and_complete_entry() {
 fn m3_hevc_flag_and_mode_control_decoders_without_echoing_in_m4() {
     assert_eq!(ClinkHevcMode::default(), ClinkHevcMode::Auto);
     let fixture = include_str!("../../../kotlin/clink/src/test/resources/head-unit-wfd.txt");
-    for mode in [ClinkHevcMode::Auto, ClinkHevcMode::Off] {
+    for mode in [
+        ClinkHevcMode::Auto,
+        ClinkHevcMode::Off,
+        ClinkHevcMode::Signal,
+    ] {
         for flag in [
             None,
             Some("supported"),
@@ -785,27 +789,24 @@ fn m3_hevc_flag_and_mode_control_decoders_without_echoing_in_m4() {
                 .handle(&response(&get, &body), &display)
                 .unwrap()
                 .remove(0);
-            let enabled = mode == ClinkHevcMode::Auto && flag == Some("supported");
+            let enabled = mode != ClinkHevcMode::Off && flag == Some("supported");
             assert_eq!(source.iccoa_support_hevc.as_deref(), flag);
             assert_eq!(source.hevc_enabled(), enabled);
+            assert_eq!(source.decoders.len(), 1);
             assert_eq!(
-                source.decoders[0],
-                DecoderSupport {
-                    codec_string: "avc1.42E01F".into(),
-                    hardware: true
+                source.decoders[0].codec_string,
+                if enabled {
+                    "hvc1.1.6.L123.B0"
+                } else {
+                    "avc1.42E01F"
                 }
             );
-            assert_eq!(source.decoders.len(), if enabled { 2 } else { 1 });
-            if enabled {
-                assert_eq!(
-                    source.decoders[1],
-                    DecoderSupport {
-                        codec_string: "hvc1.1.6.L123.B0".into(),
-                        hardware: true
-                    }
-                );
-            }
-            assert!(!parameters(&m4.body).contains_key("iccoa_support_hevc"));
+            assert_eq!(
+                parameters(&m4.body)
+                    .get("iccoa_support_hevc")
+                    .map(String::as_str),
+                (enabled && mode == ClinkHevcMode::Signal).then_some("supported")
+            );
         }
     }
 }

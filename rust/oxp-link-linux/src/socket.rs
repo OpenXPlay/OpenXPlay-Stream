@@ -7,6 +7,12 @@ use oxp_clink::Result;
 use std::{io, mem::size_of, time::Instant};
 
 const BTPROTO_L2CAP: libc::c_int = 0;
+fn failure(code: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(crate::diagnostics::PlatformFailure::io(
+        code,
+        io::Error::last_os_error(),
+    ))
+}
 
 #[repr(C)]
 struct SockaddrL2 {
@@ -60,7 +66,7 @@ impl NativeSocket {
             )
         };
         if fd < 0 {
-            return Err("bluetooth_socket_failed".into());
+            return Err(failure("bluetooth_socket_failed"));
         }
         let s = Self { fd, deadline };
         // SAFETY: local is an initialized repr(C) sockaddr_l2 with its exact size.
@@ -72,7 +78,7 @@ impl NativeSocket {
             )
         };
         if rc < 0 {
-            return Err("bluetooth_bind_failed".into());
+            return Err(failure("bluetooth_bind_failed"));
         }
         // SAFETY: remote is an initialized repr(C) sockaddr_l2 with its exact size.
         let rc = unsafe {
@@ -84,7 +90,7 @@ impl NativeSocket {
         };
         if rc < 0 {
             if io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
-                return Err("bluetooth_connect_failed".into());
+                return Err(failure("bluetooth_connect_failed"));
             }
             s.poll(libc::POLLOUT)?;
             let mut code: libc::c_int = 0;
@@ -99,8 +105,15 @@ impl NativeSocket {
                     &mut len,
                 )
             };
-            if rc < 0 || code != 0 {
-                return Err("bluetooth_connect_failed".into());
+            if rc < 0 {
+                return Err(failure("bluetooth_connect_failed"));
+            }
+            if code != 0 {
+                return Err(crate::diagnostics::PlatformFailure::io(
+                    "bluetooth_connect_failed",
+                    io::Error::from_raw_os_error(code),
+                )
+                .into());
             }
         }
         Ok(s)
@@ -123,7 +136,7 @@ impl NativeSocket {
                 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                return Err("bluetooth_socket_failed".into());
+                return Err(failure("bluetooth_socket_failed"));
             }
             if p.revents & event != 0 {
                 return Ok(());
@@ -160,7 +173,7 @@ impl Socket for NativeSocket {
             }
             match io::Error::last_os_error().kind() {
                 io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock => continue,
-                _ => return Err("bluetooth_write_failed".into()),
+                _ => return Err(failure("bluetooth_write_failed")),
             }
         }
     }
@@ -180,7 +193,7 @@ impl Socket for NativeSocket {
             }
             match io::Error::last_os_error().kind() {
                 io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock => continue,
-                _ => return Err("bluetooth_read_failed".into()),
+                _ => return Err(failure("bluetooth_read_failed")),
             }
         }
     }

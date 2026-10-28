@@ -122,13 +122,12 @@ impl ClinkTransport for MemoryTransport {
         self.offers.lock().unwrap().push(service);
         Ok(())
     }
-    fn open(&self, service: u16, _: Duration) -> Result<Arc<dyn ClinkStream>> {
-        Ok(self
-            .streams
-            .lock()
-            .unwrap()
-            .remove(&service)
-            .ok_or("unknown_service")?)
+    fn open(&self, service: u16, timeout: Duration) -> Result<Arc<dyn ClinkStream>> {
+        if let Some(stream) = self.streams.lock().unwrap().remove(&service) {
+            return Ok(stream);
+        }
+        thread::sleep(timeout.min(Duration::from_millis(2)));
+        Err(io::Error::from(io::ErrorKind::TimedOut).into())
     }
     fn authenticated(&self) -> Result<()> {
         self.authenticated.store(true, Ordering::Release);
@@ -492,14 +491,13 @@ fn repin_after_key_change(full: bool) {
         expected.push("pin".to_owned());
     }
     expected.extend([
-        "forget".to_owned(),
+        "confirm".to_owned(),
         format!("auth repin reason={reason}"),
         "pin".to_owned(),
-        "confirm".to_owned(),
     ]);
     assert_eq!(*events, expected);
     // Trust is saved only after the later certificate check, never just after AUTH.
-    assert!(pairing.peer.lock().unwrap().is_none());
+    assert!(pairing.peer.lock().unwrap().is_some());
 }
 #[test]
 fn quick_auth_repins_once_on_the_same_transport_after_key_change() {
@@ -517,6 +515,7 @@ fn repin_is_attempted_only_once_even_if_the_new_signature_also_fails() {
         peer: Mutex::new(Some(
             old.public_key().to_encoded_point(false).as_bytes()[1..].to_vec(),
         )),
+        confirm: true,
         ..Default::default()
     });
     let mut running = RunningSession::new(
@@ -543,8 +542,34 @@ fn repin_is_attempted_only_once_even_if_the_new_signature_also_fails() {
     );
     assert_eq!(
         *pairing.events.lock().unwrap(),
-        ["forget", "auth repin reason=auth_signature_failed", "pin"]
+        ["confirm", "auth repin reason=auth_signature_failed", "pin"]
     );
+}
+#[test]
+fn rejecting_key_replacement_keeps_trust_and_sends_no_full_pairing_request() {
+    let old = SecretKey::random(&mut OsRng);
+    let pinned = old.public_key().to_encoded_point(false).as_bytes()[1..].to_vec();
+    let pairing = Arc::new(Pairing {
+        peer: Mutex::new(Some(pinned.clone())),
+        ..Default::default()
+    });
+    let mut running = RunningSession::new(
+        pairing.clone(),
+        pairing.clone(),
+        pairing.clone(),
+        None,
+        false,
+    );
+    let auth = &running.peers[&ClinkPorts::default().auth];
+    let request = Frame::decode(&auth.message()).unwrap();
+    let (response, _) = auth_response(&request, &SecretKey::random(&mut OsRng), "123456");
+    auth.write_all(&response.encode().unwrap()).unwrap();
+    assert_eq!(
+        running.finish().unwrap_err().to_string(),
+        "pairing_confirmation_cancelled"
+    );
+    assert_eq!(*pairing.events.lock().unwrap(), ["confirm"]);
+    assert_eq!(*pairing.peer.lock().unwrap(), Some(pinned));
 }
 #[test]
 fn incorrect_pin_is_reported_for_both_result_code_and_proof_failure_without_retrying() {
@@ -616,8 +641,16 @@ mod media_output {
         views: Mutex<Vec<(u32, u32)>>,
         reports: Mutex<Vec<ClinkStatistics>>,
         errors: Mutex<Vec<String>>,
+        vehicle: Mutex<Vec<(Origin, VehicleData)>>,
+        sensor: Mutex<Vec<(bool, u64)>>,
     }
     impl ClinkListener for Probe {
+        fn vehicle(&self, origin: Origin, data: VehicleData) {
+            self.vehicle.lock().unwrap().push((origin, data));
+        }
+        fn vehicle_state(&self, active: bool, malformed: u64) {
+            self.sensor.lock().unwrap().push((active, malformed));
+        }
         fn view_size(&self, width: u32, height: u32) {
             self.views.lock().unwrap().push((width, height));
         }
@@ -655,6 +688,7 @@ mod media_output {
         }
     }
     struct Output {
+        vehicle_data: bool,
         output: ClinkOutput,
         transport: Arc<MemoryTransport>,
         probe: Arc<Probe>,
@@ -669,6 +703,13 @@ mod media_output {
         fn with_trace(
             hevc: ClinkHevcMode,
             trace: Option<Arc<dyn oxp_clink::trace::ClinkTrace>>,
+        ) -> Self {
+            Self::with_vehicle_options(hevc, trace, false)
+        }
+        fn with_vehicle_options(
+            hevc: ClinkHevcMode,
+            trace: Option<Arc<dyn oxp_clink::trace::ClinkTrace>>,
+            vehicle_data: bool,
         ) -> Self {
             let transport = Arc::new(MemoryTransport {
                 streams: Mutex::new(BTreeMap::new()),
@@ -685,11 +726,13 @@ mod media_output {
             .with_options(SessionOptions {
                 hevc,
                 trace,
+                vehicle_data,
                 ..Default::default()
             })
             .unwrap()
             .with_listener(probe.clone());
             Self {
+                vehicle_data,
                 output,
                 transport,
                 probe,
@@ -712,7 +755,10 @@ mod media_output {
                 ports.rtsp,
                 ports.uibc,
                 ports.rtp,
-            ] {
+            ]
+            .into_iter()
+            .chain(self.vehicle_data.then_some(ports.sensor))
+            {
                 let (stream, peer) = MemoryStream::pair();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(30)))
@@ -1096,7 +1142,10 @@ mod media_output {
             let rtp = &peers[&ClinkPorts::default().rtp];
             assert_transport_codec(rtp, codec);
             let decoders = test.probe.decoders.lock().unwrap().last().unwrap().clone();
-            assert!(decoders.iter().any(|d| d.codec_string.starts_with("avc1.")));
+            assert_eq!(
+                decoders.iter().any(|d| d.codec_string.starts_with("avc1.")),
+                codec == VideoCodec::H264
+            );
             assert_eq!(
                 decoders
                     .iter()
@@ -1240,5 +1289,138 @@ mod media_output {
         }
         let session = events.iter().find(|e| e["type"] == "Frame").unwrap()["session"].clone();
         assert!(events.iter().all(|e| e["session"] == session));
+    }
+    #[test]
+    fn sensor_is_opt_in_and_malformed_frames_do_not_end_projection() {
+        for enabled in [false, true] {
+            let test = Output::with_vehicle_options(ClinkHevcMode::Off, None, enabled);
+            let (peers, key) = test.connect();
+            let ports = ClinkPorts::default();
+            assert_eq!(
+                test.transport
+                    .offers
+                    .lock()
+                    .unwrap()
+                    .contains(&ports.sensor),
+                enabled
+            );
+            let send = |port, method, kind, body: &[u8]| {
+                let frame = Frame {
+                    sequence: 300,
+                    unix_seconds: 0,
+                    source: 0,
+                    format: 1,
+                    kind,
+                    category: if port == ports.sensor { 2 } else { 1 },
+                    method,
+                    body: SecureRecord::new(&key).unwrap().seal(body).unwrap(),
+                };
+                peers[&port].write_all(&frame.encode().unwrap()).unwrap();
+            };
+            send(ports.control, 15, 3, &[8, 2]);
+            if enabled {
+                await_condition("day/night", || {
+                    !test.probe.vehicle.lock().unwrap().is_empty()
+                });
+                let sensor = &peers[&ports.sensor];
+                send(ports.sensor, 4, 0, &[9, 0]);
+                let mut crc = Frame {
+                    sequence: 301,
+                    unix_seconds: 0,
+                    source: 0,
+                    format: 1,
+                    kind: 0,
+                    category: 2,
+                    method: 5,
+                    body: vec![],
+                }
+                .encode()
+                .unwrap();
+                crc[19] ^= 1;
+                let gcm = Frame {
+                    sequence: 302,
+                    unix_seconds: 0,
+                    source: 0,
+                    format: 1,
+                    kind: 0,
+                    category: 2,
+                    method: 5,
+                    body: vec![0],
+                }
+                .encode()
+                .unwrap();
+                sensor.write_all(&[crc, gcm].concat()).unwrap();
+                send(ports.sensor, 5, 3, &[8, 10, 16, 7]);
+                let ack = Frame::decode(&sensor.message()).unwrap();
+                assert_eq!((ack.category, ack.kind, ack.sequence), (7, 2, 300));
+                await_condition("three malformed reports", || {
+                    test.probe.sensor.lock().unwrap().contains(&(true, 3))
+                });
+                let reports = test.probe.vehicle.lock().unwrap();
+                assert_eq!(reports.len(), 2);
+                assert_eq!(reports[1].0.client_id, "memory-car");
+                assert_eq!(
+                    reports[1].1,
+                    VehicleData::Fuel {
+                        max: 10,
+                        current: 7
+                    }
+                );
+                drop(reports);
+                sensor.write_all(&1u32.to_be_bytes()).unwrap();
+                await_condition("only sensor closes", || {
+                    test.probe.sensor.lock().unwrap().contains(&(false, 4))
+                });
+                send(ports.control, 15, 0, &[8, 1]);
+                await_condition("day/night after sensor loss", || {
+                    test.probe.vehicle.lock().unwrap().len() == 3
+                });
+                let (stream, reconnected) = MemoryStream::pair();
+                test.transport
+                    .streams
+                    .lock()
+                    .unwrap()
+                    .insert(ports.sensor, stream);
+                await_condition("sensor reconnect", || {
+                    test.probe.sensor.lock().unwrap().contains(&(true, 4))
+                });
+                reconnected
+                    .write_all(
+                        &Frame {
+                            sequence: 400,
+                            unix_seconds: 0,
+                            source: 0,
+                            format: 1,
+                            kind: 0,
+                            category: 2,
+                            method: 5,
+                            body: SecureRecord::new(&key)
+                                .unwrap()
+                                .seal(&[8, 20, 16, 9])
+                                .unwrap(),
+                        }
+                        .encode()
+                        .unwrap(),
+                    )
+                    .unwrap();
+                await_condition("reconnected sensor report", || {
+                    test.probe.vehicle.lock().unwrap().len() == 4
+                });
+                assert_eq!(
+                    test.probe.vehicle.lock().unwrap()[3].1,
+                    VehicleData::Fuel {
+                        max: 20,
+                        current: 9
+                    }
+                );
+                assert_transport_codec(&peers[&ports.rtp], VideoCodec::H264);
+            } else {
+                thread::sleep(Duration::from_millis(50));
+                assert!(test.probe.vehicle.lock().unwrap().is_empty());
+                assert!(test.probe.sensor.lock().unwrap().is_empty());
+            }
+            assert!(test.probe.errors.lock().unwrap().is_empty());
+            test.close();
+        }
     }
 }

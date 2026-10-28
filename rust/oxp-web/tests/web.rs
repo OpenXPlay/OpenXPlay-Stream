@@ -431,7 +431,7 @@ fn tls_loopback_hello_video_controls_pause_clock_and_persistence() {
     hello["token"] = json!("wrong");
     send(&mut bad, hello);
     assert!(
-        matches!(bad.read().unwrap(),Message::Close(Some(c)) if c.code==tungstenite::protocol::frame::coding::CloseCode::Policy)
+        matches!(bad.read().unwrap(),Message::Close(Some(c)) if c.code==tungstenite::protocol::frame::coding::CloseCode::from(oxp_web::PAIRING_REQUIRED))
     );
     web.close();
 }

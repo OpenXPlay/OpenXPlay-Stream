@@ -8,6 +8,7 @@ pub mod clink_support;
 pub mod clink_trace;
 pub mod event_log;
 pub mod replay_audio;
+pub mod web_control;
 use base64::{engine::general_purpose::STANDARD, Engine};
 pub use event_log::EventLog;
 use oxp_core::model::AudioCodec;

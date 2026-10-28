@@ -34,7 +34,7 @@ impl Network {
         run_cleanup("nmcli", &["connection", "delete", "id", &self.id], deadline)?;
         Ok(())
     }
-    pub(crate) fn alive(&self, expected: &ClinkAddresses) -> bool {
+    pub(crate) fn alive(&self, expected: &ClinkAddresses) -> Result<()> {
         let end = Instant::now() + self.timeout;
         let active = run(
             "nmcli",
@@ -47,12 +47,14 @@ impl Network {
             ],
             end,
         );
-        if !active.is_ok_and(|s| s.trim() == self.id) {
-            return false;
+        if active?.trim() != self.id {
+            return Err("network_link_lost".into());
         }
-        endpoints(&self.interface, end).is_ok_and(|(local, peer)| {
-            local == expected.local_ipv4 && peer == expected.head_unit_ipv4
-        })
+        let (local, peer) = endpoints(&self.interface, end)?;
+        if local != expected.local_ipv4 || peer != expected.head_unit_ipv4 {
+            return Err("network_link_lost".into());
+        }
+        Ok(())
     }
 }
 fn ipv4(s: &str) -> Result<Ipv4Addr> {
@@ -99,6 +101,38 @@ fn endpoints(interface: &str, deadline: Instant) -> Result<(Ipv4Addr, Ipv4Addr)>
     parse_endpoints(&local, &options)
 }
 pub(crate) fn join(
+    c: &Config,
+    reply: &HeadUnitReply,
+    device_id: String,
+    emit: &mut dyn FnMut(crate::LinkEvent),
+) -> Result<(Network, ClinkAddresses)> {
+    struct Backend<'a> {
+        config: &'a Config,
+        device_id: String,
+    }
+    impl crate::join_policy::WifiJoinBackend for Backend<'_> {
+        type Connection = (Network, ClinkAddresses);
+        fn p2p_capability(&self) -> crate::join_policy::P2pCapability {
+            // A radio alone is insufficient: the Linux P2P client arrives in wave 3.
+            crate::join_policy::P2pCapability::Unavailable
+        }
+        fn join_p2p(&mut self, _: &HeadUnitReply) -> Result<Self::Connection> {
+            Err("wifi_join_p2p_unsupported".into())
+        }
+        fn join_infrastructure(&mut self, reply: &HeadUnitReply) -> Result<Self::Connection> {
+            join_infrastructure(self.config, reply, self.device_id.clone())
+        }
+    }
+    crate::join_policy::join_with(
+        &mut Backend {
+            config: c,
+            device_id,
+        },
+        reply,
+        emit,
+    )
+}
+fn join_infrastructure(
     c: &Config,
     reply: &HeadUnitReply,
     device_id: String,
