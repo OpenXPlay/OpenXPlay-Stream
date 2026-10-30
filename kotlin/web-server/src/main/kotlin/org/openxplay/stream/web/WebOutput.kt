@@ -4,6 +4,7 @@
 
 package org.openxplay.stream.web
 
+import java.io.EOFException
 import java.io.FilterInputStream
 import java.io.InputStream
 import java.net.InetSocketAddress
@@ -247,6 +248,7 @@ public class WebOutput(
         val run = synchronized(hostGate) {
             synchronized(lock) {
                 val current = runtime ?: return
+                current.clients.values.forEach { it.reportEnd(1001, "relay", "stopped") }
                 current.active = false
                 runtime = null; formats.clear(); audioFormats.clear(); microphones.clear(); state = SessionState(SessionId(0), SessionPhase.CONNECTING)
                 current
@@ -298,6 +300,11 @@ public class WebOutput(
         fun report(key: Any, action: (OutputHost) -> Unit) {
             if (!active) return
             hostQueue.report(key) { synchronized(hostGate) { if (active) action(outputHost) } }
+        }
+
+        /** Lifecycle reports survive shutdown and cannot be coalesced with another client. */
+        fun lifecycle(origin: Origin, type: String, message: JsonObject) {
+            hostQueue.essential { outputHost.receiverDiagnostics(origin, type, message.toString()) }
         }
 
         /** Closes clients whose socket write has made no progress for the write timeout. */
@@ -418,19 +425,28 @@ public class WebOutput(
                     upgrade(request, socket.getOutputStream()); upgraded = true
                     input.deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
                     val current = Client(this, socket)
-                    client = current
-                    synchronized(lock) { if (!active) return; clients[current.clientId] = current }
+                    synchronized(lock) {
+                        if (!active) return
+                        client = current
+                        clients[current.clientId] = current
+                        lifecycle(current.origin, "client-opened", buildJsonObject {
+                            put("secure", socket is SSLSocket); put("activeClients", clients.values.count { !it.closing })
+                        })
+                    }
                     thread("writer-${current.clientId}") { current.write() }
                     current.read(input)
                 } else serveStatic(request, config.staticAssetRoot, socket.getOutputStream())
             } catch (e: HttpFailure) {
                 if (!upgraded) try { httpError(socket.getOutputStream(), e.status); drainBeforeClose(socket) } catch (_: Exception) { }
-            } catch (e: WebSocketFailure) { client?.finish(e.code) }
-            catch (_: SocketTimeoutException) { client?.finish(1008) }
-            catch (_: Exception) { client?.finish(1002) }
+            } catch (e: WebSocketFailure) { client?.finish(e.code, cause = "protocol_error", peerReason = e.javaClass.simpleName) }
+            catch (_: SocketTimeoutException) { client?.finish(1008, cause = "read_timeout") }
+            catch (_: EOFException) { client?.finish(1002, by = "peer", cause = "peer_eof") }
+            catch (e: Exception) { client?.finish(1002, by = if (e is java.net.SocketException) "peer" else "relay",
+                cause = if (e is java.net.SocketException && e.message?.contains("reset", true) == true) "peer_reset" else "io_error",
+                peerReason = e.javaClass.simpleName) }
             finally {
                 if (mediaReserved) mediaConnections.decrementAndGet()
-                if (client == null) safelyClose(socket) else client.finish(1000)
+                if (client == null) safelyClose(socket) else client.finish(1000, cause = if (active) "peer_eof" else "stopped", by = if (active) "peer" else "relay")
                 synchronized(lock) { if (client == null) sockets.remove(socket) }
             }
         }
@@ -463,6 +479,26 @@ public class WebOutput(
         private val touched = mutableSetOf<ScreenId>()
         @Volatile private var output: ProgressOutputStream? = null
         private var writeTimedOut = false
+        private val openedAt = System.nanoTime()
+        @Volatile private var lastReceivedAt = openedAt
+        private var endReported = false
+        private var videoFramesSent = 0L
+
+        fun reportEnd(code: Int, by: String, cause: String, peerReason: String = "", stalled: Long = stalledNanos(System.nanoTime())) {
+            synchronized(lock) {
+                if (endReported) return
+                endReported = true
+                val now = System.nanoTime()
+                run.lifecycle(origin, "client-closed", buildJsonObject {
+                    put("by", by); put("cause", cause); put("code", code); put("peerReason", peerReason.filterNot { it.isISOControl() }.take(160))
+                    put("durationMs", TimeUnit.NANOSECONDS.toMillis((now - openedAt).coerceAtLeast(0)))
+                    put("rxIdleMs", TimeUnit.NANOSECONDS.toMillis((now - lastReceivedAt).coerceAtLeast(0)))
+                    put("txStalledMs", TimeUnit.NANOSECONDS.toMillis(stalled))
+                    put("videoFramesSent", videoFramesSent); put("droppedFrames", droppedFrames)
+                    put("bytesSent", output?.bytesSent?.get() ?: 0)
+                })
+            }
+        }
 
         fun stalledNanos(now: Long): Long = output?.stalledNanos(now) ?: 0
 
@@ -474,7 +510,7 @@ public class WebOutput(
                 put("stalledMs", TimeUnit.NANOSECONDS.toMillis(stalledNanos))
             }.toString()
             run.report(clientId to "relay-close") { it.receiverDiagnostics(origin, "relay-close", reason) }
-            finish(1011)
+            finish(1011, cause = "write_timeout", stalled = stalledNanos)
             abort()
         }
 
@@ -487,7 +523,7 @@ public class WebOutput(
         }
 
         fun audioFormat(message: JsonObject) {
-            if (!audio.format(message)) { finish(1009); return }
+            if (!audio.format(message)) { finish(1009, cause = "queue_overflow"); return }
             wake.release()
         }
         fun json(message: JsonObject, stampPong: Boolean = false) {
@@ -496,18 +532,20 @@ public class WebOutput(
         fun enqueue(message: WebSocketMessage) {
             synchronized(lock) {
                 if (closing || !run.active) return
-                if (messages.size >= 256) { finish(1009); return }
+                if (messages.size >= 256) { finish(1009, cause = "queue_overflow"); return }
                 messages.addLast(message); wake.release()
             }
         }
 
-        fun finish(code: Int, payload: ByteArray = closePayload(code), fromPeer: Boolean = false) {
+        fun finish(code: Int, payload: ByteArray = closePayload(code), fromPeer: Boolean = false,
+            by: String = "relay", cause: String = "teardown", peerReason: String = "", stalled: Long = stalledNanos(System.nanoTime())) {
             synchronized(lock) {
                 if (fromPeer) peerClosed = true
                 if (closing) {
                     if (peerClosed && closeSent) run.executor.execute { safelyClose(socket) }
                     return
                 }
+                reportEnd(code, by, cause, peerReason, stalled)
                 closing = true
                 if (run.lastTouch === this) run.lastTouch = null
                 queues.clear(); audio.clear(); messages.clear()
@@ -527,11 +565,15 @@ public class WebOutput(
         }
 
         fun read(input: DeadlineInput) {
-            val reader = WebSocketReader(input, 1024 * 1024)
+            val reader = WebSocketReader(input, 1024 * 1024) { lastReceivedAt = System.nanoTime() }
             while (run.active && !socket.isClosed) {
                 val message = reader.read()
                 when (message.opcode) {
-                    8 -> { finish(1000, message.payload, true); return }
+                    8 -> {
+                        val code = if (message.payload.size >= 2) ((message.payload[0].toInt() and 255) shl 8) or (message.payload[1].toInt() and 255) else 1005
+                        val reason = if (message.payload.size > 2) diagnosticCloseReason(utf8(message.payload.copyOfRange(2, message.payload.size))) else ""
+                        finish(code, message.payload, true, "peer", "peer_close", reason); return
+                    }
                     9 -> enqueue(WebSocketMessage(10, message.payload))
                     10 -> Unit
                     1 -> {
@@ -648,6 +690,10 @@ public class WebOutput(
                 }
                 "pong" -> Unit // The browser initiates clock synchronization in v0.
                 "fullscreen-exit" -> run.report(clientId to "fullscreen-exit") { it.receiverDiagnostics(origin, "fullscreen-exit", message.toString()) }
+                "receiver-close" -> {
+                    val report = JsonObject(message + ("reason" to JsonPrimitive(diagnosticCloseReason(message.getValue("reason").jsonPrimitive.content))))
+                    run.report(clientId to "receiver-close") { it.receiverDiagnostics(origin, "receiver-close", report.toString()) }
+                }
                 "receiver-info" -> run.report(clientId to "receiver-info") { it.receiverDiagnostics(origin, "receiver-info", message.toString()) }
                 "stats" -> {
                     // The relay's own counter rides along with the receiver's report for this client.
@@ -713,11 +759,17 @@ public class WebOutput(
                             (if (f.keyFrame) OxpWebCodec.KEYFRAME else 0) or (if (frame.gap) OxpWebCodec.GAP else 0),
                             sequence, f.ptsUs, f.receivedAtNanos / 1000))
                         writeWebSocket(output, 2, header, f.data)
+                        synchronized(lock) { videoFramesSent++ }
                     }
                 }
-            } catch (_: Exception) { finish(1001) }
+            } catch (e: Exception) { finish(1001, by = if (e is java.net.SocketException) "peer" else "relay",
+                cause = if (!run.active) "stopped" else if (e is java.net.SocketException && e.message?.contains("reset", true) == true) "peer_reset" else "io_error",
+                peerReason = e.javaClass.simpleName) }
             finally {
-                synchronized(lock) { run.clients.remove(clientId); run.reportCapabilities() }
+                synchronized(lock) {
+                    if (!endReported) reportEnd(1001, "relay", if (run.active) "teardown" else "stopped")
+                    run.clients.remove(clientId); run.reportCapabilities()
+                }
                 if (!closeSent || peerClosed || !run.active) {
                     safelyClose(socket)
                     synchronized(lock) { run.sockets.remove(socket) }
@@ -740,4 +792,10 @@ private class DeadlineInput(private val socket: Socket, input: InputStream) : Fi
     }
     override fun read(): Int { timeout(); return `in`.read() }
     override fun read(b: ByteArray, off: Int, len: Int): Int { timeout(); return `in`.read(b, off, len) }
+}
+
+/** Peer text is untrusted and can contain identifiers or credentials; retain only our fixed reasons. */
+internal fun diagnosticCloseReason(reason: String): String = when (reason) {
+    "", "Input backpressure", "Invalid OXP-Web message" -> reason
+    else -> "[redacted]"
 }

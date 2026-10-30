@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong
  * every chunk that completes is progress.
  */
 internal class ProgressOutputStream(private val out: OutputStream, private val chunkBytes: Int = 16 * 1024) : OutputStream() {
+    val bytesSent = AtomicLong()
     private val blockedSince = AtomicLong(IDLE)
 
     init { require(chunkBytes > 0) }
@@ -23,7 +24,7 @@ internal class ProgressOutputStream(private val out: OutputStream, private val c
         return if (since == IDLE) 0 else (now - since).coerceAtLeast(0)
     }
 
-    override fun write(b: Int) { track { out.write(b) } }
+    override fun write(b: Int) { track { out.write(b); bytesSent.incrementAndGet() } }
 
     override fun write(b: ByteArray, off: Int, len: Int) {
         java.util.Objects.checkFromIndexSize(off, len, b.size)
@@ -31,7 +32,7 @@ internal class ProgressOutputStream(private val out: OutputStream, private val c
         val end = off + len
         while (offset < end) {
             val n = minOf(chunkBytes, end - offset)
-            track { out.write(b, offset, n) }
+            track { out.write(b, offset, n); bytesSent.addAndGet(n.toLong()) }
             offset += n
         }
     }

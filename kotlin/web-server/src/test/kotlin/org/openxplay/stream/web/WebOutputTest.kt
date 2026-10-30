@@ -251,7 +251,7 @@ class WebOutputTest {
         web.open(object : OutputHost {
             override fun capabilities(capabilities: OutputCapabilities) { caps.add(capabilities) }
             override fun stats(stats: OutputStats) { observedStats.add(stats) }
-            override fun receiverDiagnostics(origin: Origin, type: String, json: String) { diagnostics.add(type to json) }
+            override fun receiverDiagnostics(origin: Origin, type: String, json: String) { if (type != "client-opened" && type != "client-closed") diagnostics.add(type to json) }
             override fun control(event: ControlEvent) { controls.add(event) }
         })
         try {

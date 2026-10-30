@@ -8,15 +8,25 @@ import java.io.IOException
 import java.net.InetAddress
 
 internal class SoapFault(val action: String, val code: Int, val description: String) : IOException("SOAP fault") {
-    fun detail(): String = "action=$action code=$code description=${description.replace(Regex("https?://\\S+", RegexOption.IGNORE_CASE), "[URL]").take(160)}"
+    fun detail(): String = "action=$action code=$code"
 }
 internal data class SoapResult(val arguments: Map<String, String>, val localAddress: InetAddress)
-internal class CastSoap(private val http: CastHttpClient) {
+internal class CastSoap(private val http: CastHttpClient, private val diagnostic: (String) -> Unit = {}) {
     fun action(service: CastService, action: String, arguments: Map<String, String> = mapOf("InstanceID" to "0"),
         budgetMs: Int = 7000): SoapResult {
         val response = http.request(service.control, "POST", mapOf("Content-Type" to "text/xml; charset=\"utf-8\"",
             "SOAPACTION" to "\"${service.type}#$action\""), envelope(service.type, action, arguments).toByteArray(Charsets.UTF_8), budgetMs = budgetMs)
-        return SoapResult(parse(action, response.status, String(response.body, Charsets.UTF_8)), response.localAddress)
+        try {
+            return SoapResult(parse(action, response.status, String(response.body, Charsets.UTF_8)), response.localAddress)
+        } catch (error: Exception) {
+            val reason = when {
+                error is SoapFault -> "by=peer cause=soap_fault code=${error.code}"
+                response.status !in setOf(200, 500) -> "by=peer cause=http_error"
+                else -> castEndReason(error)
+            }
+            runCatching { diagnostic("request_failed link=renderer reached=soap $reason status=${response.status}") }
+            throw error
+        }
     }
     companion object {
         fun envelope(service: String, action: String, arguments: Map<String, String>): String =

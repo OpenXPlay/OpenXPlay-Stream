@@ -13,10 +13,11 @@ export interface AudioDebug {
 export type PageCommand = import('../protocol/json').FullscreenExit | import('../protocol/json').DisplaySettings |
   { type: 'receiver-info'; info: import('../protocol/json').ReceiverInfo } |
   { type: 'page-metrics'; metrics: Partial<Stats> } |
-  { type: 'init'; canvas: OffscreenCanvas; url: string; hello: Hello; queueDepth: 0 | 1 } |
+  { type: 'init'; canvas: OffscreenCanvas; url: string; hello: Hello; queueDepth: 0 | 1; previousClose?: import('../protocol/json').ReceiverClose; online?: boolean; visible?: boolean } |
   { type: 'resize'; width: number; height: number } |
   { type: 'hello'; hello: Hello } |
   { type: 'touch'; contacts: TouchContact[] } |
+  { type: 'online'; online: boolean } |
   { type: 'visibility'; visible: boolean } |
   { type: 'audio-port'; port: MessagePort } |
   { type: 'audio-probe' } |
@@ -25,8 +26,8 @@ export type PageCommand = import('../protocol/json').FullscreenExit | import('..
   { type: 'reconnect' } |
   { type: 'restart' } |
   { type: 'fit'; fit: 'fit' | 'fill' } |
-  { type: 'stop' };
-export type WorkerNotice = { type: 'host-ui' } | { type: 'view-area'; area: import('../protocol/json').ViewArea | undefined } | { type: 'display-disconnected' } | import('../protocol/json').DisplaySettings |
+  { type: 'stop'; cause?: 'user' | 'reload' };
+export type WorkerNotice = { type: 'close-checkpoint'; checkpoint: import('./connection-history').CloseCheckpoint } | { type: 'host-ui' } | { type: 'view-area'; area: import('../protocol/json').ViewArea | undefined } | { type: 'display-disconnected' } | import('../protocol/json').DisplaySettings |
   { type: 'retry'; delayMs: number; attempt: number } |
   { type: 'playing' } |
   { type: 'hold'; active: boolean } |

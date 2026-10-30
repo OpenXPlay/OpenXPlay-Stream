@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Created by riko chen on 2026-10-14
 
+import { ConnectionHistory } from './connection-history';
 import { videoDecoderConfig } from './video-config';
 import { effectiveFrameRate } from './frame-rate';
 import { BinaryKind, GAP, KEYFRAME, decodeBinary, encodeBinary, encodeTouch } from '../protocol/binary';
@@ -14,6 +15,11 @@ import { audioCodecs, aacConfig, type AudioDecoderInstance } from '../shared/aud
 import type { AudioFormat, MicFormat } from '../protocol/json';
 const scope = self as DedicatedWorkerGlobalScope;
 const SCREEN = 0;
+const connections = new ConnectionHistory();
+function checkpoint(): void {
+  const value = connections.snapshot();
+  if (value) notice({ type: 'close-checkpoint', checkpoint: value });
+}
 let sessionRendered = 0;
 let canvas: OffscreenCanvas, context: OffscreenCanvasRenderingContext2D | null;
 let hello: Hello, url = '', socket: WebSocket | null = null, stopped = false, visible = true;
@@ -224,7 +230,7 @@ function startDecoder(): void {
         if (params.paced) pump();
         scheduleRender();
       },
-      error() { if (fence === generation) { decoderErrors++; recover(); } },
+      error() { if (fence === generation) { connections.cause = 'decoder_error'; decoderErrors++; recover(); } },
     });
     decoder.configure(config);
   } catch (e) {
@@ -256,6 +262,7 @@ function render(): void {
     const resumed = hold.deadline !== null;
     updateHold('frame');
     if (restartSession === null && (!playing || resumed)) { playing = true; notice({ type: 'playing' }); }
+    if (connections.cause === 'decoder_error') connections.cause = 'unknown';
     sessionRendered++; rendered++; renderedLatencyMs = latencyMs(nowUs(), item.relayUs, offsetUs);
     if (renderedLatencyMs !== null) renderSamples.push(renderedLatencyMs);
   } finally {
@@ -375,7 +382,7 @@ function submit(item: Encoded): boolean {
     if (pressure.requestKeyframe) keyframe();
     return true;
   }
-  catch { decoderErrors++; recover(); return false; }
+  catch { connections.cause = 'decoder_error'; decoderErrors++; recover(); return false; }
 }
 /** Quality feeds the decoder only while few decoded frames are outstanding, so held frames stay encoded. */
 function pump(): void {
@@ -411,12 +418,18 @@ function connect(): void {
   if (stopped) return;
   ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' });
   notice({ type: 'status', text: 'Connecting…' });
-  const current = new WebSocket(url); socket = current; current.binaryType = 'arraybuffer';
+  const current = new WebSocket(url); socket = current; connections.begin(current); current.binaryType = 'arraybuffer';
   current.onopen = () => {
-    if (socket === current) { send({ ...hello, token: '' }); send({ type: 'pause', screen: SCREEN, paused: !visible }); }
+    if (socket === current) {
+      const previous = connections.opened(current);
+      send({ ...hello, token: '' }); send({ type: 'pause', screen: SCREEN, paused: !visible });
+      if (previous) send(previous);
+      checkpoint();
+    }
   };
   current.onmessage = event => {
     if (socket !== current) return;
+    connections.received(current);
     wsBytes += typeof event.data === 'string' ? new TextEncoder().encode(event.data).length : event.data.byteLength ?? 0;
     try {
       if (typeof event.data === 'string') control(parseMessage(event.data, 'relay-to-client'));
@@ -424,7 +437,8 @@ function connect(): void {
     } catch (e) { updateHold('interrupt'); notice({ type: 'status', text: `Protocol error: ${String(e)}` }); current.close(1002, 'Invalid OXP-Web message'); }
   };
   current.onerror = () => { updateHold('interrupt'); notice({ type: 'status', text: 'Connection failed' }); };
-  current.onclose = () => {
+  current.onclose = event => {
+    connections.closed(current, event); checkpoint();
     if (socket !== current) return;
     sessionRendered = 0;
     ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
@@ -465,6 +479,8 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
       }; break;
     }
     case 'init':
+      connections.restore(message.previousClose); connections.online = message.online ?? true;
+      connections.visible = message.visible ?? visible;
       canvas = message.canvas; context = canvas.getContext('2d', { alpha: false });
       hello = message.hello; url = message.url;
       smart = new SmartDepth(message.queueDepth); queueDepth = smart.depth; setPlayback(playbackMode(hello.playback));
@@ -480,7 +496,7 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
     case 'page-metrics': pageMetrics = message.metrics; break;
     case 'reconnect': {
       stopped = false; clearTimeout(reconnectTimer);
-      const previous = socket; socket = null; previous?.close();
+      const previous = socket; if (previous) { connections.closed(previous, { code: 1006 }, 'user'); checkpoint(); } socket = null; previous?.close();
       updateHold('interrupt'); clearAudio(); clearDecoder();
       connect(); break;
     }
@@ -492,15 +508,16 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
         if (saved) context?.drawImage(saved, 0, 0, canvas.width, canvas.height);
       } break;
     case 'touch': touch(message.contacts); break;
+    case 'online': connections.online = message.online; checkpoint(); break;
     case 'visibility':
-      visible = message.visible;
+      visible = message.visible; connections.visible = visible; checkpoint();
       send({ type: 'pause', screen: SCREEN, paused: !visible });
       touch([]); clearDecoder();
       if (visible) {
         lastKeyRequest = -Infinity;
         if (!config && format) void configureFormat(format); else { startDecoder(); keyframe(); }
       } break;
-    case 'stop': updateHold('end'); clearAudio(); stopped = true; touch([]); clearTimeout(reconnectTimer); clearInterval(statsTimer); clearDecoder(); socket?.close(); break;
+    case 'stop': if (socket) { connections.closed(socket, { code: 1006 }, message.cause ?? 'user'); checkpoint(); } updateHold('end'); clearAudio(); stopped = true; touch([]); clearTimeout(reconnectTimer); clearInterval(statsTimer); clearDecoder(); socket?.close(); break;
   }
 };
 function resetMetrics(): void {
@@ -509,6 +526,7 @@ function resetMetrics(): void {
   decodeSamples = []; renderSamples = []; previousRendered = rendered; previousDropped = dropped + skipped;
 }
 const statsTimer = setInterval(() => {
+  checkpoint();
   if (!ready) { resetMetrics(); return; }
   const t0 = nowUs();
   for (const [key, value] of pings) if (t0 - value > 10000000n) pings.delete(key);

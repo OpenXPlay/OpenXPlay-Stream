@@ -23,6 +23,11 @@ export interface VideoFormat { codec: 'H264' | 'H265'; codecString: string; conf
 export interface AudioFormat { role: 'MEDIA' | 'ALERT' | 'VOICE' | 'TELEPHONY' | 'OTHER'; codec: AudioCodec; sampleRate: number; channels: number; config?: string }
 export interface MicFormat { codec: AudioCodec; sampleRate: number; channels: number; frameMs: number }
 export interface ReceiverInfo { type: 'receiver-info'; [key: string]: unknown }
+export interface ReceiverClose {
+  type: 'receiver-close'; code: number; reason: string; wasClean: boolean; openForMs: number; sinceLastMessageMs: number;
+  cause: 'decoder_error' | 'hidden' | 'offline' | 'watchdog' | 'user' | 'reload' | 'server_close' | 'unknown';
+  visibility: 'visible' | 'hidden'; online: boolean; reconnects: number;
+}
 export interface Stats {
   wsBytesPerSecond?: number; videoFramesPerSecond?: number; decoderSubmittedPerSecond?: number; decoderOutputPerSecond?: number;
   decodeLatencyP50Ms?: number; decodeLatencyP95Ms?: number; decodeLatencyMaxMs?: number; maxDecodeQueue?: number;
@@ -48,7 +53,7 @@ export type JsonMessage = ViewArea | FullscreenExit | ClientDisplaySettings | He
   { type: 'pause'; screen: number; paused: boolean } |
   { type: 'ping'; t0Us: I64 } |
   { type: 'pong'; t0Us: I64; t1Us: I64; t2Us: I64 } |
-  ReceiverInfo | Stats | { type: 'error'; code: string; message: string };
+  ReceiverClose | ReceiverInfo | Stats | { type: 'error'; code: string; message: string };
 export type Direction = 'client-to-relay' | 'relay-to-client';
 type Validator = (x: unknown) => boolean;
 const str: Validator = x => typeof x === 'string';
@@ -105,6 +110,11 @@ const schemas: Record<string, Validator> = {
     canvasWidth: v => int(v) && positive(v), canvasHeight: v => int(v) && positive(v) })(x) && (() => {
       const a = x as ViewArea; return a.x + a.width <= a.canvasWidth && a.y + a.height <= a.canvasHeight;
     })(),
+  'receiver-close': object({ type: literal('receiver-close'), code: range(65535),
+    reason: x => str(x) && new TextEncoder().encode(x as string).length <= 123 && !/[\u0000-\u001f\u007f-\u009f]/.test(x as string),
+    wasClean: bool, openForMs: num, sinceLastMessageMs: num,
+    cause: literal('decoder_error', 'hidden', 'offline', 'watchdog', 'user', 'reload', 'server_close', 'unknown'),
+    visibility: literal('visible', 'hidden'), online: bool, reconnects: int }),
   'fullscreen-exit': object({ type: literal('fullscreen-exit'), hiddenMs: nullable(num), display, autoRestore: optional(literal('restored', 'denied', 'off')) }),
   'display-settings': object({ type: literal('display-settings'), frameRate: optional(frameRate), videoCodec: optional(literal('auto', 'h265', 'h264')), resolution: literal('auto', 'native', '1080p', '720p', 'screen'), screenWidth: literal(125, 200, 250, 300) }),
   restart: object({ type: literal('restart') }),
@@ -125,7 +135,7 @@ const schemas: Record<string, Validator> = {
   error: object({ type: literal('error'), code: nonempty, message: str }),
   'host-ui': object({ type: literal('host-ui') }),
 };
-const clientTypes = ['fullscreen-exit', 'display-settings', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
+const clientTypes = ['receiver-close', 'fullscreen-exit', 'display-settings', 'hello', 'restart', 'keyframe', 'pause', 'ping', 'pong', 'stats', 'receiver-info'];
 const relayTypes = ['host-ui', 'view-area', 'display-settings', 'welcome', 'session', 'video-format', 'audio-format', 'mic', 'ping', 'pong', 'error'];
 export function parseMessage(input: string | unknown, direction?: Direction): JsonMessage {
   let x: unknown = input;

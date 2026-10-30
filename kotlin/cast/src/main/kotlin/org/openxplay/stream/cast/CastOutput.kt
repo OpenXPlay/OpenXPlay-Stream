@@ -63,6 +63,8 @@ public class CastOutput internal constructor(
         @Volatile var renderer: DiscoveredRenderer? = null
         @Volatile var lastRenderer: DiscoveredRenderer? = null
         @Volatile var rendererState: String? = null
+        @Volatile var reached = "created"
+        var milestone = -1
         var state: CastState? = null
         var stateRenderer: CastRenderer? = null
         var media: Thread? = null
@@ -73,7 +75,7 @@ public class CastOutput internal constructor(
 
     override fun open(host: OutputHost) {
         check(opened.compareAndSet(false, true)) { "output_already_open" }
-        val run = Run(host, CastStreamServer(config.port, "", threadFactory, options.server, options.now)); current = run
+        val run = Run(host, CastStreamServer(config.port, "", threadFactory, options.server, options.now) { message -> notifyListener { listener.diagnostic(message) } }); current = run
         try {
             host.capabilities(OutputCapabilities(LatencyClass.BUFFERED,
                 listOf(DecoderSupport("avc1.64002a", true), DecoderSupport("hvc1.1.6.L150", true)),
@@ -84,6 +86,7 @@ public class CastOutput internal constructor(
             run.media = worker("cast-media") { media(run) }
             worker("cast-control") { control(run) }
         } catch (failure: Exception) {
+            notifyListener { listener.diagnostic("failed link=renderer reached=created ${castEndReason(failure, true)}") }
             run.active.set(false)
             worker("cast-close") { run.io.close(); run.server.close() }
             if (current === run) current = null
@@ -163,14 +166,26 @@ public class CastOutput internal constructor(
         return run.active.get()
     }
     private fun notifyListener(call: () -> Unit) { runCatching(call) }
-    private fun failure(run: Run, code: String, detail: String) {
+    private fun failure(run: Run, code: String, detail: String, reason: String = when (code) {
+        "renderer_not_found" -> "by=peer cause=renderer_gone"
+        "renderer_no_avtransport" -> "by=peer cause=protocol_error"
+        "renderer_rejected" -> "by=peer cause=soap_fault"
+        "renderer_stopped" -> "by=peer cause=stopped"
+        else -> "by=local cause=connect_failed"
+    }) {
         val report = synchronized(run.lock) { run.active.get() && run.failures.add(code) }
-        if (report) notifyListener { listener.failure(CastFailure(code, detail)) }
+        if (report) {
+            val fields = "$reason reached=${run.reached}"
+            notifyListener { listener.failure(CastFailure(code, "$fields ${detail.replace('\n', ' ').replace('\r', ' ')}".take(160))) }
+        }
     }
     private fun recovered(run: Run, code: String) { synchronized(run.lock) { run.failures.remove(code) } }
     private fun state(run: Run, state: CastState) {
         val renderer = run.renderer?.renderer
         if (run.state == state && run.stateRenderer == renderer) return
+        if (state in setOf(CastState.SEARCHING, CastState.WAITING_FOR_VIDEO, CastState.STARTING, CastState.PLAYING) && state.ordinal > run.milestone) {
+            run.milestone = state.ordinal; run.reached = state.name.lowercase()
+        }
         run.state = state; run.stateRenderer = renderer
         notifyListener { listener.state(state, renderer) }
     }
@@ -185,7 +200,7 @@ public class CastOutput internal constructor(
                 run.server.accept { run.active.get() }
                 if (run.active.get()) throw java.io.IOException("HTTP accept ended")
             } catch (error: Exception) {
-                if (run.active.get()) failure(run, "stream_server_failed", "HTTP bind or accept failed: ${error.javaClass.simpleName}")
+                if (run.active.get()) failure(run, "stream_server_failed", "HTTP bind or accept failed", castEndReason(error, true))
             }
             if (!wait(run, options.bindRetryMs)) break
         }
@@ -238,7 +253,7 @@ public class CastOutput internal constructor(
                 synchronized(run.lock) { if (run.active.get()) run.lock.wait(10) }
             }
         } catch (error: Exception) {
-            failure(run, "stream_server_failed", "Media worker failed: ${error.javaClass.simpleName}")
+            failure(run, "stream_server_failed", "Media worker failed", castEndReason(error))
             close()
         }
     }
@@ -254,7 +269,8 @@ public class CastOutput internal constructor(
         } finally { run.io.remove(socket) }
     }
     private fun control(run: Run) {
-        val soap = CastSoap(CastHttpClient(network, run.io))
+        fun diagnostic(message: String) { notifyListener { listener.diagnostic(message) } }
+        val soap = CastSoap(CastHttpClient(network, run.io, ::diagnostic), ::diagnostic)
         var searchRounds = 0
         var failures = 0
         var started: Long? = null
@@ -266,12 +282,13 @@ public class CastOutput internal constructor(
         var missingClientSince: Long? = null
         var stoppedRound = 0
         val protocolChecked = mutableSetOf<String>()
+        var endReason = "by=local cause=stopped"
         try {
             while (run.active.get()) {
                 if (run.renderer == null) {
                     state(run, CastState.SEARCHING)
-                    val result = runCatching { CastDiscovery(network, options.discovery, run.io) { run.active.get() }.scan(options.searchMs) }
-                        .getOrElse { DiscoveryResult(emptyList(), emptySet()) }
+                    val result = runCatching { CastDiscovery(network, options.discovery, run.io, ::diagnostic) { run.active.get() }.scan(options.searchMs) }
+                        .getOrElse { error -> diagnostic("discovery_failed link=renderer reached=searching ${castEndReason(error)}"); DiscoveryResult(emptyList(), emptySet()) }
                     if (!run.active.get()) break
                     val found = result.renderers.firstOrNull { it.renderer.udn == config.rendererUdn }
                     if (found == null) {
@@ -292,14 +309,15 @@ public class CastOutput internal constructor(
                                     notifyListener { listener.diagnostic("ConnectionManager Sink does not advertise video/mp2t; trying MPEG-TS") }
                             }
                         }
-                    } catch (_: Exception) {
-                        failure(run, "renderer_unreachable", "Cannot connect to renderer control endpoint")
+                    } catch (error: Exception) {
+                        failure(run, "renderer_unreachable", "Cannot connect to renderer control endpoint", castEndReason(error, true))
                         run.renderer = null; wait(run, options.retryMs); continue
                     }
                 }
                 val renderer = run.renderer ?: continue
                 val generation = synchronized(run.lock) { run.generation }
                 if (started != null && started != generation) {
+                    diagnostic("link_lost link=renderer reached=${if (hasPlayed) "playing" else "starting"} by=local cause=replaced")
                     runCatching { soap.action(renderer.transport, "Stop") }; started = null
                 }
                 if (!run.server.ready(generation) || run.server.port == 0) {
@@ -361,7 +379,11 @@ public class CastOutput internal constructor(
                         if (stopped) {
                             // Report the reason first so listeners already have it when the state changes.
                             failure(run, "renderer_stopped", if (stalled) "Renderer reports $transportState without streaming HTTP clients" else
-                                "Renderer stopped or did not start within playback deadline")
+                                "Renderer stopped or did not start within playback deadline", when {
+                                    stalled -> "by=timeout cause=health_timeout timeout=http_client limitMs=${options.noClientTimeoutMs}"
+                                    !hasPlayed -> "by=timeout cause=record_timeout timeout=play limitMs=${options.playDeadlineMs}"
+                                    else -> "by=peer cause=stopped"
+                                })
                             state(run, CastState.STOPPED_BY_RENDERER)
                             val delay = options.stoppedBackoffMs[stoppedRound.coerceAtMost(options.stoppedBackoffMs.lastIndex)]; stoppedRound++
                             if (!wait(run, delay, generation)) break
@@ -373,15 +395,19 @@ public class CastOutput internal constructor(
                 } catch (fault: SoapFault) {
                     failures = 0; started = null
                     failure(run, "renderer_rejected", fault.detail()); wait(run, options.retryMs, generation)
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     if (failures >= 3) {
-                        failure(run, "renderer_unreachable", "Three consecutive control requests failed")
+                        failure(run, "renderer_unreachable", "Three consecutive control requests failed", castEndReason(error))
                         run.renderer = null; started = null; failures = 0
                     }
                     wait(run, options.retryMs, generation)
                 }
             }
+        } catch (error: Exception) {
+            endReason = castEndReason(error)
+            throw error
         } finally {
+            diagnostic("link_lost link=renderer reached=${run.reached} $endReason")
             run.active.set(false); synchronized(run.lock) { run.lock.notifyAll() }
             run.io.close(); run.server.close()
             (run.renderer ?: run.lastRenderer)?.let { renderer ->

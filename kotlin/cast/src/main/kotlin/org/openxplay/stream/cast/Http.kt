@@ -117,15 +117,21 @@ internal fun httpUri(uri: URI): URI {
     return uri
 }
 
-internal class CastHttpClient(private val network: CastNetwork, private val scope: SocketScope = SocketScope()) {
+internal class CastHttpClient(private val network: CastNetwork, private val scope: SocketScope = SocketScope(),
+    private val diagnostic: (String) -> Unit = {}) {
     fun request(uri: URI, method: String = "GET", headers: Map<String, String> = emptyMap(), body: ByteArray = byteArrayOf(),
         limit: Int = 64 * 1024, connectMs: Int = 2000, readMs: Int = 5000, budgetMs: Int = connectMs + readMs): HttpResponse {
         httpUri(uri)
         val started = System.nanoTime()
-        val socket = scope.add(network.socket())
+        var connected = false
+        var status = 0
+        val socket = try { scope.add(network.socket()) } catch (error: Exception) {
+            runCatching { diagnostic("request_failed link=renderer reached=connecting ${castEndReason(error, true)}") }; throw error
+        }
         try {
             socket.use {
                 socket.connect(InetSocketAddress(uri.host, if (uri.port < 0) 80 else uri.port), minOf(connectMs, budgetMs))
+                connected = true
                 val remaining = budgetMs - ((System.nanoTime() - started) / 1_000_000).toInt()
                 if (remaining <= 0) throw SocketTimeoutException("HTTP deadline")
                 val path = uri.rawPath.takeUnless { it.isNullOrEmpty() } ?: "/"
@@ -142,9 +148,12 @@ internal class CastHttpClient(private val network: CastNetwork, private val scop
                 val response = input.head()
                 val parts = response.start.split(' ', limit = 3)
                 require(parts.size >= 2 && parts[0] in setOf("HTTP/1.0", "HTTP/1.1")) { "Invalid HTTP response" }
-                val status = parts[1].toInt(); require(status in 100..599)
+                status = parts[1].toInt(); require(status in 100..599)
                 return HttpResponse(status, input.body(response.headers, limit), socket.localAddress)
             }
+        } catch (error: Exception) {
+            runCatching { diagnostic("request_failed link=renderer reached=${if (connected) "http" else "connecting"} ${castEndReason(error, !connected)} limitMs=$budgetMs status=$status") }
+            throw error
         } finally { scope.remove(socket) }
     }
 }

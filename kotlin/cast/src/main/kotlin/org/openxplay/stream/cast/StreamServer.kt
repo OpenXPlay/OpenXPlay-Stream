@@ -26,14 +26,15 @@ internal class StreamClient(private val maximumBytes: Int) {
     @Volatile var awaitingKeyframe = true
     fun offer(data: ByteArray): Boolean = synchronized(lock) {
         if (closed) return false
-        if (data.size > maximumBytes - bytes) { end(); return false }
+        if (data.size > maximumBytes - bytes) { end("by=local cause=queue_overflow"); return false }
         queue.addLast(data); bytes += data.size; lock.notifyAll(); true
     }
     fun take(): ByteArray? = synchronized(lock) {
         while (!closed && queue.isEmpty()) lock.wait(100)
         if (closed) null else queue.removeFirst().also { bytes -= it.size }
     }
-    fun end() { synchronized(lock) { closed = true; queue.clear(); bytes = 0; lock.notifyAll() } }
+    @Volatile var endReason: String? = null; private set
+    fun end(reason: String = "by=local cause=teardown") { synchronized(lock) { if (!closed) endReason = reason; closed = true; queue.clear(); bytes = 0; lock.notifyAll() } }
 }
 
 /** Writers own socket I/O. Publishing only appends references under a bounded queue lock. */
@@ -43,6 +44,7 @@ internal class CastStreamServer(
     private val threads: ThreadFactory,
     private val options: ServerOptions = ServerOptions(),
     private val now: () -> Long = System::nanoTime,
+    private val diagnostic: (String) -> Unit = {},
 ) : AutoCloseable {
     private val lock = Object()
     private val sockets = ConcurrentHashMap<Socket, StreamClient>()
@@ -66,7 +68,7 @@ internal class CastStreamServer(
     fun reset(next: Long) {
         synchronized(lock) {
             generation = next; readyGeneration = -1; cache.clear(); cacheBytes = 0
-            sockets.values.filter { it !== pending }.forEach { it.end() }
+            sockets.values.filter { it !== pending }.forEach { it.end("by=local cause=replaced") }
             needsKeyframe.set(false); lock.notifyAll()
         }
     }
@@ -108,10 +110,14 @@ internal class CastStreamServer(
                 sockets.forEach { (socket, client) -> if (client !== pending && client.closed) runCatching { socket.close() } }
                 try {
                     val socket = listener.accept()
-                    if (sockets.size >= 32) { socket.close(); continue }
-                    synchronized(lock) {
-                        if (ended) { socket.close(); return }
-                        sockets[socket] = pending
+                    if (sockets.size >= 32) { socket.close(); runCatching { diagnostic("link_lost link=renderer service=http reached=accepted by=local cause=queue_overflow") }; continue }
+                    val retained = synchronized(lock) {
+                        if (ended) false else { sockets[socket] = pending; true }
+                    }
+                    if (!retained) {
+                        socket.close()
+                        runCatching { diagnostic("link_lost link=renderer service=http reached=accepted by=local cause=stopped") }
+                        return
                     }
                     val worker = threads.newThread { serve(socket) }.apply { name = "cast-http-client" }
                     workers += worker; worker.start()
@@ -128,14 +134,19 @@ internal class CastStreamServer(
     }
     private fun serve(socket: Socket) {
         var client: StreamClient? = null
+        var reached = "accepted"
+        var reason = "by=local cause=teardown"
+        var status = 0
+        fun reply(code: Int, text: String) { status = code; response(socket, code, text) }
         try {
             socket.use {
                 val request = HttpInput(socket, options.headMs).head()
+                reached = "request"
                 val fields = request.start.split(' ')
-                if (fields.size != 3 || fields[2] !in setOf("HTTP/1.0", "HTTP/1.1")) { response(socket, 400, "Bad Request"); return }
-                if (fields[0] !in setOf("GET", "HEAD")) { response(socket, 405, "Method Not Allowed"); return }
+                if (fields.size != 3 || fields[2] !in setOf("HTTP/1.0", "HTTP/1.1")) { reply(400, "Bad Request"); reason = "by=local cause=protocol_error"; return }
+                if (fields[0] !in setOf("GET", "HEAD")) { reply(405, "Method Not Allowed"); reason = "by=local cause=protocol_error"; return }
                 val selected = synchronized(lock) { generation }
-                if (fields[1] != path(selected)) { response(socket, 404, "Not Found"); return }
+                if (fields[1] != path(selected)) { reply(404, "Not Found"); reason = "by=local cause=protocol_error"; return }
                 if (fields[0] == "GET") {
                     var code = 200
                     synchronized(lock) {
@@ -159,8 +170,13 @@ internal class CastStreamServer(
                             }
                         }
                     }
-                    if (code != 200) { response(socket, code, if (code == 404) "Not Found" else "Service Unavailable"); return }
+                    if (code != 200) {
+                        reason = client?.endReason ?: if (code == 503 && client != null) "by=timeout cause=record_timeout timeout=keyframe limitMs=${options.keyframeWaitMs}"
+                            else "by=local cause=${if (code == 503) "queue_overflow" else "replaced"}"
+                        reply(code, if (code == 404) "Not Found" else "Service Unavailable"); return
+                    }
                 }
+                status = 200; reached = if (client != null) "streaming" else "request"
                 socket.getOutputStream().apply {
                     write(("HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-cache\r\nConnection: close\r\n" +
                         "transferMode.dlna.org: Streaming\r\ncontentFeatures.dlna.org: $DLNA_FEATURES\r\nServer: $USER_AGENT\r\n\r\n").toByteArray(Charsets.US_ASCII))
@@ -171,14 +187,18 @@ internal class CastStreamServer(
                     }
                 }
             }
-        } catch (_: Exception) { } finally {
+        } catch (error: Exception) {
+            reason = castEndReason(error)
+        } finally {
+            val end = client?.endReason ?: if (synchronized(lock) { ended }) "by=local cause=stopped" else reason
+            runCatching { diagnostic("link_lost link=renderer service=http reached=$reached $end status=$status") }
             client?.end(); sockets.remove(socket); runCatching { socket.close() }; workers.remove(Thread.currentThread())
         }
     }
     override fun close() {
         val listener = synchronized(lock) {
             if (ended) return
-            ended = true; sockets.values.filter { it !== pending }.forEach { it.end() }; lock.notifyAll(); server
+            ended = true; sockets.values.filter { it !== pending }.forEach { it.end("by=local cause=stopped") }; lock.notifyAll(); server
         }
         runCatching { listener?.close() }; sockets.keys.forEach { runCatching { it.close() } }
     }
