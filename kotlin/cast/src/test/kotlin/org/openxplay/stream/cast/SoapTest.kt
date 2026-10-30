@@ -15,7 +15,7 @@ class SoapTest {
             assertEquals(-1, error.code); assertEquals("Test rejected", error.description)
         }
         val missing = assertFailsWith<SoapFault> { CastSoap.parse("Play", 500, fault().replace("<errorCode>714</errorCode>", "")) }
-        assertEquals("action=Play code=-1 description=Test rejected", missing.detail())
+        assertEquals("action=Play code=-1", missing.detail())
     }
     @Test fun didlIsEscapedAgainAsSoapArgumentAndResponseArgumentsAreParsed() {
         val url = "http://127.0.0.1:1234/cast/token/1.ts?a=1&b=2"
@@ -31,7 +31,7 @@ class SoapTest {
         assertEquals(mapOf("CurrentTransportState" to "PLAYING"), CastSoap.parse("GetTransportInfo", 200,
             soapResponse("GetTransportInfo", mapOf("CurrentTransportState" to "PLAYING"))))
         val error = assertFailsWith<SoapFault> { CastSoap.parse("Play", 500, fault(701)) }
-        assertEquals("action=Play code=701 description=Test rejected", error.detail())
+        assertEquals("action=Play code=701", error.detail())
     }
     @Test fun soapHttpRequestUsesQuotedActionAndExactServiceVersion() {
         OneHttpServer { socket, head, body ->

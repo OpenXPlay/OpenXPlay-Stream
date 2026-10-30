@@ -1,0 +1,5 @@
+{
+  "type": "receiver-close", "code": 1006, "reason": "", "wasClean": false,
+  "openForMs": 1250, "sinceLastMessageMs": 50, "cause": "offline",
+  "visibility": "visible", "online": false, "reconnects": 1
+}

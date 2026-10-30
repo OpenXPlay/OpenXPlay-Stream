@@ -91,9 +91,10 @@ public class CastDiscovery internal constructor(
     private val network: CastNetwork,
     private val options: DiscoveryOptions,
     private val scope: SocketScope,
+    private val diagnostic: (String) -> Unit = {},
     private val active: () -> Boolean,
 ) {
-    public constructor(network: CastNetwork = CastNetwork.SYSTEM) : this(network, DiscoveryOptions(), SocketScope(), { true })
+    public constructor(network: CastNetwork = CastNetwork.SYSTEM) : this(network, DiscoveryOptions(), SocketScope(), {}, { true })
 
     /** Blocking search plus parallel description fetches; never call on a UI or media thread. */
     public fun search(timeoutMs: Long = 3_000): List<CastRenderer> = scan(timeoutMs).renderers.map { it.renderer }
@@ -115,7 +116,8 @@ public class CastDiscovery internal constructor(
                         channel.setOption(StandardSocketOptions.IP_MULTICAST_TTL, 2)
                         channel.bind(InetSocketAddress(address, 0)); channel.configureBlocking(false)
                         channel.register(selector, SelectionKey.OP_READ); channels += channel
-                    } catch (_: Exception) {
+                    } catch (error: Exception) {
+                        runCatching { diagnostic("discovery_failed link=renderer reached=ssdp_bind ${castEndReason(error, true)}") }
                         channel?.let { runCatching { it.close() }; scope.remove(it) }
                     }
                 }
@@ -128,7 +130,9 @@ public class CastDiscovery internal constructor(
                             if (!active()) break
                             listOf("${RENDERER_TYPE}1", "${AVTRANSPORT_TYPE}1").forEach { st ->
                                 val request = Ssdp.search(options.target, st)
-                                if (active()) runCatching { channel.send(ByteBuffer.wrap(request), options.target) }
+                                if (active()) runCatching { channel.send(ByteBuffer.wrap(request), options.target) }.onFailure { error ->
+                                    runCatching { diagnostic("discovery_failed link=renderer reached=ssdp_send ${castEndReason(error)}") }
+                                }
                             }
                         }
                         round++
@@ -153,7 +157,8 @@ public class CastDiscovery internal constructor(
                                     val reply = Ssdp.reply(bytes.array().copyOf(bytes.position()))
                                     if (reply != null && locations.size < 256) locations += reply.location
                                 }
-                            } catch (_: java.io.IOException) {
+                            } catch (error: java.io.IOException) {
+                                runCatching { diagnostic("discovery_failed link=renderer reached=ssdp_receive ${castEndReason(error)}") }
                                 key.cancel(); runCatching { channel.close() }; scope.remove(channel); channels.remove(channel)
                             }
                         }
@@ -175,10 +180,15 @@ public class CastDiscovery internal constructor(
                     if (!active() || remaining <= 0) return@Callable null
                     runCatching {
                         val uri = URI(location)
-                        val response = CastHttpClient(network, descriptions).request(uri, limit = 256 * 1024,
+                        val response = CastHttpClient(network, descriptions, diagnostic).request(uri, limit = 256 * 1024,
                             connectMs = options.descriptionMs, readMs = options.descriptionMs, budgetMs = remaining)
+                        if (response.status != 200) {
+                            runCatching { diagnostic("discovery_failed link=renderer reached=description by=peer cause=http_error status=${response.status}") }
+                        }
                         require(response.status == 200)
-                        parseDescription(uri, String(response.body, Charsets.UTF_8))
+                        try { parseDescription(uri, String(response.body, Charsets.UTF_8)) } catch (error: Exception) {
+                            runCatching { diagnostic("discovery_failed link=renderer reached=description ${castEndReason(error)}") }; throw error
+                        }
                     }.getOrNull()
                 }) }
                 val results = futures.mapNotNull { future -> runCatching {

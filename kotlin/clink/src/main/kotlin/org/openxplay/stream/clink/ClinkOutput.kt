@@ -48,6 +48,7 @@ public class ClinkOutput(
     private class Run(val host: OutputHost) {
         val traceSession = ClinkSession.nextTraceSession()
         val active = AtomicBoolean(true)
+        val endReported = AtomicBoolean(false)
         val rtpPackets = AtomicLong()
         val rtpBytes = AtomicLong()
         val queue = VideoQueue()
@@ -77,6 +78,11 @@ public class ClinkOutput(
      */
     private fun voiceRole(role: AudioRole): Boolean = role == AudioRole.VOICE || role == AudioRole.TELEPHONY
     private val opened = AtomicBoolean(false)
+    private fun endWithoutSession(run: Run, event: String, reason: ClinkEndReason) {
+        if (run.endReported.compareAndSet(false, true)) runCatching {
+            listener.diagnostic("$event link=session reached=created ${reason.fields()} session=${run.traceSession}")
+        }
+    }
     override fun open(host: OutputHost) {
         check(opened.compareAndSet(false, true)) { "output_already_open" }
         val run = Run(host); current = run
@@ -88,8 +94,11 @@ public class ClinkOutput(
                     synchronized(run.lock) { packet.session == run.inputSession }
                 }) } catch (e: Exception) {
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), run.traceSession, "output_failed", e.javaClass.name, "ClinkOutput"))
-                    if (run.active.get()) listener.error(e)
-                    run.session?.stop()
+                    if (run.active.get()) {
+                        if (run.session == null) endWithoutSession(run, "failed", clinkEndReason(e))
+                        listener.error(e)
+                    }
+                    run.session?.fail(e)
                 }
             }.apply { name = "clink-voice"; start() }
             threadFactory.newThread { writer(run) }.apply { name = "clink-rtp"; start() }
@@ -130,6 +139,7 @@ public class ClinkOutput(
                         session.run()
                     }
                 } finally {
+                    if (run.session == null) endWithoutSession(run, "link_lost", ClinkEndReason("local", "stopped"))
                     synchronized(run.lock) { run.active.set(false) }
                     if (current === run) current = null
                     opened.set(false)
@@ -137,7 +147,8 @@ public class ClinkOutput(
                 }
             }
         } catch (e: RuntimeException) {
-            run.active.set(false); run.session?.stop()
+            if (run.session == null) endWithoutSession(run, "failed", clinkEndReason(e, true))
+            run.active.set(false); run.session?.fail(e)
             if (current === run) current = null
             opened.set(false)
             throw e
@@ -255,8 +266,11 @@ public class ClinkOutput(
         try { run.sender.run { run.active.get() } }
         catch (e: Exception) {
             if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), run.traceSession, "output_failed", e.javaClass.name, "ClinkOutput"))
-            if (run.active.get()) listener.error(e)
-            run.session?.stop(); run.active.set(false)
+            if (run.active.get()) {
+                if (run.session == null) endWithoutSession(run, "failed", clinkEndReason(e))
+                listener.error(e)
+            }
+            run.session?.fail(e); run.active.set(false)
         }
     }
     /** Snapshot of what the media path retains, for diagnostics and tests; null when not open. */
@@ -547,8 +561,11 @@ public class ClinkOutput(
             }
         } catch (e: Exception) {
             if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Error(System.nanoTime(), run.traceSession, "output_failed", e.javaClass.name, "ClinkOutput"))
-            if (run.active.get()) listener.error(e)
-            run.session?.stop(); run.active.set(false)
+            if (run.active.get()) {
+                if (run.session == null) endWithoutSession(run, "failed", clinkEndReason(e))
+                listener.error(e)
+            }
+            run.session?.fail(e); run.active.set(false)
         }
     }
 }

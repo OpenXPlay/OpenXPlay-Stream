@@ -27,7 +27,7 @@ public object WebJsonCodec {
         val type = (obj["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (type == null || schemas[type]?.invoke(obj) != true) throw WireFormatException("Invalid JSON message")
         val allowed = when (direction) {
-            Direction.CLIENT_TO_RELAY -> setOf("fullscreen-exit", "display-settings", "hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info")
+            Direction.CLIENT_TO_RELAY -> setOf("fullscreen-exit", "display-settings", "hello", "restart", "keyframe", "pause", "ping", "pong", "stats", "receiver-info", "receiver-close")
             Direction.RELAY_TO_CLIENT -> setOf("host-ui", "view-area", "display-settings", "welcome", "session", "video-format", "audio-format", "mic", "ping", "pong", "error")
             null -> schemas.keys
         }
@@ -123,6 +123,10 @@ public object WebJsonCodec {
                 "canvasWidth" to positiveInt, "canvasHeight" to positiveInt)(value) && (value as JsonObject).let {
                 it.getValue("x").jsonPrimitive.double + it.getValue("width").jsonPrimitive.double <= it.getValue("canvasWidth").jsonPrimitive.double &&
                 it.getValue("y").jsonPrimitive.double + it.getValue("height").jsonPrimitive.double <= it.getValue("canvasHeight").jsonPrimitive.double } },
+        message("receiver-close", "code" to range(65535), "reason" to { value -> value is JsonPrimitive && value.isString && value.content.toByteArray(Charsets.UTF_8).size <= 123 && value.content.none { it.isISOControl() } },
+            "wasClean" to bool, "openForMs" to number, "sinceLastMessageMs" to number,
+            "cause" to literal("decoder_error", "hidden", "offline", "watchdog", "user", "reload", "server_close", "unknown"),
+            "visibility" to literal("visible", "hidden"), "online" to bool, "reconnects" to integer),
         message("fullscreen-exit", "hiddenMs" to nullable(number), "display" to display, "autoRestore" to optional(literal("restored", "denied", "off"))),
         "receiver-info" to { value: JsonElement? -> value is JsonObject && value.toString().toByteArray(Charsets.UTF_8).size <= 65536 },
         message("display-settings", "frameRate" to optional(frameRate), "videoCodec" to optional(literal("auto", "h265", "h264")), "resolution" to literal("auto", "native", "1080p", "720p", "screen"), "screenWidth" to { integer(it) && (it as JsonPrimitive).intOrNull in setOf(125, 200, 250, 300) }),

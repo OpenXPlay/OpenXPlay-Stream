@@ -81,7 +81,8 @@ it('sends hello then the current hidden state on each connection', async () => {
   first.close();
   await vi.advanceTimersByTimeAsync(1000);
   const second = Socket.instances.at(-1)!; second.open();
-  expect(second.json()).toEqual([vector('hello'), { type: 'pause', screen: 0, paused: true }]);
+  expect(second.json().slice(0, 2)).toEqual([vector('hello'), { type: 'pause', screen: 0, paused: true }]);
+  expect(second.json().filter((m: any) => m.type === 'receiver-close')).toHaveLength(1);
 });
 it('reports visibility before welcome and resumes with pause before keyframe', async () => {
   const socket = init(); socket.open();
@@ -657,4 +658,39 @@ it('requires a newly drawn picture after socket reconnection even when the sessi
   const next = Socket.instances.at(-1)!; next.open(); await welcome(next);
   await vi.advanceTimersByTimeAsync(1000);
   expect((next.json().filter((m: any) => m.type === 'stats').at(-1) as any).session).toBeUndefined();
+});
+it('sends one receiver-close on every reconnect, even when the relay ignores it', async () => {
+  const first = init(); first.open();
+  expect(first.json().some((m: any) => m.type === 'receiver-close')).toBe(false);
+  first.receive(vector('welcome')); first.close(1006);
+  await vi.advanceTimersByTimeAsync(1000);
+  const second = Socket.instances.at(-1)!; second.open();
+  expect(second.json().filter((m: any) => m.type === 'receiver-close')).toEqual([
+    expect.objectContaining({ code: 1006, wasClean: false, cause: 'unknown', reconnects: 1 }),
+  ]);
+  // The relay does not acknowledge receiver-close; welcome alone keeps playback working.
+  await welcome(second); video(second, true);
+  second.close(1001); await vi.advanceTimersByTimeAsync(1000);
+  const third = Socket.instances.at(-1)!; third.open();
+  expect(third.json().filter((m: any) => m.type === 'receiver-close')).toEqual([
+    expect.objectContaining({ code: 1001, cause: 'server_close', reconnects: 2 }),
+  ]);
+});
+it('reports explicit reconnect as user and ignores a late close from the old socket', () => {
+  const first = init(); first.open(); command({ type: 'reconnect' });
+  const second = Socket.instances.at(-1)!; first.close(1001); second.open();
+  expect(second.json().filter((m: any) => m.type === 'receiver-close')).toEqual([
+    expect.objectContaining({ cause: 'user', reconnects: 1 }),
+  ]);
+});
+it('restores reload history on the first new page socket and checkpoints pagehide as reload', () => {
+  command({ type: 'init', canvas: { width: 800, height: 480, getContext: () => null }, hello: vector('hello'),
+    url: 'ws://localhost/oxp/v0', queueDepth: 1, previousClose: { ...vector('receiver-close'), cause: 'reload' } });
+  const socket = Socket.instances.at(-1)!; socket.open();
+  expect(socket.json().filter((m: any) => m.type === 'receiver-close')).toEqual([
+    expect.objectContaining({ cause: 'reload', reconnects: 2 }),
+  ]);
+  command({ type: 'stop', cause: 'reload' });
+  const checkpoints = scope.postMessage.mock.calls.map(([m]) => m).filter(m => m.type === 'close-checkpoint');
+  expect(checkpoints.at(-1).checkpoint.report.cause).toBe('reload');
 });

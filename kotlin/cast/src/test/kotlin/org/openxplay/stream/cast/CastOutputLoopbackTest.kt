@@ -103,7 +103,7 @@ class CastOutputLoopbackTest {
                 output.open(NO_HOST); output.onSession(SessionState(SessionId(1), SessionPhase.ACTIVE), SESSION_CONFIG)
                 output.onVideoFormat(ScreenId.MAIN, videoFormat()); output.onVideoFrame(frame())
                 await("SOAP fault missing") { failures.any { it.code == "renderer_rejected" } }
-                assertEquals("action=Play code=701 description=Test rejected", failures.first { it.code == "renderer_rejected" }.detail)
+                assertContains(failures.first { it.code == "renderer_rejected" }.detail, "by=peer cause=soap_fault reached=starting action=Play code=701")
                 await("Retry did not recover") { CastState.PLAYING in states }
                 assertEquals(1, failures.count { it.code == "renderer_rejected" })
                 assertEquals(5, fixture.actions.count { it == "Play" })

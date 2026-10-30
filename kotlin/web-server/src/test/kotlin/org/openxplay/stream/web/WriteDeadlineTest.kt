@@ -53,6 +53,7 @@ class WriteDeadlineTest {
         gate.countDown()
         writer.join(5000)
         assertEquals(64 * 1024, socket.written.get())
+        assertEquals(64L * 1024, stream.bytesSent.get())
         assertEquals(16 * 1024, socket.largest.get())
         assertEquals(0, stream.stalledNanos(System.nanoTime()))
     }
@@ -95,6 +96,12 @@ class WriteDeadlineTest {
                     reading.send(1, vector("ping").toByteArray())
                     assertEquals("pong", reading.json()["type"]!!.jsonPrimitive.content)
                     assertEquals(1, diagnostics.count { it.first == "relay-close" })
+                    eventually { diagnostics.any { it.first == "client-closed" } }
+                    val closed = Json.parseToJsonElement(diagnostics.single { it.first == "client-closed" }.second).jsonObject
+                    assertEquals("write_timeout", closed["cause"]!!.jsonPrimitive.content)
+                    assertEquals("relay", closed["by"]!!.jsonPrimitive.content)
+                    assertEquals(1011, closed["code"]!!.jsonPrimitive.int)
+                    assertTrue(closed["txStalledMs"]!!.jsonPrimitive.long >= 300)
                 }
             }
         } finally { web.close() }

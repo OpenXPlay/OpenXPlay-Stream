@@ -9,6 +9,7 @@ import { DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
 import type { ViewArea, DisplaySettings } from '../protocol/json';
 import type { Hello } from '../protocol/json';
 import type { TouchContact } from '../protocol/binary';
+import { loadClose, reloadClose, saveClose, type CloseCheckpoint } from './connection-history';
 import type { PageCommand, WorkerNotice } from './messages';
 import workletUrl from './audio-worklet.ts?worker&url';
 import type { MicFormat } from '../protocol/json';
@@ -418,7 +419,12 @@ canvas.addEventListener('pointercancel', releaseAll);
 canvas.addEventListener('lostpointercapture', event => { if (contacts.has(event.pointerId)) releaseAll(); });
 document.addEventListener('visibilitychange', () => { fullscreenHistory.visibility(document.hidden, performance.now());
   if (!document.hidden) requestAnimationFrame(reportFullscreenExit); releaseAll(); post({ type: 'visibility', visible: !document.hidden }); });
-window.addEventListener('pagehide', () => { stopCapture(); void audioContext?.close(); releaseAll(); post({ type: 'stop' }); });
+let closeCheckpoint: CloseCheckpoint | undefined;
+window.addEventListener('online', () => post({ type: 'online', online: true }));
+window.addEventListener('offline', () => post({ type: 'online', online: false }));
+window.addEventListener('pagehide', () => {
+  if (closeCheckpoint) saveClose(reloadClose(closeCheckpoint), () => sessionStorage);
+  stopCapture(); void audioContext?.close(); releaseAll(); post({ type: 'stop', cause: 'reload' }); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 new ResizeObserver(resize).observe(canvas);
 let receiverInfoStarted = false;
@@ -460,6 +466,7 @@ async function start(): Promise<void> {
     worker.onmessage = (event: MessageEvent<WorkerNotice>) => {
       const message = event.data;
       switch (message.type) {
+        case 'close-checkpoint': closeCheckpoint = message.checkpoint; saveClose(message.checkpoint, () => sessionStorage); break;
         case 'host-ui': drawer.open(); break;
         case 'audio-support': supportResult?.(message.aac); supportResult = null; break;
         case 'audio-active': audioActive = message.active; syncSound(); break;
@@ -526,7 +533,8 @@ async function start(): Promise<void> {
     hello = { ...hello, decoders: hello.decoders.map(d => ({ ...d, hardware: hardware.get(d.codecString) ?? false })) };
     const offscreen = canvas.transferControlToOffscreen();
     const message: PageCommand = { type: 'init', canvas: offscreen, url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/oxp/v0`, hello,
-      queueDepth: renderQueueDepth(fragment.get('queue')) };
+      queueDepth: renderQueueDepth(fragment.get('queue')), previousClose: loadClose(() => sessionStorage),
+      online: navigator.onLine, visible: !document.hidden };
     worker.postMessage(message, [offscreen]); initialized = true;
     post({ type: 'fit', fit: preferences.fit });
     post({ type: 'visibility', visible: !document.hidden });
