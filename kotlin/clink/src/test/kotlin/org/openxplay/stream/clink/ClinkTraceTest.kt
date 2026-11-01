@@ -97,6 +97,7 @@ class ClinkTraceTest {
             peer.await("screen notice requests a key frame") {
                 events.any { it is ClinkTraceEvent.Video && it.event == "keyframe_request" && it.source == "head_unit_m5" }
             }
+            peer.await("decoded picture") { peer.accessUnits.isNotEmpty() }
             peer.touch(0, listOf(PixelContact(1, 640, 360)))
             peer.await("input trace") { events.any { it is ClinkTraceEvent.Input } }
             peer.await("sensor connected") { peer.sensorConnected }
