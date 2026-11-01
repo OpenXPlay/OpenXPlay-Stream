@@ -213,6 +213,8 @@ public class ClinkSession(
     public val decoders: List<DecoderSupport> get() = decoderSnapshot
     @Volatile private var decoderSnapshot: List<DecoderSupport> = emptyList()
     public val isPlaying: Boolean get() = playing && ready && !stopped && !stopRequested
+    /** Certified and configured with the car; before that the output threads have nothing to send. */
+    internal val isReady: Boolean get() = ready && !stopped && !stopRequested
     public val videoSize: Pair<Int, Int> get() = mode.width to mode.height
     @Volatile internal var streamSize: Pair<Int, Int> = 1280 to 720
     public fun stop() { microphone(null); stopRequested = true }

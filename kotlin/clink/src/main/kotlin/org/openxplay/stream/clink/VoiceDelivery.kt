@@ -100,7 +100,8 @@ internal class VoiceDelivery {
                     }
                 }
             }
-            if (owner == null || !owner.audioReady) { Thread.sleep(5); continue }
+            if (owner == null || !owner.isReady) { Thread.sleep(50); continue }
+            if (!owner.audioReady) { Thread.sleep(5); continue }
             val now = System.nanoTime()
             if (now < next) { Thread.sleep(2); continue }
             if (!hasData && started == null) { Thread.sleep(2); continue }

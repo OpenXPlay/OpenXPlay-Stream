@@ -395,7 +395,12 @@ public class ClinkOutput(
                 }
                 diagnostics.forEach { listener.diagnostic(it) }
                 diagnostics.clear()
-                if (session == null || !session.isPlaying || session.isStalled) { Thread.sleep(5); continue }
+                if (session == null || !session.isReady) {
+                    // Discard pre-ready video as the old 5 ms polling loop did, without signalling a gap.
+                    if (writable) synchronized(run.lock) { while (run.queue.poll() != null) { } }
+                    Thread.sleep(50); continue
+                }
+                if (!session.isPlaying || session.isStalled) { Thread.sleep(5); continue }
                 if (audioReported !== session) {
                     audioReported = session
                     listener.diagnostic("audio negotiated media=${session.mediaAudio}")
