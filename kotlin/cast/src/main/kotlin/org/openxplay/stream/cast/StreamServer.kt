@@ -17,7 +17,9 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-internal data class ServerOptions(val clientBytes: Int = 8 * 1024 * 1024, val keyframeWaitMs: Long = 10_000, val headMs: Int = 5000)
+internal data class ServerOptions(val clientBytes: Int = 8 * 1024 * 1024, val keyframeWaitMs: Long = 10_000, val headMs: Int = 5000,
+    val freshKeyframeMs: Long = 500, val freshKeyframeWaitMs: Long = 1500)
+internal class CastStreamStart(val atNanos: Long)
 internal class StreamClient(private val maximumBytes: Int) {
     private val lock = Object()
     private val queue = ArrayDeque<ByteArray>()
@@ -50,6 +52,7 @@ internal class CastStreamServer(
     private val sockets = ConcurrentHashMap<Socket, StreamClient>()
     private val workers = CopyOnWriteArrayList<Thread>()
     private val cache = ArrayDeque<CastChunk>()
+    private val streaming = linkedMapOf<StreamClient, CastStreamStart>()
     private var cacheBytes = 0
     private var generation = 0L
     private var readyGeneration = -1L
@@ -61,13 +64,14 @@ internal class CastStreamServer(
     @Volatile var port = 0; private set
     val clients: Int get() = synchronized(lock) { sockets.values.count { !it.closed && it !== pending && !it.awaitingKeyframe } }
     val reservedClients: Int get() = synchronized(lock) { sockets.values.count { !it.closed && it !== pending } }
+    val streamStart: CastStreamStart? get() = synchronized(lock) { streaming.entries.lastOrNull { !it.key.closed }?.value }
     private val pending = StreamClient(0)
 
     fun path(generation: Long): String = "/cast/$token/$generation.ts"
     fun ready(generation: Long): Boolean = synchronized(lock) { !ended && readyGeneration == generation }
     fun reset(next: Long) {
         synchronized(lock) {
-            generation = next; readyGeneration = -1; cache.clear(); cacheBytes = 0
+            generation = next; readyGeneration = -1; cache.clear(); cacheBytes = 0; streaming.clear()
             sockets.values.filter { it !== pending }.forEach { it.end("by=local cause=replaced") }
             needsKeyframe.set(false); lock.notifyAll()
         }
@@ -137,6 +141,7 @@ internal class CastStreamServer(
         var reached = "accepted"
         var reason = "by=local cause=teardown"
         var status = 0
+        var firstChunkAt: Long? = null
         fun reply(code: Int, text: String) { status = code; response(socket, code, text) }
         try {
             socket.use {
@@ -155,18 +160,26 @@ internal class CastStreamServer(
                         else if (reservedClients >= 4) code = 503
                         else {
                             val queue = StreamClient(options.clientBytes); client = queue; sockets[socket] = queue
-                            val deadline = System.nanoTime() + options.keyframeWaitMs * 1_000_000
-                            if (cache.isEmpty()) needsKeyframe.set(true)
-                            while (!ended && generation == selected && cache.isEmpty() && !queue.closed) {
+                            val cached = cache.peekFirst()
+                            val stale = cached != null && now() - cached.atNanos > options.freshKeyframeMs * 1_000_000
+                            // Preserve a bounded fallback even if the live cache expires during the wait.
+                            val fallback = if (stale) cache.toList() else emptyList()
+                            val waitMs = if (stale) options.freshKeyframeWaitMs else options.keyframeWaitMs
+                            val deadline = System.nanoTime() + waitMs * 1_000_000
+                            if (cached == null || stale) needsKeyframe.set(true)
+                            while (!ended && generation == selected && !queue.closed &&
+                                (cache.isEmpty() || stale && cache.first.atNanos <= checkNotNull(cached).atNanos)) {
                                 val remaining = (deadline - System.nanoTime()) / 1_000_000
                                 if (remaining <= 0) break
                                 lock.wait(minOf(100, remaining.coerceAtLeast(1)))
                             }
+                            val chunks = cache.toList().ifEmpty { fallback }
                             if (ended || generation != selected) code = 404
-                            else if (cache.isEmpty() || queue.closed) code = 503
+                            else if (chunks.isEmpty() || queue.closed) code = 503
                             else {
+                                firstChunkAt = chunks.first().atNanos
                                 queue.awaitingKeyframe = false
-                                for (chunk in cache) if (!queue.offer(chunk.bytes)) { code = 503; overflows.incrementAndGet(); break }
+                                for (chunk in chunks) if (!queue.offer(chunk.bytes)) { code = 503; overflows.incrementAndGet(); break }
                             }
                         }
                     }
@@ -184,6 +197,10 @@ internal class CastStreamServer(
                     if (fields[0] == "GET") while (true) {
                         val bytes = client?.take() ?: break
                         write(bytes); flush(); bytesSent.addAndGet(bytes.size.toLong())
+                        firstChunkAt?.let { at ->
+                            synchronized(lock) { client?.takeIf { !ended && generation == selected && !it.closed }?.let { streaming[it] = CastStreamStart(at) } }
+                            firstChunkAt = null
+                        }
                     }
                 }
             }
@@ -192,15 +209,17 @@ internal class CastStreamServer(
         } finally {
             val end = client?.endReason ?: if (synchronized(lock) { ended }) "by=local cause=stopped" else reason
             runCatching { diagnostic("link_lost link=renderer service=http reached=$reached $end status=$status") }
-            client?.end(); sockets.remove(socket); runCatching { socket.close() }; workers.remove(Thread.currentThread())
+            client?.end(); synchronized(lock) { client?.let { streaming.remove(it) }; sockets.remove(socket) }
+            runCatching { socket.close() }; workers.remove(Thread.currentThread())
         }
     }
     override fun close() {
         val listener = synchronized(lock) {
             if (ended) return
-            ended = true; sockets.values.filter { it !== pending }.forEach { it.end("by=local cause=stopped") }; lock.notifyAll(); server
+            ended = true; streaming.clear(); sockets.values.filter { it !== pending }.forEach { it.end("by=local cause=stopped") }; lock.notifyAll(); server
         }
         runCatching { listener?.close() }; sockets.keys.forEach { runCatching { it.close() } }
     }
-    fun awaitWriters() { workers.toList().forEach { if (it !== Thread.currentThread()) it.join(1500) } }
+    // The copy-on-write iterator is a snapshot; toList() reads size and elements separately and races with removal.
+    fun awaitWriters() { for (worker in workers) if (worker !== Thread.currentThread()) worker.join(1500) }
 }

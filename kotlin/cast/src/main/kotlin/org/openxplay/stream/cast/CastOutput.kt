@@ -24,6 +24,9 @@ internal data class CastOptions(
     val stablePlayingMs: Long = 60_000,
     val bindRetryMs: Long = 5000,
     val server: ServerOptions = ServerOptions(),
+    val idleVideoMs: Long = 250,
+    val idleKeyframeMs: Long = 2000,
+    val positionPollMs: Long = 10_000,
 )
 internal val CAST_THREADS = ThreadFactory { task -> Thread(task).apply { isDaemon = true } }
 
@@ -54,6 +57,7 @@ public class CastOutput internal constructor(
         var format: VideoFormat? = null
         var generation = 0L
         var timeline: CastTimeline? = null
+        var idle: CastIdleKeyframe? = null
         var audioStream: Int? = null
         val audioFormats = linkedMapOf<Int, AudioFormat>()
         var dropped = 0L
@@ -63,6 +67,7 @@ public class CastOutput internal constructor(
         @Volatile var renderer: DiscoveredRenderer? = null
         @Volatile var lastRenderer: DiscoveredRenderer? = null
         @Volatile var rendererState: String? = null
+        @Volatile var rendererLag: Pair<CastStreamStart, Long>? = null
         @Volatile var reached = "created"
         var milestone = -1
         var state: CastState? = null
@@ -98,6 +103,8 @@ public class CastOutput internal constructor(
         run.dropped += run.timeline?.dropped ?: 0
         run.format = format; run.generation++
         run.timeline = format?.let { CastTimeline(options.now(), config.audio) }
+        run.idle = format?.let { CastIdleKeyframe(options.idleVideoMs * 1_000_000, options.idleKeyframeMs * 1_000_000) }
+        run.rendererLag = null
         run.server.reset(run.generation); run.lock.notifyAll()
     }
     override fun onSession(state: SessionState, config: SessionConfig) {
@@ -124,7 +131,9 @@ public class CastOutput internal constructor(
         if (frame.screen != ScreenId.MAIN) return
         val run = current ?: return
         synchronized(run.lock) {
-            if (run.active.get() && frame.session == run.session) { run.timeline?.video(frame); run.lock.notifyAll() }
+            if (run.active.get() && frame.session == run.session) {
+                run.timeline?.video(frame); run.idle?.video(frame.keyFrame, options.now()); run.lock.notifyAll()
+            }
         }
     }
     override fun onAudioFormat(stream: Int, format: AudioFormat?) {
@@ -181,6 +190,7 @@ public class CastOutput internal constructor(
     }
     private fun recovered(run: Run, code: String) { synchronized(run.lock) { run.failures.remove(code) } }
     private fun state(run: Run, state: CastState) {
+        if (state != CastState.PLAYING) run.rendererLag = null
         val renderer = run.renderer?.renderer
         if (run.state == state && run.stateRenderer == renderer) return
         if (state in setOf(CastState.SEARCHING, CastState.WAITING_FOR_VIDEO, CastState.STARTING, CastState.PLAYING) && state.ordinal > run.milestone) {
@@ -221,12 +231,16 @@ public class CastOutput internal constructor(
                         muxer = run.format?.let { CastMediaMuxer(it, config.audio) { chunk -> run.server.publish(generation, chunk) } }
                     }
                     val timeline = run.timeline
+                    val idle = run.idle
                     val serverRequest = run.server.needsKeyframe.getAndSet(false)
-                    val request = timeline != null && (timeline.requestKeyframe || serverRequest)
+                    val idleRequest = idle?.request(now) == true
+                    val request = timeline != null && (timeline.requestKeyframe || serverRequest || idleRequest)
                     if (timeline != null) timeline.requestKeyframe = false
-                    Pair(timeline?.take(now).orEmpty(), request)
+                    Triple(timeline?.take(now).orEmpty(), request, idle)
                 }
-                val requests = if (snapshot.second) limiter.request(ControlEvent.KeyFrameRequest(ScreenId.MAIN, Origin(id, "renderer")), now) else limiter.poll(now)
+                val due = limiter.poll(now)
+                val requests = if (snapshot.second && due.isEmpty()) limiter.request(ControlEvent.KeyFrameRequest(ScreenId.MAIN, Origin(id, "renderer")), now) else due
+                if (requests.isNotEmpty()) synchronized(run.lock) { snapshot.third?.sent(now) }
                 requests.forEach { event -> host(run) { it.control(event) } }
                 for (event in snapshot.first) {
                     if (!run.active.get()) break
@@ -245,7 +259,8 @@ public class CastOutput internal constructor(
                 if (now - reportedAt >= 1_000_000_000) {
                     val statistics = synchronized(run.lock) { CastStatistics(run.server.clients, run.videoFrames, run.audioFrames,
                         run.silentFrames, run.server.bytesSent.get(), run.dropped + (run.timeline?.dropped ?: 0),
-                        run.server.overflows.get(), run.rendererState) }
+                        run.server.overflows.get(), run.rendererState,
+                        run.rendererLag?.takeIf { run.rendererState == "PLAYING" && it.first === run.server.streamStart }?.second) }
                     notifyListener { listener.statistics(statistics) }
                     host(run) { it.stats(OutputStats(Origin(id, "renderer"), ScreenId.MAIN, null, 0, statistics.droppedFrames, 0, null)) }
                     reportedAt = now
@@ -271,12 +286,15 @@ public class CastOutput internal constructor(
     private fun control(run: Run) {
         fun diagnostic(message: String) { notifyListener { listener.diagnostic(message) } }
         val soap = CastSoap(CastHttpClient(network, run.io, ::diagnostic), ::diagnostic)
+        // Position is optional and must not affect transport health or report renderer failures.
+        val positionSoap = CastSoap(CastHttpClient(network, run.io))
         var searchRounds = 0
         var failures = 0
         var started: Long? = null
         var local = ""
         var playedAt = 0L
         var pollAt = 0L
+        var positionAt = 0L
         var hasPlayed = false
         var playingSince: Long? = null
         var missingClientSince: Long? = null
@@ -353,6 +371,7 @@ public class CastOutput internal constructor(
                         }
                         if (!run.active.get()) break
                         started = generation; playedAt = options.now(); pollAt = playedAt; hasPlayed = false; playingSince = null
+                        positionAt = playedAt + options.positionPollMs * 1_000_000; run.rendererLag = null
                         missingClientSince = null
                         recovered(run, "renderer_rejected")
                     }
@@ -361,6 +380,7 @@ public class CastOutput internal constructor(
                     run.rendererState = transportState; failures = 0
                     val now = options.now(); val clients = run.server.clients
                     pollAt = now + options.pollMs * 1_000_000
+                    if (transportState != "PLAYING" || clients == 0) run.rendererLag = null
                     if (hasPlayed && clients == 0 && transportState in setOf("PLAYING", "TRANSITIONING")) {
                         if (missingClientSince == null) missingClientSince = now
                     } else missingClientSince = null
@@ -368,6 +388,14 @@ public class CastOutput internal constructor(
                     if (transportState == "PLAYING" && clients > 0) {
                         if (playingSince == null) playingSince = now
                         hasPlayed = true; state(run, CastState.PLAYING)
+                        if (now >= positionAt) {
+                            positionAt = now + options.positionPollMs * 1_000_000
+                            val start = run.server.streamStart
+                            val position = runCatching { positionSoap.action(renderer.transport, "GetPositionInfo").arguments["RelTime"] }.getOrNull()
+                            val lag = start?.let { rendererLagMs(options.now(), it.atNanos, position) }
+                            run.rendererLag = if (lag != null && start != null && run.active.get() && run.server.streamStart === start &&
+                                synchronized(run.lock) { run.generation == generation }) start to lag else null
+                        }
                         if (options.now() - playingSince >= options.stablePlayingMs * 1_000_000) {
                             stoppedRound = 0; recovered(run, "renderer_stopped")
                         }
