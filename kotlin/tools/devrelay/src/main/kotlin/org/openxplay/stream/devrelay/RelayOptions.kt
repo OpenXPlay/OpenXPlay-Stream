@@ -23,6 +23,9 @@ data class RelayOptions(
     val audio: ReplayAudioOptions = ReplayAudioOptions(),
     val castSearch: Boolean = false,
     val castRenderer: String? = null,
+    val carlife: Boolean = false,
+    val carlifeHeadUnit: String? = null,
+    val carlifeBind: String = "0.0.0.0",
 ) {
     init {
         listOfNotNull(audio.media, audio.voice).forEach { require(Files.isRegularFile(it)) { "Audio must be a regular file: $it" } }
@@ -39,6 +42,9 @@ data class RelayOptions(
         require(clinkHeadUnit == null || ipv4(clinkHeadUnit) && ipv4(clinkLocal!!)) { "Clink requires numeric IPv4 addresses" }
         require(clinkPin == null || clinkPin.isNotEmpty() && clinkPin.all { it in '0'..'9' }) { "Clink PIN must contain digits" }
         require(clinkPin == null || clinkHeadUnit != null) { "Clink PIN requires Clink addresses" }
+        require(carlifeHeadUnit == null || ipv4(carlifeHeadUnit)) { "CarLife requires a numeric head-unit IPv4 address" }
+        require(ipv4(carlifeBind)) { "CarLife requires a numeric bind IPv4 address" }
+        require(carlife || carlifeHeadUnit == null && carlifeBind == "0.0.0.0") { "CarLife addresses require --carlife" }
     }
 
     companion object {
@@ -56,6 +62,9 @@ data class RelayOptions(
   --clink-head-unit <ipv4>   Enable Clink with the head unit's IPv4 address
   --clink-local <ipv4>       Local IPv4 address on the same network
   --clink-pin <digits>       Pairing PIN (preserves leading zeros)
+  --carlife                 Enable CarLife UDP discovery and TCP output (H.264 only)
+  --carlife-head-unit <ipv4> Send discovery directly to this receiver
+  --carlife-bind <ipv4>      Bind CarLife listeners (default 0.0.0.0)
   --audio-media <aac>       AAC-LC 48 kHz stereo ADTS file
   --audio-voice <wav>       PCM S16LE mono/stereo WAV at 8–48 kHz
   --audio-voice-every <s>   Play one voice turn every s seconds
@@ -66,7 +75,7 @@ data class RelayOptions(
 
         fun parse(args: Array<String>, root: Path = repositoryRoot()): RelayOptions {
             val names = setOf("clip", "fps", "web-port", "web-bind", "web-root", "source-url",
-                "cast-search", "cast-renderer", "tls-keystore", "tls-password", "clink-head-unit", "clink-local", "clink-pin", "audio-media", "audio-voice", "audio-voice-every", "mic-rate", "mic-out")
+                "cast-search", "cast-renderer", "carlife", "carlife-head-unit", "carlife-bind", "tls-keystore", "tls-password", "clink-head-unit", "clink-local", "clink-pin", "audio-media", "audio-voice", "audio-voice-every", "mic-rate", "mic-out")
             val values = mutableMapOf<String, String>()
             var index = 0
             while (index < args.size) {
@@ -74,7 +83,7 @@ data class RelayOptions(
                 require(flag.startsWith("--") && flag.drop(2) in names) { "Unknown option: $flag" }
                 val name = flag.drop(2)
                 require(name !in values) { "Duplicate option: $flag" }
-                if (name == "cast-search") { values[name] = "true"; continue }
+                if (name == "cast-search" || name == "carlife") { values[name] = "true"; continue }
                 require(index < args.size && !args[index].startsWith("--")) { "Missing value for $flag" }
                 values[name] = args[index++]
             }
@@ -91,6 +100,8 @@ data class RelayOptions(
                 audio = ReplayAudioOptions(values["audio-media"]?.let(::path), values["audio-voice"]?.let(::path),
                     values["audio-voice-every"]?.toDouble(), values["mic-rate"]?.toInt(), values["mic-out"]?.let(::path)),
                 clinkHeadUnit = values["clink-head-unit"], clinkLocal = values["clink-local"], clinkPin = values["clink-pin"],
+                carlife = values["carlife"] == "true", carlifeHeadUnit = values["carlife-head-unit"],
+                carlifeBind = values["carlife-bind"] ?: "0.0.0.0",
             )
         }
     }

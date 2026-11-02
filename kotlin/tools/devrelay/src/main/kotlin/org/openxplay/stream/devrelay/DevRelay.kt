@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import org.openxplay.stream.cast.*
+import org.openxplay.stream.carlife.*
 import org.openxplay.stream.clink.*
 import org.openxplay.stream.clink.protocol.AuthIdentity
 import org.openxplay.stream.core.*
@@ -39,7 +40,21 @@ class DevRelay private constructor(private val options: RelayOptions, stdout: Pr
         private set
 
     private fun startComponents() {
+        require(!options.carlife || input.capabilities.codecs == setOf(VideoCodec.H264)) {
+            "CarLife replay requires an H.264 clip"
+        }
         hub.start()
+        if (options.carlife) {
+            val carlife = CarlifeOutput(CarlifeConfig(bindAddress = options.carlifeBind,
+                targetAddress = options.carlifeHeadUnit, fps = options.fps.toInt().coerceIn(1, 60)),
+                listener = object : CarlifeListener {
+                    override fun onStatus(status: CarlifeStatus) = log.event("carlife-state", "state" to status.state,
+                        "peer" to status.peer, "width" to status.width, "height" to status.height,
+                        "fps" to status.fps, "frames" to status.frames, "reason" to status.reason)
+                    override fun diagnostic(event: String) = log.event("carlife-protocol", "message" to event)
+                })
+            hub.addOutput(LoggedOutput(carlife, log))
+        }
         options.webPort?.let { port ->
             val web = WebOutput(WebOutputConfig(
                 bindAddress = options.webBind, port = port, sslContext = sslContext(options),
