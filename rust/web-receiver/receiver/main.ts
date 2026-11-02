@@ -219,11 +219,11 @@ async function reportFullscreenExit(): Promise<void> {
   if (!pendingFullscreenExit || document.hidden || !hello) return;
   pendingFullscreenExit = false;
   const hiddenMs = fullscreenHistory.take(performance.now()), display = measuredDisplay();
+  // Automatic requests may lack user activation; denial leaves the restore gesture pending.
   const autoRestore = await autoRestoreFullscreen({ enabled: () => fullscreen.restore && fullscreen.intent,
     restored: () => !!document.fullscreenElement, hidden: () => document.hidden,
     visible: () => new Promise<void>(resolve => { const visible = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', visible); resolve(); } }; document.addEventListener('visibilitychange', visible); visible(); }),
     request: () => document.documentElement.requestFullscreen(), delay: ms => new Promise(resolve => setTimeout(resolve, ms)) });
-  if (autoRestore === 'denied') { fullscreen.denied(); fullscreenState(); }
   post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
 document.addEventListener('pointerdown', event => {
