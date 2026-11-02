@@ -336,3 +336,37 @@ it('leaves drawer and fullscreen-button gestures to their own controls', async (
   expect(pointerEvent('pointerup', 'mouse', 2, element('fullscreen')).stopped).toBe(false);
   expect(request).not.toHaveBeenCalled();
 });
+
+async function reportGeometry() {
+  now += 100; await vi.advanceTimersByTimeAsync(100);
+  now += 500; await vi.advanceTimersByTimeAsync(500);
+  return helloFromCommands().displays[0];
+}
+it('reports a stable screen with live window sizes across fullscreen, split screen, another display, rotation and DPR changes', async () => {
+  Object.assign(screen, { width: 2402, height: 1080 });
+  const box = vi.spyOn(element('video'), 'getBoundingClientRect');
+  const viewport = (width: number, height: number) => box.mockReturnValue({ x: 0, y: 0, left: 0, top: 0, width, height });
+  viewport(2402, 1080); await fullscreenPage(async () => {});
+  Worker.current.receive({ type: 'welcome', features: ['display-settings', 'view-area'], sourceUrl: 'https://example.org/source' });
+  Object.assign(screen, { width: 2328 }); viewport(2328, 1080);
+  Object.assign(document, { fullscreenElement: document.documentElement }); documentEvents.dispatch('fullscreenchange');
+  expect(await reportGeometry()).toMatchObject({ width: 2402, height: 1080, dpr: 1, viewport: { width: 2328, height: 1080 }, fullscreen: true });
+  Worker.current.commands = []; Object.assign(screen, { width: 2402 }); viewport(1800, 900);
+  Object.assign(document, { fullscreenElement: null }); documentEvents.dispatch('fullscreenchange');
+  expect(await reportGeometry()).toMatchObject({ width: 2402, viewport: { width: 1800, height: 900 }, fullscreen: false });
+  Worker.current.commands = []; viewport(1000, 900);
+  expect(await reportGeometry()).toMatchObject({ width: 2402, viewport: { width: 1000, height: 900 } });
+  Worker.current.commands = []; Object.assign(screen, { width: 2560, height: 1440 }); viewport(2560, 1440);
+  expect(await reportGeometry()).toMatchObject({ width: 2560, height: 1440, viewport: { width: 2560, height: 1440 } });
+  Worker.current.commands = []; Object.assign(screen, { width: 720, height: 1280 }); viewport(720, 1280);
+  expect(await reportGeometry()).toMatchObject({ width: 720, height: 1280, dpr: 1, viewport: { width: 720, height: 1280 } });
+  Worker.current.commands = []; vi.stubGlobal('devicePixelRatio', 2); viewport(700, 1200);
+  expect(await reportGeometry()).toMatchObject({ width: 1440, height: 2560, dpr: 2, viewport: { width: 1400, height: 2400 } });
+});
+it('uses the persisted screen maximum in the first hello when reloading in fullscreen', async () => {
+  values.set('oxp.screen.landscape.1', JSON.stringify({ width: 2402, height: 1080, dpr: 1 }));
+  Object.assign(screen, { width: 2328, height: 1080 });
+  Object.assign(document, { fullscreenElement: document.documentElement });
+  await start();
+  expect(hello().displays[0]).toMatchObject({ width: 2402, height: 1080, dpr: 1, fullscreen: true, viewport: { width: 800, height: 480 } });
+});

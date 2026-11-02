@@ -95,6 +95,12 @@ it('releases a new mouse gesture after failure even if the previous release was 
   expect(state.pointerDown(pointer(), request)).toBe(false);
   expect(state.pointerMove(pointer())).toBe(false); expect(state.pointerUp(pointer(), request)).toBe(false);
 });
+it('does not mask rotation, DPR or another screen while waiting to restore a legacy display', () => {
+  const state = new FullscreenIntent(true, store);
+  state.changed(true, { ...display, fullscreen: true }); state.changed(false);
+  for (const real of [{ ...display, width: display.height, height: display.width }, { ...display, dpr: display.dpr + 1 },
+    { ...display, width: display.width + 100 }]) expect(state.display(real)).toEqual(real);
+});
 it('holds the last fullscreen display, preserves preferences and releases it on restore or explicit off', () => {
   const state = new FullscreenIntent(true, store);
   const full = { ...display, fullscreen: true, viewport: { width: 1920, height: 1080 } };

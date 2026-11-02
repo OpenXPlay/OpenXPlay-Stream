@@ -66,7 +66,7 @@ export class FullscreenIntent {
   display(real: DisplayInfo): DisplayInfo {
     if (this.viewAreas) return real;
     if (real.fullscreen) { this.last = real; return real; }
-    if (!this.pending || !this.last) return real;
+    if (!this.pending || !this.last || real.width !== this.last.width || real.height !== this.last.height || real.dpr !== this.last.dpr) return real;
     const { width, height, dpr, safeArea, viewport } = this.last;
     return { ...real, width, height, dpr, safeArea, viewport, fullscreen: true };
   }

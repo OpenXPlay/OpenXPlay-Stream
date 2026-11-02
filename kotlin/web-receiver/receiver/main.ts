@@ -5,7 +5,7 @@
 import { collectReceiverInfo, codecPowerEfficient } from '../shared/receiver-info';
 import { codecCandidates, probeDecoders, estimateRefreshHz, audioCapabilities } from '../shared/capabilities';
 import { mapTouch, renderQueueDepth, videoRect } from '../shared/math';
-import { DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
+import { DisplayDebounce, DisplaySettingsGate, pictureSize, StableScreen } from './display';
 import type { ViewArea, DisplaySettings } from '../protocol/json';
 import type { Hello } from '../protocol/json';
 import type { TouchContact } from '../protocol/binary';
@@ -32,6 +32,8 @@ const source = element<HTMLAnchorElement>('source');
 const debug = element('debug');
 const fragment = new URLSearchParams(location.hash.slice(1));
 const storage = new ReceiverPreferences(() => localStorage);
+const stableScreen = new StableScreen(() => localStorage);
+stableScreen.measure(screen.width, screen.height, devicePixelRatio || 1);
 const preferences = storage.load(fragment);
 // Capture is controlled by CarPlay requests rather than a saved UI switch.
 preferences.microphone = true;
@@ -382,7 +384,7 @@ function resize(): void {
 }
 function measuredDisplay(): Hello['displays'][number] {
   const box = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
-  return { ...hello.displays[0], width: Math.max(1, Math.round(screen.width * dpr)), height: Math.max(1, Math.round(screen.height * dpr)), dpr, safeArea: safeArea(dpr),
+  return { ...hello.displays[0], ...stableScreen.measure(screen.width, screen.height, dpr), safeArea: safeArea(dpr),
     viewport: { width: Math.max(1, Math.round(box.width * dpr)), height: Math.max(1, Math.round(box.height * dpr)) }, fullscreen: !!document.fullscreenElement, fullscreenPreferred: fullscreen.intent };
 }
 // Polling also catches DPR, safe-area and screen changes that do not resize the CSS box.
@@ -463,7 +465,7 @@ async function start(): Promise<void> {
     const dpr = devicePixelRatio || 1;
     hello = { type: 'hello', version: 0, token: '',
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
-      displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
+      displays: [{ screen: 0, ...stableScreen.measure(screen.width, screen.height, dpr), refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
     hello = withPlayback(withFrameRate(hello, preferences.frameRate), preferences.playback);
     displayReportSeed(); resize();
