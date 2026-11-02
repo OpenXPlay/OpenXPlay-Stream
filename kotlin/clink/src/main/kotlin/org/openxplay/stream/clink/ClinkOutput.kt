@@ -71,6 +71,14 @@ public class ClinkOutput(
         var requestKeyframe = false
     }
     @Volatile private var current: Run? = null
+    /**
+     * Audio clock anchors live on the output, not in the media loop: a rebuild of the audio stream
+     * (rotation, reconnect) resets AudioClock's anchor, so keeping the old offset left mapped far
+     * behind transportPts (measured: 53 s) and the packet was dropped by the emit gate.
+     * Reset both whenever the media stream changes.
+     */
+    @Volatile private var audioOffset: Long? = null
+    @Volatile private var lastAudioPts = -1L
 
     /**
      * Only voice and phone calls open the head unit's voice channel: system sounds such as keyboard
@@ -162,6 +170,7 @@ public class ClinkOutput(
                 if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Video(System.nanoTime(), run.traceSession, "reset", "input_session"))
                 run.queue.reset(); run.revision++; run.requestKeyframe = true
                 run.audio.clear(); run.audioBytes = 0; run.mediaStream = null; run.mediaFormats.clear(); run.voiceStreams.clear(); run.voice.reset()
+                audioOffset = null; lastAudioPts = -1
                 run.microphone = null; run.session?.microphone(null)
             }
         }
@@ -206,7 +215,12 @@ public class ClinkOutput(
                 }
             }
             run.mediaStream = run.mediaFormats.keys.lastOrNull()
-            if (previous != run.mediaStream || previous == stream) { run.audio.clear(); run.audioBytes = 0 }
+            if (previous != run.mediaStream || previous == stream) {
+                run.audio.clear(); run.audioBytes = 0
+                // A rebuilt audio stream gets a fresh AudioClock anchor, so the old offset and
+                // last PTS no longer describe it. Re-anchor on the next packet.
+                audioOffset = null; lastAudioPts = -1
+            }
             run.voiceStreams.remove(stream)
             if (format != null && voiceRole(format.role) && format.codec == AudioCodec.PCM_S16LE &&
                 format.sampleRate in 8000..48000 && format.channels in 1..2) run.voiceStreams.add(stream)
@@ -216,16 +230,29 @@ public class ClinkOutput(
     override fun onAudioPacket(packet: AudioPacket) {
         val run = current ?: return
         synchronized(run.lock) {
-            if (!run.active.get() || packet.session != run.inputSession) return
+            if (!run.active.get()) { audioReject("inactive"); return }
+            if (packet.session != run.inputSession) { audioReject("session=${packet.session}/${run.inputSession}"); return }
             if (packet.stream == run.mediaStream) {
-                if (packet.data.size !in 1..8184) return
+                if (packet.data.size !in 1..8184) { audioReject("size=${packet.data.size}"); return }
                 while (run.audio.isNotEmpty() && mediaQueueFull(run.audio.size, run.audioBytes + packet.data.size,
                         mediaQueueSpanUs(packet.ptsUs, run.audio.first.ptsUs))) {
                     run.audioBytes -= run.audio.removeFirst().data.size; run.audioDrops++
                 }
                 run.audio.addLast(packet); run.audioBytes += packet.data.size
             } else if (packet.stream in run.voiceStreams) run.voice.packet(packet)
+            else audioReject("stream=${packet.stream}/media=${run.mediaStream}/voice=${run.voiceStreams}")
         }
+    }
+    // Diagnostic: why an audio packet never reached the queue. Rate-limited to one line a second.
+    @Volatile private var audioRejectAt = 0L
+    @Volatile private var audioRejectReason = ""
+    private fun audioReject(reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - audioRejectAt < 1_000) return
+        audioRejectAt = now
+        audioRejectReason = reason
+        // clink is a plain JVM module: no android.util.Log here. println lands in logcat as System.out.
+        println("OXP-Audio packet_rejected $reason")
     }
     override fun onMicrophone(stream: Int, request: MicRequest?) {
         val run = current ?: return
@@ -314,13 +341,20 @@ public class ClinkOutput(
             var reportedAudioDrops = 0L
             var transportPts = -1L
             var liveOffset = 0L
-            var audioOffset: Long? = null
             var liveFrames = 0L; var placeholderFrames = 0L; var keyframes = 0L; var videoBytes = 0L
             var sendStalls = 0L; var audioFrames = 0L; var failedVideo = 0L
+            // Audio held back by the head-room gate: how many and by how much, reported once a second.
+            var audioBlocked = 0L; var blockedWorstUs = 0L; var blockedReportedAt = 0L
+            // Audio quality window (reset on every statistics report): step = PTS delta between
+            // consecutive audio packets (ideal 21333 us for AAC-LC 48k/1024), skew = audio PTS minus
+            // the transport clock. Backwards steps or large skew are what the ear hears as stutter.
+            var aqStepMin = Long.MAX_VALUE; var aqStepMax = Long.MIN_VALUE; var aqStepSum = 0L; var aqStepN = 0L
+            var aqBack = 0L; var aqJump = 0L
+            var aqSkewMin = Long.MAX_VALUE; var aqSkewMax = Long.MIN_VALUE; var aqSkewSum = 0L; var aqSkewN = 0L
+            var aqReportedAt = 0L
             var liveBytes = 0L; var codecMismatchDrops = 0L; var queueDropBase = 0L
             var liveBase = 0L; var placeholderBase = 0L; var failedBase = 0L; var stallBase = 0L
             var statsFormat: VideoFormat? = null
-            var lastAudioPts = -1L
             var clockAt = 0L
             var sent = 0L
             var reportedAt = 0L
@@ -513,24 +547,66 @@ public class ClinkOutput(
                     if (!writable) return@repeat
                     val audio = synchronized(run.lock) {
                         val candidate = run.audio.peekFirst()
-                        if (!gate.live && candidate != null && audioOffset == null) audioOffset = maxOf(0L, outputPts) - candidate.ptsUs
-                        val offset = if (gate.live) liveOffset else audioOffset ?: 0L
+                        // Audio must be anchored to the transport clock, not to the video's liveOffset:
+                        // audio PTS is stamped from System.nanoTime() while video PTS comes from the
+                        // encoder, so borrowing liveOffset left mapped 58~238 ms behind transportPts and
+                        // the gate below dropped 43% of packets (worker_out 54/s vs audioFrames 31/s).
+                        // Anchor once, as soon as a clock exists, and keep using audio's own offset.
+                        val anchor = maxOf(transportPts, outputPts)
+                        if (candidate != null && audioOffset == null && anchor > 0) {
+                            audioOffset = anchor - candidate.ptsUs
+                        }
+                        val offset = audioOffset ?: 0L
                         // Phones deliver video in batches with gaps of up to ~1 s; between video writes the
                         // transport clock keeps running so audio is not starved and dropped (2026-10-15).
                         val clockPts = if (videoWrittenAt == 0L) outputPts else outputPts + (System.nanoTime() - videoWrittenAt) / 1000
-                        if (candidate != null && candidate.ptsUs + offset <= clockPts + 50_000) {
+                        // Audio arrives slightly ahead of real time, so the head-room covers a full
+                        // pre-buffer window rather than just jitter.
+                        val head = if (candidate != null) candidate.ptsUs + offset - clockPts else 0L
+                        if (candidate != null && head <= 1_000_000) {
                             run.audio.removeFirst().also { run.audioBytes -= it.data.size }
-                        } else null
+                        } else {
+                            if (candidate != null) {
+                                audioBlocked++
+                                if (head > blockedWorstUs) blockedWorstUs = head
+                            }
+                            null
+                        }
                     }
                     if (audio != null) {
-                        val mapped = audio.ptsUs + (if (gate.live) liveOffset else audioOffset ?: 0L)
-                        if (mapped >= 0 && mapped >= transportPts - 50_000) {
+                        val mapped = audio.ptsUs + (audioOffset ?: 0L)
+                        // Only reject a negative PTS. Comparing against transportPts dropped half the
+                        // packets: video keyframes push that clock forward, audio cannot catch up, and
+                        // skew settled at -103 ms against a 200 ms gate (measured: 23~27 packets/s for
+                        // a 46.9 packet/s stream). Monotonicity is already guaranteed per stream by
+                        // maxOf(mapped, lastAudioPts + 1) below.
+                        if (mapped >= 0) {
                             // Keep mux calls ordered; bounded late arrival can shift PTS by at most 50 ms.
-                            val pts = maxOf(mapped, transportPts)
+                            // Audio PTS must advance by its own cadence. maxOf(mapped, transportPts) let the
+                            // video-driven clock flatten consecutive audio packets onto one timestamp
+                            // (measured: 288 of 468 steps were 0, i.e. PTS did not advance), which the
+                            // receiver decodes as "time is not moving" — audible stutter. Keep the mux
+                            // monotonic per stream instead of per session.
+                            val pts = if (lastAudioPts > 0) maxOf(mapped, lastAudioPts + 1) else mapped
+                            val skew = pts - transportPts
                             val result = emit(session, pts) { transport().writeAudio(Adts.buildHeader(aac, audio.data.size) + audio.data, pts) }
+                            if (result != Emit.DROPPED) {
+                                if (lastAudioPts > 0) {
+                                    val step = pts - lastAudioPts
+                                    aqStepSum += step; aqStepN++
+                                    if (step < aqStepMin) aqStepMin = step
+                                    if (step > aqStepMax) aqStepMax = step
+                                    if (step <= 0) aqBack++
+                                    if (step > 64_000) aqJump++
+                                }
+                                aqSkewSum += skew; aqSkewN++
+                                if (skew < aqSkewMin) aqSkewMin = skew
+                                if (skew > aqSkewMax) aqSkewMax = skew
+                            }
                             if (trace !== ClinkTrace.NONE && result != Emit.DROPPED) audioFrames++
                             lastAudioPts = pts
-                            transportPts = pts
+                            // Do not push the shared transport clock with audio: it belongs to video, and
+                            // letting a lagging audio PTS lower it made video PTS repeat as well.
                             if (result == Emit.LATE) writable = false
                         }
                     }
@@ -546,6 +622,31 @@ public class ClinkOutput(
                     if (session.mediaAudio && audioDrops != reportedAudioDrops) {
                         listener.diagnostic("audio queue drops=$audioDrops")
                         reportedAudioDrops = audioDrops
+                    }
+                    if (audioBlocked > 0) {
+                        listener.diagnostic("audio blocked=$audioBlocked worstUs=$blockedWorstUs")
+                        audioBlocked = 0; blockedWorstUs = 0
+                    }
+                    // State dump for "audio stopped but packets keep arriving": separates the three
+                    // remaining causes — stream not flagged as audio, packets stuck in the queue, or
+                    // the write side reporting not writable.
+                    if (session.mediaAudio) {
+                        val queued = synchronized(run.lock) { run.audio.size }
+                        listener.diagnostic("audio state mediaAudio=true queued=$queued writable=$writable " +
+                            "offset=${audioOffset ?: -1} lastPts=$lastAudioPts transport=$transportPts")
+                    } else {
+                        listener.diagnostic("audio state mediaAudio=false queued=0")
+                    }
+                    // Audio quality window, every 10 s: ideal step is 21333 us (1024 samples @48 kHz).
+                    // back>0 means PTS went backwards (audible glitch); jump>0 means a gap (dropout).
+                    if (aqStepN > 0 && now - aqReportedAt >= 10_000_000_000L) {
+                        aqReportedAt = now
+                        listener.diagnostic("audio quality n=$aqStepN " +
+                            "step=${aqStepMin}/${aqStepSum / aqStepN}/${aqStepMax} back=$aqBack jump=$aqJump " +
+                            "skew=${aqSkewMin}/${aqSkewSum / aqSkewN}/${aqSkewMax}")
+                        aqStepMin = Long.MAX_VALUE; aqStepMax = Long.MIN_VALUE; aqStepSum = 0; aqStepN = 0
+                        aqBack = 0; aqJump = 0
+                        aqSkewMin = Long.MAX_VALUE; aqSkewMax = Long.MIN_VALUE; aqSkewSum = 0; aqSkewN = 0
                     }
                     val dropped = run.queue.droppedCount()
                     // What the receiver sees: video and audio PTS share one transport clock.
