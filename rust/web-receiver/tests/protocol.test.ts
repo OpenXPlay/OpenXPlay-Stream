@@ -111,3 +111,11 @@ it('accepts optional relay-owned frame rates in both directions and validates se
   for (const session of [1234, -1234, '1234', '-9223372036854775808', '9223372036854775807']) expect(parseMessage({ ...stats, session })).toHaveProperty('session', session);
   for (const session of [null, true, 1.1, Number.MAX_SAFE_INTEGER + 1, '01', '', '9223372036854775808']) expect(() => parseMessage({ ...stats, session })).toThrow();
 });
+it('accepts decoded drop reasons as optional stats diagnostics and validates their values', () => {
+  const stats = JSON.parse(readFileSync(new URL('../spec/vectors/web/stats.json', import.meta.url), 'utf8'));
+  expect(parseMessage(stats, 'client-to-relay')).toEqual(stats);
+  for (const field of ['renderSupersededFrames', 'renderLateFrames', 'renderResetFrames', 'renderInactiveFrames']) {
+    expect(parseMessage({ ...stats, [field]: 3 }, 'client-to-relay')).toHaveProperty(field, 3);
+    for (const value of [-1, '3', null, Infinity]) expect(() => parseMessage({ ...stats, [field]: value })).toThrow();
+  }
+});

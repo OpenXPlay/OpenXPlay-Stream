@@ -16,7 +16,7 @@ export function withPlayback(hello: Hello, mode: PlaybackMode): Hello {
 }
 
 export interface PlaybackParameters {
-  /** Bounds for decoded frames held behind the one due for display; Smart adapts between them. */
+  /** Steady-state bounds for frames behind the one due; late evidence can take Smart below its minimum. */
   minDepth: number; maxDepth: number;
   /** A queued frame older than this, from relay receipt to now, gives way to a newer one. */
   lateBudgetMs: number;
@@ -28,7 +28,7 @@ export interface PlaybackParameters {
 export const playbackParameters: Readonly<Record<PlaybackMode, Readonly<PlaybackParameters>>> = {
   // Newest decoded frame only, with the shortest decode queue.
   SPEED: { minDepth: 0, maxDepth: 0, lateBudgetMs: 50, maxDecodeQueue: 2, paced: false },
-  SMART: { minDepth: 0, maxDepth: 2, lateBudgetMs: QUEUE_LATENCY_BUDGET_MS, maxDecodeQueue: 3, paced: false },
+  SMART: { minDepth: 1, maxDepth: 2, lateBudgetMs: QUEUE_LATENCY_BUDGET_MS, maxDecodeQueue: 3, paced: false },
   // Three decoded frames spare hardware decoder buffers; a second of encoded frames counts as far behind.
   QUALITY: { minDepth: 3, maxDepth: 3, lateBudgetMs: 1000, maxDecodeQueue: 60, paced: true },
 };
@@ -57,7 +57,8 @@ function percentile(values: number[], fraction: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0;
 }
 /**
- * Smart render depth (0-2). Arrival jitter relative to the timestamp cadence asks for depth; late frames mean the
+ * Smart keeps one spare frame even after smooth arrivals: a decoder can still output a pair within one refresh.
+ * Arrival jitter relative to the timestamp cadence asks for more depth; late frames mean the
  * buffer delays frames that are already late, so they lower it at once and hold further raises for five seconds.
  * Raising needs two consecutive windows and lowering five, so single bursts do not toggle the depth.
  */
@@ -88,7 +89,8 @@ export class SmartDepth {
   /** Called once per second; returns the depth for the next window. */
   evaluate(): number {
     const enough = this.jitter.length >= MIN_SAMPLES;
-    const target = enough ? Math.min(2, Math.round(percentile(this.jitter, 0.9) / percentile(this.spacing, 0.5))) : this.depth;
+    const { minDepth, maxDepth } = playbackParameters.SMART;
+    const target = enough ? Math.max(minDepth, Math.min(maxDepth, Math.round(percentile(this.jitter, 0.9) / percentile(this.spacing, 0.5)))) : this.depth;
     const late = this.late >= LATE_FRAMES && this.late >= this.frames * LATE_SHARE;
     this.jitter = []; this.spacing = []; this.frames = 0; this.late = 0;
     if (this.hold > 0) this.hold--;

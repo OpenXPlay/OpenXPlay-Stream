@@ -27,6 +27,8 @@ export interface Stats {
   wsBytesPerSecond?: number; videoFramesPerSecond?: number; decoderSubmittedPerSecond?: number; decoderOutputPerSecond?: number;
   decodeLatencyP50Ms?: number; decodeLatencyP95Ms?: number; decodeLatencyMaxMs?: number; maxDecodeQueue?: number;
   decoderErrors?: number; decoderResets?: number; renderedFps?: number; droppedFrames?: number;
+  /** Decoded frames discarded since the previous stats report, excluding encoded input drops. */
+  renderSupersededFrames?: number; renderLateFrames?: number; renderResetFrames?: number; renderInactiveFrames?: number;
   renderLatencyP50Ms?: number; renderLatencyP95Ms?: number; eventLoopLagAvgMs?: number; eventLoopLagMaxMs?: number;
   longTaskCount?: number; longTaskTotalMs?: number; usedJSHeapSize?: number; renderDepth?: number;
   audioBufferedMs?: number | null; audioUnderruns?: number;
@@ -98,6 +100,7 @@ const diagnosticFields = [
   'wsBytesPerSecond', 'videoFramesPerSecond', 'decoderSubmittedPerSecond', 'decoderOutputPerSecond',
   'decodeLatencyP50Ms', 'decodeLatencyP95Ms', 'decodeLatencyMaxMs', 'maxDecodeQueue',
   'decoderErrors', 'decoderResets', 'renderedFps', 'droppedFrames',
+  'renderSupersededFrames', 'renderLateFrames', 'renderResetFrames', 'renderInactiveFrames',
   'renderLatencyP50Ms', 'renderLatencyP95Ms', 'eventLoopLagAvgMs', 'eventLoopLagMaxMs',
   'longTaskCount', 'longTaskTotalMs', 'usedJSHeapSize', 'renderDepth',
 ];
