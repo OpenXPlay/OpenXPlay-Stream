@@ -20,6 +20,7 @@ rootProject.name = "OpenXPlay-Stream"
 include(":core")
 include(":clink")
 include(":cast")
+include(":carlife")
 
 include(":web-server")
 project(":web-server").projectDir = file("web-server")
