@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { DisplaySettings, Hello } from '../protocol/json';
 import type { PageCommand, WorkerNotice } from '../receiver/messages';
+import { strings } from '../receiver/ui';
 
 vi.mock('../shared/capabilities', () => ({
   codecCandidates: [], probeDecoders: async () => [{ supported: true, codecString: 'avc1.640028' }],
@@ -40,7 +41,20 @@ class Element {
     contains: (name: string) => this.classes.has(name),
     toggle: (name: string, on: boolean) => { if (on) this.classes.add(name); else this.classes.delete(name); },
   };
-  addEventListener() {} setAttribute() {} toggleAttribute() {}
+  private listeners = new Map<string, { callback: (event: any) => void; capture: boolean }[]>();
+  addEventListener(type: string, callback: (event: any) => void, options?: { capture?: boolean }) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push({ callback, capture: !!options?.capture }); this.listeners.set(type, listeners);
+  }
+  dispatch(type: string, event: any = {}, capture = false) {
+    for (const listener of this.listeners.get(type) ?? []) {
+      if (event.stopped) break;
+      if (listener.capture === capture) listener.callback(event);
+    }
+  }
+  contains(target: unknown) { return target === this; }
+  setPointerCapture() {} hasPointerCapture() { return false; } releasePointerCapture() {}
+  setAttribute() {} toggleAttribute() {}
   querySelector(selector: string) { return element(selector.slice(1)); }
   querySelectorAll() { return []; }
   click() { if (!this.disabled) this.onclick?.(); }
@@ -59,7 +73,7 @@ class Worker {
   receive(data: WorkerNotice) { this.onmessage?.({ data }); }
   terminate() {}
 }
-let elements: Map<string, Element>, values: Map<string, string>, now: number;
+let elements: Map<string, Element>, values: Map<string, string>, now: number, documentEvents: Element;
 const element = (id: string) => {
   if (!elements.has(id)) elements.set(id, new Element());
   return elements.get(id)!;
@@ -79,7 +93,7 @@ function hello(): Hello {
 beforeEach(() => {
   vi.resetModules(); drawerOpen.mockClear(); vi.useFakeTimers(); now = 0;
   vi.spyOn(performance, 'now').mockImplementation(() => now);
-  elements = new Map(); values = new Map();
+  elements = new Map(); values = new Map(); documentEvents = new Element();
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); },
@@ -87,7 +101,7 @@ beforeEach(() => {
   vi.stubGlobal('document', {
     documentElement: new Element(), hidden: false, fullscreenEnabled: false,
     getElementById: element, querySelector: (selector: string) => element(selector.slice(1)), querySelectorAll: () => [],
-    addEventListener() {}, getAnimations: () => [],
+    addEventListener: documentEvents.addEventListener.bind(documentEvents), getAnimations: () => [],
   });
   vi.stubGlobal('window', { addEventListener() {} });
   vi.stubGlobal('navigator', { languages: ['en'], maxTouchPoints: 1 });
@@ -95,6 +109,8 @@ beforeEach(() => {
   vi.stubGlobal('screen', { width: 800, height: 480 });
   vi.stubGlobal('innerWidth', 800); vi.stubGlobal('innerHeight', 480); vi.stubGlobal('devicePixelRatio', 1);
   vi.stubGlobal('isSecureContext', true); vi.stubGlobal('Worker', Worker); vi.stubGlobal('VideoDecoder', class {});
+  vi.stubGlobal('Node', Element);
+  vi.stubGlobal('requestAnimationFrame', (callback: () => void) => setTimeout(callback, 0));
   vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {} }));
   vi.stubGlobal('getComputedStyle', () => ({ right: '12px', top: '12px', marginTop: '0', marginRight: '0', marginBottom: '0', marginLeft: '0', fontSize: '16px', getPropertyValue: () => '0' }));
   vi.stubGlobal('ResizeObserver', class { observe() {} });
@@ -246,4 +262,77 @@ it('cancels the old deadline so it cannot unlock a later frame-rate request', as
   for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(false);
   await vi.advanceTimersByTimeAsync(1000); expect(element('frame-rate').disabled).toBe(false);
   for (const id of ['frame-rate-status', 'frame-rate-choice-status']) expect(element(id).hidden).toBe(true);
+});
+
+function pointerEvent(type: string, pointerType = 'touch', pointerId = 7, target = element('video')) {
+  const event = { pointerType, pointerId, target, button: 0, clientX: 400, clientY: 240, stopped: false,
+    preventDefault: vi.fn(), stopImmediatePropagation() { this.stopped = true; } };
+  documentEvents.dispatch(type, event, true);
+  if (!event.stopped) target.dispatch(type, event);
+  documentEvents.dispatch(type, event);
+  return event;
+}
+async function fullscreenPage(request: () => Promise<void>) {
+  Object.assign(document, { fullscreenEnabled: true });
+  document.documentElement.requestFullscreen = request;
+  await start();
+  Worker.current.receive({ type: 'format', format: { codec: 'H264', codecString: 'avc1.640028', config: '', width: 800, height: 480 } });
+  Worker.current.commands = [];
+}
+const touches = () => Worker.current.commands.filter(command => command.type === 'touch');
+
+it.each(['mouse', 'touch', 'pen'])('captures the whole %s restore gesture before the canvas and requests on its activation event', async pointerType => {
+  const request = vi.fn(async () => {});
+  await fullscreenPage(request);
+  expect(pointerEvent('pointerdown', pointerType).stopped).toBe(true);
+  expect(request).toHaveBeenCalledTimes(pointerType === 'mouse' ? 1 : 0);
+  expect(pointerEvent('pointermove', pointerType).stopped).toBe(true);
+  expect(pointerEvent('pointerup', pointerType, 8).stopped).toBe(false);
+  expect(request).toHaveBeenCalledTimes(pointerType === 'mouse' ? 1 : 0);
+  if (pointerType === 'mouse') {
+    Object.assign(document, { fullscreenElement: document.documentElement }); documentEvents.dispatch('fullscreenchange');
+  }
+  expect(pointerEvent('pointerup', pointerType).stopped).toBe(true);
+  expect(request).toHaveBeenCalledOnce(); expect(touches()).toEqual([]);
+});
+it.each(['touch', 'pen'])('consumes a cancelled %s restore without requesting or reaching CarPlay', async pointerType => {
+  const request = vi.fn(async () => {}); await fullscreenPage(request);
+  pointerEvent('pointerdown', pointerType); pointerEvent('pointermove', pointerType);
+  expect(pointerEvent('pointercancel', pointerType).stopped).toBe(true);
+  expect(request).not.toHaveBeenCalled(); expect(touches()).toEqual([]);
+});
+it.each(['sync', 'async'])('shows unavailable after a %s denial, releases later taps to CarPlay and clears failure on intent off', async denial => {
+  const request = vi.fn(() => { if (denial === 'sync') throw Error('denied'); return Promise.reject(Error('denied')); });
+  await fullscreenPage(request);
+  pointerEvent('pointerdown'); pointerEvent('pointerup');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(request).toHaveBeenCalledOnce(); expect(touches()).toEqual([]);
+  expect(element('fullscreen-hint').hidden).toBe(true);
+  expect(element('fullscreen-state').textContent).toBe(strings.en.fullscreenUnavailable);
+  expect(pointerEvent('pointerdown', 'touch', 9).stopped).toBe(false);
+  expect(pointerEvent('pointerup', 'touch', 9).stopped).toBe(false);
+  expect(touches()).toHaveLength(2); expect(request).toHaveBeenCalledOnce();
+  element('fullscreen').click();
+  expect(element('fullscreen-state').textContent).toBe(''); expect(element('fullscreen-hint').hidden).toBe(true);
+});
+it('keeps manual restore available after both silent attempts are denied', async () => {
+  const request = vi.fn(async () => { throw Error('gesture'); }); await fullscreenPage(request);
+  Object.assign(document, { fullscreenElement: document.documentElement }); documentEvents.dispatch('fullscreenchange');
+  Object.assign(document, { fullscreenElement: null }); documentEvents.dispatch('fullscreenchange');
+  await vi.advanceTimersByTimeAsync(500);
+  expect(request).toHaveBeenCalledTimes(2); expect(element('fullscreen-hint').hidden).toBe(false);
+  expect(Worker.current.commands).toContainEqual(expect.objectContaining({ type: 'fullscreen-exit', autoRestore: 'denied' }));
+  pointerEvent('pointerdown'); expect(request).toHaveBeenCalledTimes(2);
+  pointerEvent('pointerup'); await vi.advanceTimersByTimeAsync(0);
+  expect(request).toHaveBeenCalledTimes(3); expect(element('fullscreen-hint').hidden).toBe(true);
+});
+it('leaves drawer and fullscreen-button gestures to their own controls', async () => {
+  const request = vi.fn(async () => {}); await fullscreenPage(request);
+  element('settings').open = true;
+  expect(pointerEvent('pointerdown', 'touch', 1, element('settings')).stopped).toBe(false);
+  expect(pointerEvent('pointerup', 'touch', 1, element('settings')).stopped).toBe(false);
+  element('settings').open = false;
+  expect(pointerEvent('pointerdown', 'mouse', 2, element('fullscreen')).stopped).toBe(false);
+  expect(pointerEvent('pointerup', 'mouse', 2, element('fullscreen')).stopped).toBe(false);
+  expect(request).not.toHaveBeenCalled();
 });

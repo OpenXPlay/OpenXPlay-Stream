@@ -194,16 +194,23 @@ async function reportFullscreenExit(): Promise<void> {
   });
   post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
-function requestFullscreen(): void {
-  void document.documentElement.requestFullscreen?.().catch(() => { element('fullscreen-state').textContent = text.fullscreenUnavailable; });
+async function requestFullscreen(): Promise<void> {
+  try { await document.documentElement.requestFullscreen(); }
+  catch { fullscreen.denied(); }
+  fullscreenState();
 }
 // Capture before canvas controls: the restore gesture must never become a CarPlay touch.
 document.addEventListener('pointerdown', event => {
   if (settings.open || (event.target instanceof Node && element('fullscreen').contains(event.target))) return;
   fullscreen.pointerDown(event, requestFullscreen);
 }, { capture: true });
+document.addEventListener('pointermove', event => { fullscreen.pointerMove(event); }, { capture: true });
+for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, event => {
+  fullscreen.pointerUp(event as PointerEvent, requestFullscreen, type === 'pointercancel');
+}, { capture: true });
 function fullscreenState(): void {
   syncFullscreen(document, !!document.fullscreenEnabled, fullscreen.intent, fullscreen.pending, text);
+  if (fullscreen.intent && fullscreen.failed) element('fullscreen-state').textContent = text.fullscreenUnavailable;
 }
 document.addEventListener('fullscreenchange', () => {
   if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) {

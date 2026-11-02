@@ -11,6 +11,8 @@ export class FullscreenIntent {
   private on = false;
   restore = true;
   viewAreas = false;
+  failed = false;
+  private pointers = new Map<number, boolean>();
   private last?: DisplayInfo;
   constructor(private readonly available: boolean, private readonly storage: () => Store) {
     let saved: string | null = null;
@@ -18,7 +20,7 @@ export class FullscreenIntent {
     this.intent = saved === 'false' ? false : available;
     try { this.restore = storage().getItem('oxp.fullscreenRestore') !== 'false'; } catch { }
   }
-  get pending(): boolean { return this.available && this.intent && !this.on && this.restore; }
+  get pending(): boolean { return this.available && this.intent && !this.on && this.restore && !this.failed; }
   setRestore(value: boolean): void {
     this.restore = value;
     try { this.storage().setItem('oxp.fullscreenRestore', String(value)); } catch { }
@@ -30,16 +32,36 @@ export class FullscreenIntent {
   changed(on: boolean, display?: DisplayInfo): boolean {
     const involuntary = this.on && !on && this.intent;
     this.on = on;
+    if (on || involuntary) this.failed = false;
     if (on) { this.save(true); if (display) this.last = display; }
     return involuntary;
   }
+  denied(): void { if (this.intent && !this.on) this.failed = true; }
   toggle(request: () => void, exit: () => void): void {
+    this.failed = false;
     if (this.intent) { this.save(false); if (this.on) exit(); }
     else if (this.available) { this.save(true); request(); }
   }
-  pointerDown(event: Pick<PointerEvent, 'preventDefault' | 'stopImmediatePropagation'>, request: () => void): boolean {
+  pointerDown(event: Pick<PointerEvent, 'pointerId' | 'pointerType' | 'preventDefault' | 'stopImmediatePropagation'>, request: () => void): boolean {
+    this.pointers.delete(event.pointerId);
     if (!this.pending) return false;
-    event.preventDefault(); event.stopImmediatePropagation(); request(); return true;
+    const deferred = event.pointerType !== 'mouse';
+    this.pointers.set(event.pointerId, deferred);
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (!deferred) request();
+    return true;
+  }
+  pointerMove(event: Pick<PointerEvent, 'pointerId' | 'preventDefault' | 'stopImmediatePropagation'>): boolean {
+    if (!this.pointers.has(event.pointerId)) return false;
+    event.preventDefault(); event.stopImmediatePropagation(); return true;
+  }
+  pointerUp(event: Pick<PointerEvent, 'pointerId' | 'preventDefault' | 'stopImmediatePropagation'>, request: () => void, cancelled = false): boolean {
+    const deferred = this.pointers.get(event.pointerId);
+    if (deferred === undefined) return false;
+    this.pointers.delete(event.pointerId);
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (deferred && !cancelled && this.pending) request();
+    return true;
   }
   display(real: DisplayInfo): DisplayInfo {
     if (this.viewAreas) return real;

@@ -12,6 +12,7 @@ function store(): Store {
   const values = new Map<string, string>();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); } };
 }
+const pointer = (pointerType = 'mouse', pointerId = 1) => ({ pointerType, pointerId, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() });
 it('defaults to fullscreen when supported, persists intent and tolerates denied storage', () => {
   const saved = store(), request = vi.fn(), exit = vi.fn();
   const state = new FullscreenIntent(true, () => saved);
@@ -31,13 +32,68 @@ it('defaults to fullscreen when supported, persists intent and tolerates denied 
 });
 it('consumes the next pointerdown and retries until fullscreen returns', () => {
   const state = new FullscreenIntent(true, store), request = vi.fn();
-  const event = { preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() };
+  const event = pointer();
   state.changed(true, { ...display, fullscreen: true }); state.changed(false);
   expect(state.pointerDown(event, request)).toBe(true);
   expect(event.preventDefault).toHaveBeenCalledOnce(); expect(event.stopImmediatePropagation).toHaveBeenCalledOnce();
   expect(request).toHaveBeenCalledOnce(); expect(state.pending).toBe(true);
   state.changed(true); expect(state.pending).toBe(false);
   expect(state.pointerDown(event, request)).toBe(false); expect(request).toHaveBeenCalledOnce();
+});
+it.each(['touch', 'pen'])('defers %s restore until the originating pointerup and consumes its entire gesture', pointerType => {
+  const state = new FullscreenIntent(true, store), request = vi.fn(), down = pointer(pointerType, 7);
+  expect(state.pointerDown(down, request)).toBe(true);
+  expect(down.preventDefault).toHaveBeenCalledOnce(); expect(down.stopImmediatePropagation).toHaveBeenCalledOnce();
+  expect(request).not.toHaveBeenCalled();
+  const move = pointer(pointerType, 7), other = pointer(pointerType, 8);
+  expect(state.pointerMove(move)).toBe(true);
+  expect(move.preventDefault).toHaveBeenCalledOnce(); expect(move.stopImmediatePropagation).toHaveBeenCalledOnce();
+  expect(state.pointerMove(other)).toBe(false); expect(state.pointerUp(other, request)).toBe(false);
+  expect(other.preventDefault).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
+  const up = pointer(pointerType, 7);
+  expect(state.pointerUp(up, request)).toBe(true);
+  expect(up.preventDefault).toHaveBeenCalledOnce(); expect(up.stopImmediatePropagation).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledOnce(); expect(state.pointerUp(up, request)).toBe(false);
+});
+it.each(['mouse', 'touch', 'pen'])('consumes %s pointercancel without requesting fullscreen on release', pointerType => {
+  const state = new FullscreenIntent(true, store), request = vi.fn(), event = pointer(pointerType);
+  state.pointerDown(event, request); request.mockClear();
+  expect(state.pointerUp(event, request, true)).toBe(true);
+  expect(state.pointerUp(event, request)).toBe(false); expect(request).not.toHaveBeenCalled();
+});
+it('keeps the mouse release consumed after synchronous success or rejection on pointerdown', () => {
+  for (const complete of [(state: FullscreenIntent) => state.changed(true), (state: FullscreenIntent) => state.denied()]) {
+    const state = new FullscreenIntent(true, store), request = vi.fn(() => { complete(state); });
+    expect(state.pointerDown(pointer(), request)).toBe(true); expect(request).toHaveBeenCalledOnce();
+    expect(state.pointerMove(pointer())).toBe(true); expect(state.pointerUp(pointer(), request)).toBe(true);
+    expect(request).toHaveBeenCalledOnce();
+  }
+});
+it('releases failed restore gestures and display substitution until the next involuntary exit', () => {
+  const state = new FullscreenIntent(true, store), request = vi.fn(() => { state.denied(); });
+  state.changed(true, { ...display, fullscreen: true }); state.changed(false);
+  state.pointerDown(pointer('touch'), request); state.pointerUp(pointer('touch'), request);
+  expect(state.failed).toBe(true); expect(state.pending).toBe(false); expect(state.display(display)).toEqual(display);
+  const next = pointer('touch', 2);
+  expect(state.pointerDown(next, request)).toBe(false); expect(state.pointerUp(next, request)).toBe(false);
+  expect(next.preventDefault).not.toHaveBeenCalled(); expect(next.stopImmediatePropagation).not.toHaveBeenCalled();
+  state.changed(false); state.setRestore(false); state.setRestore(true);
+  expect(state.pending).toBe(false);
+  state.changed(true); expect(state.changed(false)).toBe(true);
+  expect(state.failed).toBe(false); expect(state.pending).toBe(true);
+});
+it('clears a failed request when intent turns off, including a late rejection', () => {
+  const state = new FullscreenIntent(true, store);
+  state.denied(); expect(state.failed).toBe(true);
+  state.toggle(vi.fn(), vi.fn()); state.denied();
+  expect(state.failed).toBe(false); expect(state.intent).toBe(false); expect(state.pending).toBe(false);
+  state.toggle(vi.fn(), vi.fn()); expect(state.pending).toBe(true);
+});
+it('releases a new mouse gesture after failure even if the previous release was outside the page', () => {
+  const state = new FullscreenIntent(true, store), request = vi.fn(() => { state.denied(); });
+  state.pointerDown(pointer(), request);
+  expect(state.pointerDown(pointer(), request)).toBe(false);
+  expect(state.pointerMove(pointer())).toBe(false); expect(state.pointerUp(pointer(), request)).toBe(false);
 });
 it('holds the last fullscreen display, preserves preferences and releases it on restore or explicit off', () => {
   const state = new FullscreenIntent(true, store);
@@ -69,7 +125,7 @@ it('restore defaults on, persists off, passes CarPlay touches and reports real s
   expect(state.display(display)).toEqual({ ...full });
   state.viewAreas = true; expect(state.display(display)).toEqual(display);
   state.setRestore(false); expect(state.pending).toBe(false);
-  const event = { preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() }, request = vi.fn();
+  const event = pointer(), request = vi.fn();
   expect(state.pointerDown(event, request)).toBe(false); expect(request).not.toHaveBeenCalled();
   expect(new FullscreenIntent(true, () => saved).restore).toBe(false);
   state.setRestore(true); expect(state.pending).toBe(true);
