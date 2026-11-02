@@ -18,7 +18,7 @@ import { microphoneStatus, applyReducedMotion } from './ui';
 import { CaptureLifecycle } from './capture-lifecycle';
 import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version, shouldReload } from './version';
-import { DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
+import { StableScreen, DisplayDebounce, DisplaySettingsGate, pictureSize } from './display';
 import { FullscreenIntent, FullscreenExitHistory, autoRestoreFullscreen } from './fullscreen';
 import { frameRatePreference, RestartGate, FrameRateSync } from './frame-rate';
 import { playbackMode, withPlayback } from '../shared/playback';
@@ -29,6 +29,8 @@ const source = element<HTMLAnchorElement>('source');
 const debug = element('debug');
 const fragment = new URLSearchParams(location.hash.slice(1));
 const storage = new ReceiverPreferences(() => localStorage);
+const stableScreen = new StableScreen(() => localStorage);
+stableScreen.measure(screen.width, screen.height, devicePixelRatio || 1);
 const preferences = storage.load(fragment);
 // Capture is controlled by CarPlay requests rather than a saved UI switch.
 preferences.microphone = true;
@@ -221,6 +223,7 @@ async function reportFullscreenExit(): Promise<void> {
     restored: () => !!document.fullscreenElement, hidden: () => document.hidden,
     visible: () => new Promise<void>(resolve => { const visible = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', visible); resolve(); } }; document.addEventListener('visibilitychange', visible); visible(); }),
     request: () => document.documentElement.requestFullscreen(), delay: ms => new Promise(resolve => setTimeout(resolve, ms)) });
+  if (autoRestore === 'denied') { fullscreen.denied(); fullscreenState(); }
   post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
 document.addEventListener('pointerdown', event => {
@@ -231,8 +234,9 @@ document.addEventListener('pointerdown', event => {
 }, { capture: true });
 for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, event => {
   const pointer = event as PointerEvent;
-  const decision = fullscreen.pointerUp(pointer.pointerId);
+  const decision = fullscreen.pointerUp(pointer.pointerId, type === 'pointercancel');
   if (decision.swallow) { event.preventDefault(); event.stopImmediatePropagation(); }
+  if (decision.request) void requestFullscreen();
 }, { capture: true });
 document.addEventListener('fullscreenchange', () => {
   if (fullscreen.changed(!!document.fullscreenElement, hello ? measuredDisplay() : undefined)) {
@@ -401,7 +405,7 @@ function resize(): void {
 }
 function measuredDisplay(): DisplayInfo {
   const dpr = devicePixelRatio || 1, box = canvas.getBoundingClientRect();
-  return { ...hello.displays[0], width: Math.max(1, Math.round(screen.width * dpr)), height: Math.max(1, Math.round(screen.height * dpr)), dpr, safeArea: safeArea(dpr),
+  return { ...hello.displays[0], ...stableScreen.measure(screen.width, screen.height, dpr), safeArea: safeArea(dpr),
     viewport: { width: Math.max(1, Math.round(box.width * dpr)), height: Math.max(1, Math.round(box.height * dpr)) },
     fullscreen: !!document.fullscreenElement, fullscreenPreferred: fullscreen.intent };
 }
@@ -480,7 +484,7 @@ async function start(): Promise<void> {
     const dpr = devicePixelRatio || 1;
     hello = { type: 'hello', version: 0, token: pairing.token ?? '',
       decoders: [...new Set(probes.filter(p => p.supported).map(p => p.codecString))].map(codecString => ({ codecString, hardware: hardware.get(codecString) ?? false })),
-      displays: [{ screen: 0, width: Math.round(screen.width * dpr), height: Math.round(screen.height * dpr), dpr, refreshHz,
+      displays: [{ screen: 0, ...stableScreen.measure(screen.width, screen.height, dpr), refreshHz,
         safeArea: safeArea(dpr) }], maxTouchContacts: contactLimit, audio: [], microphone: false };
     hello = withPlayback(frameRateSync.hello(hello), preferences.playback);
     hello = { ...hello, displays: [fullscreen.display(measuredDisplay())] }; displayDebounce.seed(hello.displays[0]);

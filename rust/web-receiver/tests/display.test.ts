@@ -3,7 +3,7 @@
 // Created by riko chen on 2026-10-19
 
 import { it, expect } from 'vitest';
-import { DisplayDebounce, DisplaySettingsGate, pictureSize } from '../receiver/display';
+import { StableScreen, DisplayDebounce, DisplaySettingsGate, pictureSize } from '../receiver/display';
 import { parseMessage, type DisplayInfo } from '../protocol/json';
 import { readFileSync } from 'node:fs';
 const hello = JSON.parse(readFileSync(new URL('../spec/vectors/web/hello-fullscreen-preferred.json', import.meta.url), 'utf8'));
@@ -45,4 +45,55 @@ it('describes picture dimensions with a two-decimal aspect ratio', () => {
   expect(pictureSize(1440, 900)).toBe('1440×900 (1.60:1)');
   expect(pictureSize(1080, 1920)).toBe('1080×1920 (0.56:1)');
   expect(pictureSize(0, 900)).toBe('—'); expect(pictureSize(1440, 0)).toBe('—');
+});
+
+const screenStorage = () => {
+  const values = new Map<string, string>();
+  return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+};
+const dpr = 2.625;
+const windowed = { width: 2402, height: 1082, dpr };
+const full = { width: 2328, height: 1082, dpr };
+it('keeps the windowed screen maximum in fullscreen and across reloads', () => {
+  const store = screenStorage(), screen = new StableScreen(() => store);
+  expect(screen.measure(915, 412, dpr)).toEqual(windowed);
+  expect(screen.measure(887, 412, dpr)).toEqual(windowed);
+  expect(new StableScreen(() => store).measure(887, 412, dpr)).toEqual(windowed);
+});
+it('grows once when fullscreen is measured first and retains each dimension maximum', () => {
+  const screen = new StableScreen(screenStorage);
+  expect(screen.measure(887, 412, dpr)).toEqual(full);
+  expect(screen.measure(915, 412, dpr)).toEqual(windowed);
+  expect(screen.measure(887, 420, dpr)).toEqual({ ...windowed, height: 1103 });
+  expect(screen.measure(915, 412, dpr)).toEqual({ ...windowed, height: 1103 });
+});
+it('keeps separate orientation and DPR maxima when returning to an earlier screen', () => {
+  const store = screenStorage(), screen = new StableScreen(() => store);
+  screen.measure(915, 412, dpr);
+  expect(screen.measure(412, 915, dpr)).toEqual({ width: 1082, height: 2402, dpr });
+  expect(screen.measure(412, 887, dpr)).toEqual({ width: 1082, height: 2402, dpr });
+  expect(screen.measure(887, 412, dpr)).toEqual(windowed);
+  expect(screen.measure(887, 412, 2)).toEqual({ width: 1774, height: 824, dpr: 2 });
+  expect(screen.measure(887, 412, dpr)).toEqual(windowed);
+  const reloaded = new StableScreen(() => store);
+  expect(reloaded.measure(412, 887, dpr)).toEqual({ width: 1082, height: 2402, dpr });
+  expect(reloaded.measure(800, 400, 2)).toEqual({ width: 1774, height: 824, dpr: 2 });
+});
+it('keeps session maxima when storage access, reads or writes throw', () => {
+  for (const storage of [
+    () => { throw Error(); },
+    () => ({ getItem: () => { throw Error(); }, setItem: () => { throw Error(); } }),
+    () => ({ getItem: () => null, setItem: () => { throw Error(); } }),
+  ]) {
+    const screen = new StableScreen(storage);
+    expect(screen.measure(915, 412, dpr)).toEqual(windowed);
+    expect(screen.measure(887, 412, dpr)).toEqual(windowed);
+  }
+});
+it('ignores malformed or mismatched persisted screen sizes', () => {
+  for (const saved of ['bad json', 'null', '{}', '{"width":-1,"height":1082,"dpr":2.625}',
+    '{"width":2402,"height":1082,"dpr":"2.625"}', '{"width":2402,"height":1082,"dpr":2}', '{"width":1082,"height":2402,"dpr":2.625}']) {
+    const screen = new StableScreen(() => ({ getItem: () => saved, setItem: () => {} }));
+    expect(screen.measure(887, 412, dpr)).toEqual(full);
+  }
 });
