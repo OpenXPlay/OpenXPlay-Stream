@@ -103,7 +103,7 @@ public class UibcDecoder(private val origin: Origin, private val streamSize: () 
             val code = when (androidCode) {
                 3 -> KeyCode.HOME; 4 -> KeyCode.BACK; 23, 66 -> KeyCode.SELECT
                 19 -> KeyCode.KNOB_UP; 20 -> KeyCode.KNOB_DOWN; 21 -> KeyCode.KNOB_LEFT; 22 -> KeyCode.KNOB_RIGHT
-                85 -> KeyCode.PLAY_PAUSE; 87 -> KeyCode.NEXT; 88 -> KeyCode.PREVIOUS; 231 -> KeyCode.VOICE
+                85, 126, 127 -> KeyCode.PLAY_PAUSE; 87 -> KeyCode.NEXT; 88 -> KeyCode.PREVIOUS; 231 -> KeyCode.VOICE
                 else -> return null
             }
             if (action == 2) return null // ACTION_MULTIPLE has no down/up equivalent.
