@@ -4,11 +4,44 @@
 
 import { expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { DisplayDebounce, DisplaySettingsGate, pictureSize } from '../receiver/display';
+import { DisplayDebounce, DisplaySettingsGate, pictureSize, StableScreen } from '../receiver/display';
 import { strings } from '../receiver/ui';
 import { parseMessage, type Hello } from '../protocol/json';
 const vector = (name: string) => JSON.parse(readFileSync(new URL('../spec/vectors/web/' + name + '.json', import.meta.url), 'utf8'));
 const display = (vector('hello-viewport') as Hello).displays[0];
+function screenStore() {
+  const values = new Map<string, string>();
+  return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+}
+it('keeps the largest screen through the Samsung fullscreen cutout change and reloads', () => {
+  const saved = screenStore(), screen = new StableScreen(() => saved);
+  expect(screen.measure(2402 / 3, 1080 / 3, 3)).toEqual({ width: 2402, height: 1080, dpr: 3 });
+  expect(screen.measure(2328 / 3, 1080 / 3, 3)).toEqual({ width: 2402, height: 1080, dpr: 3 });
+  expect(new StableScreen(() => saved).measure(2328 / 3, 1080 / 3, 3)).toEqual({ width: 2402, height: 1080, dpr: 3 });
+});
+it('retains independent orientation and DPR maxima across round trips and reloads', () => {
+  const saved = screenStore(), screen = new StableScreen(() => saved);
+  screen.measure(2402, 1080, 1);
+  expect(screen.measure(1080, 2328, 1)).toEqual({ width: 1080, height: 2328, dpr: 1 });
+  expect(screen.measure(1000, 500, 2)).toEqual({ width: 2000, height: 1000, dpr: 2 });
+  const reload = new StableScreen(() => saved);
+  expect(reload.measure(2328, 1080, 1)).toEqual({ width: 2402, height: 1080, dpr: 1 });
+  expect(reload.measure(1000, 2200, 1)).toEqual({ width: 1080, height: 2328, dpr: 1 });
+  expect(reload.measure(900, 480, 2)).toEqual({ width: 2000, height: 1000, dpr: 2 });
+});
+it('keeps in-memory maxima with denied storage and ignores corrupt or mismatched saved sizes', () => {
+  for (const storage of [() => { throw Error('denied'); }, () => ({ getItem() { throw Error('read'); }, setItem() { throw Error('write'); } }),
+    () => ({ getItem: () => null, setItem() { throw Error('quota'); } })]) {
+    const screen = new StableScreen(storage);
+    screen.measure(2402, 1080, 1);
+    expect(screen.measure(2328, 1080, 1)).toEqual({ width: 2402, height: 1080, dpr: 1 });
+  }
+  for (const saved of ['broken', 'null', '{}', '{"width":-1,"height":1080,"dpr":1}', '{"width":2402.5,"height":1080,"dpr":1}',
+    '{"width":2402,"height":1080,"dpr":2}', '{"width":1080,"height":2402,"dpr":1}']) {
+    const screen = new StableScreen(() => ({ getItem: () => saved, setItem() {} }));
+    expect(screen.measure(800, 480, 1)).toEqual({ width: 800, height: 480, dpr: 1 });
+  }
+});
 it('reports only geometry stable for 500 ms, cancels reversion and ignores preference changes', () => {
   const gate = new DisplayDebounce(); gate.seed(display);
   const next = { ...display, viewport: { width: 1800, height: 900 } };
