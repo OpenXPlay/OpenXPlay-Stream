@@ -114,8 +114,9 @@ class CastFreshnessLoopbackTest {
                 assertTrue(failures.isEmpty(), failures.joinToString())
                 assertFalse(lines.any { "cause=soap_fault" in it })
                 assertEquals(1, fixture.uris.size)
-                fixture.transportState = "PAUSED_PLAYBACK"; now.addAndGet(1_000_000_000)
-                await("Pause missing") { states.lastOrNull() == CastState.PAUSED }
+                // A poll already in flight reads the old state and schedules the next one from after this step, so keep stepping.
+                fixture.transportState = "PAUSED_PLAYBACK"
+                await("Pause missing") { now.addAndGet(fixture.options.pollMs * 1_000_000); states.lastOrNull() == CastState.PAUSED }
                 val beforePause = fixture.positionInstances.size
                 now.addAndGet(20_000_000_000); Thread.sleep(50)
                 assertEquals(beforePause, fixture.positionInstances.size)
