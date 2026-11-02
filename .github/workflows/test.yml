@@ -13,12 +13,43 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 defaults:
   run:
     shell: bash
 
 jobs:
+  # A pull request skips a slow job when every changed file belongs only to the other side. A skipped job still
+  # passes its required check, so a job runs unless this one says false (also when it fails).
+  # The Rust tests read Kotlin resources, so those count as shared.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      kotlin: ${{ steps.filter.outputs.kotlin }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          rust=true kotlin=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+            only() { ! grep -qvE "$1" <<<"$files"; }
+            if only '^(rust/|README)'; then kotlin=false; fi
+            if only '^(kotlin/|README)' && ! grep -qE '/src/(main|test)/resources/' <<<"$files"; then rust=false; fi
+          fi
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "kotlin=$kotlin" >> "$GITHUB_OUTPUT"
+
   rust:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -55,6 +86,8 @@ jobs:
       - run: npm run build
 
   kotlin:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.kotlin != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
