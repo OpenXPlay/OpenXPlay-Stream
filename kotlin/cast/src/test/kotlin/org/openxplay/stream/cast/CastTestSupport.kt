@@ -77,9 +77,11 @@ internal class FakeRenderer(private val transport: Boolean = true) : AutoCloseab
     val packets = CopyOnWriteArrayList<ByteArray>()
     val streams = ConcurrentHashMap<String, CopyOnWriteArrayList<ByteArray>>()
     val rejections = ConcurrentHashMap<String, Int>()
+    val positionInstances = CopyOnWriteArrayList<String>()
     @Volatile var transportState = "STOPPED"
     @Volatile var unavailable = false
     @Volatile var sink = "http-get:*:video/mp2t:*"
+    @Volatile var position = "NOT_IMPLEMENTED"
     val location: String = "http://127.0.0.1:${tcp.localPort}/description.xml"
     val options = CastOptions(discovery = DiscoveryOptions(InetSocketAddress(LOOPBACK, udp.localPort), 10), searchMs = 70,
         searchBackoffMs = listOf(10), stoppedBackoffMs = listOf(30), retryMs = 30, pollMs = 30, playRetryMs = 20,
@@ -111,6 +113,7 @@ internal class FakeRenderer(private val transport: Boolean = true) : AutoCloseab
                 val xml = String(input.body(head.headers, 65536), Charsets.UTF_8)
                 val body = XmlReader(xml).read().child("Body")!!.children.single()
                 val action = body.name; actions += action
+                if (action == "GetPositionInfo") positionInstances += body.value("InstanceID")
                 val remaining = rejections[action] ?: 0
                 if (remaining > 0) {
                     rejections[action] = remaining - 1; respond(socket, fault(if (action == "Play") 701 else 714), 500); return
@@ -121,6 +124,7 @@ internal class FakeRenderer(private val transport: Boolean = true) : AutoCloseab
                     "Play" -> { transportState = "PLAYING"; startPlayer(uris.last()); emptyMap() }
                     "GetTransportInfo" -> mapOf("CurrentTransportState" to transportState)
                     "GetProtocolInfo" -> mapOf("Sink" to sink)
+                    "GetPositionInfo" -> mapOf("RelTime" to position)
                     else -> error("Unexpected action $action")
                 }
                 respond(socket, soapResponse(action, values))

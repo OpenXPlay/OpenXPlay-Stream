@@ -6,6 +6,7 @@ package org.openxplay.stream.cast
 
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import kotlin.test.*
@@ -29,6 +30,100 @@ internal class RunningStream(options: ServerOptions = ServerOptions(), now: () -
 
 @Timeout(10)
 class StreamServerTest {
+    @Test fun staleCacheWaitsForANewerKeyframeAndSkipsTheOldGop() {
+        val now = AtomicLong(2_000_000_000)
+        RunningStream(now = now::get).use { stream ->
+            val old = stream.keyframe().copy(atNanos = now.get() - 501_000_000); stream.server.publish(1, old)
+            val request = stream.request()
+            request.first.use {
+                await("Stale GET did not request a keyframe") { stream.server.reservedClients == 1 && stream.server.needsKeyframe.get() }
+                assertEquals(0, stream.server.clients); assertNull(stream.server.streamStart)
+                stream.server.publish(1, CastChunk(ByteArray(188), false, now.get()))
+                assertEquals(0, stream.server.clients)
+                val fresh = old.copy(bytes = old.bytes + ByteArray(188) { 0x47 }, atNanos = now.get())
+                stream.server.publish(1, fresh)
+                assertEquals("HTTP/1.1 200 OK", request.second.head().start)
+                assertContentEquals(fresh.bytes, request.second.exact(fresh.bytes.size))
+                await("First chunk time missing") { stream.server.streamStart?.atNanos == fresh.atNanos }
+            }
+        }
+    }
+    @Test fun staleCacheFallsBackAtTheFreshStartDeadlineIncludingBufferedDeltas() {
+        val now = AtomicLong(2_000_000_000)
+        val options = ServerOptions(keyframeWaitMs = 1000, freshKeyframeWaitMs = 120)
+        RunningStream(options, now::get).use { stream ->
+            val old = stream.keyframe().copy(atNanos = now.get() - 1_000_000_000); stream.server.publish(1, old)
+            val began = System.nanoTime(); val request = stream.request()
+            request.first.use {
+                await("Stale GET did not wait") { stream.server.needsKeyframe.get() }
+                assertEquals(0, stream.server.clients)
+                val delta = CastChunk(ByteArray(188) { 0x47 }, false, now.get()); stream.server.publish(1, delta)
+                assertEquals("HTTP/1.1 200 OK", request.second.head().start)
+                assertTrue(System.nanoTime() - began >= 100_000_000)
+                assertContentEquals(old.bytes + delta.bytes, request.second.exact(old.bytes.size + delta.bytes.size))
+                await("Fallback chunk time missing") { stream.server.streamStart?.atNanos == old.atNanos }
+            }
+        }
+    }
+    @Test fun freshCacheIncludingTheFiveHundredMillisecondBoundaryStartsWithoutARequest() {
+        for (age in listOf(0L, 500_000_000)) {
+            val now = AtomicLong(2_000_000_000)
+            RunningStream(now = now::get).use { stream ->
+                val key = stream.keyframe().copy(atNanos = now.get() - age); stream.server.publish(1, key)
+                val request = stream.request()
+                request.first.use {
+                    assertEquals("HTTP/1.1 200 OK", request.second.head().start)
+                    assertContentEquals(key.bytes, request.second.exact(key.bytes.size))
+                    assertFalse(stream.server.needsKeyframe.get())
+                }
+            }
+        }
+    }
+    @Test fun staleWaitRetainsTheFallbackIfTheLiveCacheExpires() {
+        val now = AtomicLong(2_000_000_000)
+        RunningStream(ServerOptions(freshKeyframeWaitMs = 120), now::get).use { stream ->
+            val old = stream.keyframe().copy(atNanos = now.get() - 1_000_000_000); stream.server.publish(1, old)
+            val request = stream.request()
+            request.first.use {
+                await("Stale GET did not wait") { stream.server.needsKeyframe.get() }
+                now.addAndGet(11_000_000_000)
+                stream.server.publish(1, CastChunk(ByteArray(188), false, now.get()))
+                assertEquals("HTTP/1.1 200 OK", request.second.head().start)
+                assertContentEquals(old.bytes, request.second.exact(old.bytes.size))
+            }
+        }
+    }
+    @Test fun newestStreamingClientOwnsTheStartTimeAndWaitingGetAndHeadDoNotReplaceIt() {
+        val now = AtomicLong(2_000_000_000)
+        RunningStream(now = now::get).use { stream ->
+            val key = stream.keyframe().copy(atNanos = now.get()); stream.server.publish(1, key)
+            val first = stream.request()
+            first.first.use {
+                first.second.head(); first.second.exact(key.bytes.size)
+                await("Initial stream start missing") { stream.server.streamStart != null }
+                val initial = stream.server.streamStart
+                now.addAndGet(100_000_000); val fresh = key.copy(atNanos = now.get()); stream.server.publish(1, fresh)
+                val second = stream.request()
+                second.first.use {
+                    second.second.head(); second.second.exact(fresh.bytes.size)
+                    await("New stream did not replace the start") { stream.server.streamStart?.atNanos == fresh.atNanos }
+                    val newest = stream.server.streamStart; assertNotSame(initial, newest)
+                    val head = stream.request("HEAD")
+                    head.first.use { assertEquals("HTTP/1.1 200 OK", head.second.head().start) }
+                    assertSame(newest, stream.server.streamStart)
+                    now.addAndGet(501_000_000)
+                    val waiting = stream.request()
+                    waiting.first.use {
+                        await("Third GET did not wait") { stream.server.reservedClients == 3 && stream.server.needsKeyframe.get() }
+                        assertSame(newest, stream.server.streamStart)
+                        stream.server.reset(2)
+                        assertEquals("HTTP/1.1 404 Not Found", waiting.second.head().start)
+                        assertNull(stream.server.streamStart)
+                    }
+                }
+            }
+        }
+    }
     @Test fun headAcceptsLfAndDuplicateRequestHeaders() {
         RunningStream().use { stream ->
             Socket(LOOPBACK, stream.server.port).use { socket ->

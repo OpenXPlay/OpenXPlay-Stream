@@ -53,6 +53,7 @@ public data class CastFailure(public val code: String, public val detail: String
 public data class CastStatistics(
     public val clients: Int, public val videoFrames: Long, public val audioFrames: Long, public val silentFrames: Long,
     public val bytesSent: Long, public val droppedFrames: Long, public val overflows: Long, public val rendererState: String?,
+    public val rendererLagMs: Long? = null,
 )
 /** Called on worker threads, never under output locks; implementations must not block. */
 public interface CastListener {
