@@ -527,7 +527,7 @@ it('Quality holds encoded frames for the decoder pipeline and presents them at t
   expect(stats).toMatchObject({ queueDepth: 3, playback: 'QUALITY', stats: { renderDepth: 3 } });
   clock.mockRestore();
 });
-it('Smart lowers its depth after smooth seconds and reports it in stats', async () => {
+it('Smart keeps a spare frame after smooth seconds and reports it in stats', async () => {
   const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
   const socket = init(); socket.open(); await welcome(socket);
   const depths: number[] = [];
@@ -539,8 +539,8 @@ it('Smart lowers its depth after smooth seconds and reports it in stats', async 
     await vi.advanceTimersByTimeAsync(1000);
     depths.push((socket.json().filter((m: any) => m.type === 'stats').at(-1) as any).renderDepth);
   }
-  expect(depths).toEqual([1, 1, 1, 1, 0]);
-  expect(notices().filter(m => m.type === 'stats').at(-1)).toMatchObject({ queueDepth: 0, playback: 'SMART' });
+  expect(depths).toEqual([1, 1, 1, 1, 1]);
+  expect(notices().filter(m => m.type === 'stats').at(-1)).toMatchObject({ queueDepth: 1, playback: 'SMART' });
   clock.mockRestore();
 });
 it('Quality gives a decoder that withholds output one more frame in flight per stall', async () => {
@@ -693,4 +693,84 @@ it('restores reload history on the first new page socket and checkpoints pagehid
   command({ type: 'stop', cause: 'reload' });
   const checkpoints = scope.postMessage.mock.calls.map(([m]) => m).filter(m => m.type === 'close-checkpoint');
   expect(checkpoints.at(-1).checkpoint.report.cause).toBe('reload');
+});
+
+const lastStats = (socket: Socket) => socket.json().filter((message: any) => message.type === 'stats').at(-1) as any;
+const noRenderDrops = { renderSupersededFrames: 0, renderLateFrames: 0, renderResetFrames: 0, renderInactiveFrames: 0 };
+it('reports supersession separately from encoded drops and clears each reported interval', async () => {
+  const socket = init({ fillRect: vi.fn(), drawImage: vi.fn() }, { ...vector('hello'), playback: 'SPEED' });
+  socket.open(); await welcome(socket);
+  const decoder = Decoder.instances.at(-1)!, first = output(0), second = output(16_667);
+  video(socket, true, 0n); video(socket, false, 16_667n);
+  decoder.callbacks.output(first); decoder.callbacks.output(second);
+  await vi.advanceTimersByTimeAsync(20);
+  decoder.decodeQueueSize = 3; video(socket, false, 33_333n);
+  await vi.advanceTimersByTimeAsync(980);
+  expect(lastStats(socket)).toMatchObject({ ...noRenderDrops, renderSupersededFrames: 1, droppedFrames: 2, rendered: 1, dropped: 1 });
+  expect(notices().filter(message => message.type === 'stats').at(-1)).toMatchObject({ stats: lastStats(socket), skipped: 1 });
+  expect(first.close).toHaveBeenCalledOnce(); expect(second.close).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(socket)).toMatchObject({ ...noRenderDrops, droppedFrames: 0 });
+});
+it.each(['enqueue', 'refresh'])('attributes late drops at %s and lets the 80 ms budget override depth', async stage => {
+  const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+  const draws: (() => void)[] = [];
+  (scope as any).requestAnimationFrame = (draw: () => void) => { draws.push(draw); };
+  const context = { fillRect: vi.fn(), drawImage: vi.fn() }, socket = init(context);
+  socket.open(); await welcome(socket);
+  await vi.advanceTimersByTimeAsync(1000);
+  const ping = socket.json().find((message: any) => message.type === 'ping') as any;
+  socket.receive({ type: 'pong', t0Us: ping.t0Us, t1Us: '0', t2Us: '0' });
+  const decoder = Decoder.instances.at(-1)!, first = output(1), second = output(90_000);
+  video(socket, true); decoder.callbacks.output(first);
+  if (stage === 'enqueue') clock.mockReturnValue(90);
+  video(socket, false, 90_000n); decoder.callbacks.output(second);
+  clock.mockReturnValue(90); draws.shift()!();
+  expect(context.drawImage.mock.calls.map(([frame]) => frame)).toEqual([second]);
+  expect(first.close).toHaveBeenCalledOnce(); expect(second.close).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(socket)).toMatchObject({ ...noRenderDrops, renderLateFrames: 1, droppedFrames: 1 });
+});
+it.each(['error', 'replacement', 'hidden', 'ended'])('attributes queued and retired decoder frames after %s', async cause => {
+  const socket = init({ fillRect: vi.fn(), drawImage: vi.fn() }); socket.open(); await welcome(socket);
+  const decoder = Decoder.instances.at(-1)!, queued = output(0), stale = output(16_667);
+  video(socket, true, 0n); video(socket, false, 16_667n); decoder.callbacks.output(queued);
+  if (cause === 'error') decoder.callbacks.error();
+  else if (cause === 'hidden') command({ type: 'visibility', visible: false });
+  else socket.receive({ type: 'session', session: { id: cause === 'replacement' ? '99' : vector('welcome').session.id,
+    phase: cause === 'ended' ? 'ENDED' : 'ACTIVE' } });
+  // A subsequent reset must retain the retired decoder's original reason.
+  if (cause === 'hidden') command({ type: 'visibility', visible: true });
+  Decoder.instances.at(-1)!.callbacks.error(); decoder.callbacks.output(stale);
+  await vi.advanceTimersByTimeAsync(1000);
+  const field = cause === 'error' || cause === 'replacement' ? 'renderResetFrames' : 'renderInactiveFrames';
+  expect(lastStats(socket)).toMatchObject({ ...noRenderDrops, [field]: 2 });
+  expect(queued.close).toHaveBeenCalledOnce(); expect(stale.close).toHaveBeenCalledOnce();
+});
+it('attributes output without submission metadata to decoder reset', async () => {
+  const socket = init(); socket.open(); await welcome(socket);
+  const frame = output(42); Decoder.instances.at(-1)!.callbacks.output(frame);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(socket)).toMatchObject({ ...noRenderDrops, renderResetFrames: 1 });
+  expect(frame.close).toHaveBeenCalledOnce();
+});
+it('attributes a frame discarded without a canvas context to inactivity', async () => {
+  const socket = init(); socket.open(); await welcome(socket);
+  video(socket, true); const frame = output(1); Decoder.instances.at(-1)!.callbacks.output(frame);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(socket)).toMatchObject({ ...noRenderDrops, renderInactiveFrames: 1 });
+  expect(frame.close).toHaveBeenCalledOnce();
+});
+it('retains disconnect drops through disconnected ticks and welcome until reported once', async () => {
+  const socket = init({ fillRect: vi.fn(), drawImage: vi.fn() }); socket.open(); await welcome(socket);
+  const decoder = Decoder.instances.at(-1)!, queued = output(0), stale = output(16_667);
+  video(socket, true, 0n); video(socket, false, 16_667n); decoder.callbacks.output(queued);
+  socket.close(); decoder.callbacks.output(stale);
+  await vi.advanceTimersByTimeAsync(2000);
+  const next = Socket.instances.at(-1)!; next.open(); await welcome(next);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(next)).toMatchObject({ ...noRenderDrops, renderInactiveFrames: 2 });
+  expect(queued.close).toHaveBeenCalledOnce(); expect(stale.close).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(lastStats(next)).toMatchObject(noRenderDrops);
 });

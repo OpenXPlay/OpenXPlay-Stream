@@ -32,6 +32,9 @@ let ready = false, active = false, retry = 0, reconnectTimer: ReturnType<typeof 
 let decoder: VideoDecoder | null = null, format: VideoFormat | null = null, config: VideoDecoderConfig | null = null;
 let generation = 0, waiting = true, sessionId: string | null = null, sequence = 0;
 let frames: { frame: VideoFrame; relayUs: bigint }[] = [], renderPending = false, queueDepth = 1;
+type RenderDropReason = 'renderSupersededFrames' | 'renderLateFrames' | 'renderResetFrames' | 'renderInactiveFrames';
+let renderDrops: Record<RenderDropReason, number> = { renderSupersededFrames: 0, renderLateFrames: 0, renderResetFrames: 0, renderInactiveFrames: 0 };
+let decoderRun: { reason: RenderDropReason } | null = null;
 // Playback mode from the current hello; Smart adapts queueDepth once per second.
 let mode: PlaybackMode = 'SMART', params = playbackParameters.SMART, smart = new SmartDepth();
 interface Encoded { timestamp: number; key: boolean; data: Uint8Array; relayUs: bigint }
@@ -165,9 +168,12 @@ function notice(value: WorkerNotice): void { scope.postMessage(value); }
 function late(item: { relayUs: bigint }): boolean {
   return (latencyMs(nowUs(), item.relayUs, offsetUs) ?? 0) > params.lateBudgetMs;
 }
+function discardFrame(frame: VideoFrame, reason: RenderDropReason): void {
+  if (mode === 'SMART' && reason === 'renderLateFrames') smart.lateFrame();
+  frame.close(); skipped++; renderDrops[reason]++;
+}
 function discard(item: { frame: VideoFrame; relayUs: bigint }): void {
-  if (mode === 'SMART' && late(item)) smart.lateFrame();
-  item.frame.close(); skipped++;
+  discardFrame(item.frame, late(item) ? 'renderLateFrames' : 'renderSupersededFrames');
 }
 function setPlayback(next: PlaybackMode): void {
   if (next === mode) return;
@@ -194,16 +200,18 @@ function updateHold(event: HoldEvent): void {
   const deadline = [hold.deadline, hold.clearAt].filter((at): at is number => at !== null && at > now);
   if (deadline.length) holdTimer = setTimeout(() => updateHold('tick'), Math.min(...deadline) - now);
 }
-function clearDecoder(): void {
+function clearDecoder(reason: RenderDropReason = 'renderResetFrames'): void {
   if (decoder) decoderResets++;
   playing = false;
   generation++;
+  if (decoderRun) decoderRun.reason = reason;
+  decoderRun = null;
   if (decoder && decoder.state !== 'closed') decoder.close();
   decoder = null; waiting = true;
   decodeMs = null; decodedLatencyMs = null; renderedLatencyMs = null;
   for (const values of pending.values()) dropped += values.length;
   pending.clear();
-  for (const item of frames) { item.frame.close(); skipped++; }
+  for (const item of frames) discardFrame(item.frame, reason);
   frames = [];
   dropped += held.length; held = []; decoderLead = 0;
   presented = null; newestPtsUs = null; smart.restart();
@@ -211,14 +219,16 @@ function clearDecoder(): void {
 function startDecoder(): void {
   if (!config || !visible || !active) return;
   const fence = generation;
+  const run = { reason: 'renderResetFrames' as RenderDropReason }; decoderRun = run;
   try {
     decoder = new VideoDecoder({
       output(frame) {
         output++;
-        if (fence !== generation || !visible) { frame.close(); skipped++; return; }
+        if (fence !== generation) { discardFrame(frame, run.reason); return; }
         const values = pending.get(frame.timestamp), meta = values?.shift();
         if (values?.length === 0) pending.delete(frame.timestamp);
-        if (!meta) { frame.close(); skipped++; return; }
+        if (!visible || !active) { discardFrame(frame, 'renderInactiveFrames'); return; }
+        if (!meta) { discardFrame(frame, 'renderResetFrames'); return; }
         progressAt = performance.now();
         const now = nowUs();
         decodeMs = Number(now - meta.submittedUs) / 1000;
@@ -251,7 +261,7 @@ function render(): void {
   const item = frames.shift();
   if (!item) return;
   try {
-    if (!context || !visible || !active || !format) { skipped++; return; }
+    if (!context || !visible || !active || !format) { skipped++; renderDrops.renderInactiveFrames++; return; }
     const r = videoRect(canvas.width, canvas.height, format?.width ?? item.frame.displayWidth, format?.height ?? item.frame.displayHeight, fit, viewArea);
     context.fillStyle = '#000'; context.fillRect(0, 0, canvas.width, canvas.height);
     if (viewArea) {
@@ -313,7 +323,7 @@ function session(next: import('../protocol/json').SessionState): void {
   if (next.phase === 'ENDED') updateHold('end');
   else if (changed || !active) updateHold(changed ? 'replace' : 'interrupt');
   if (changed || !active) {
-    touch([]); clearDecoder();
+    touch([]); clearDecoder(active ? 'renderResetFrames' : 'renderInactiveFrames');
     if (changed || next.phase === 'ENDED') { config = null; format = null; notice({ type: 'format', format: null }); }
   }
   if (active && !decoder && format) {
@@ -441,7 +451,7 @@ function connect(): void {
     connections.closed(current, event); checkpoint();
     if (socket !== current) return;
     sessionRendered = 0;
-    ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder();
+    ready = false; displaySettingsSupported = false; viewAreaSupported = false; viewArea = undefined; notice({ type: 'view-area', area: undefined }); notice({ type: 'display-disconnected' }); active = false; updateHold('interrupt'); clearAudio(); clearDecoder('renderInactiveFrames');
     offsetUs = null; rttUs = null; pings.clear(); lastKeyRequest = -Infinity;
     notice({ type: 'status', text: 'Disconnected; reconnecting…' });
     if (!stopped) {
@@ -512,12 +522,12 @@ scope.onmessage = (event: MessageEvent<PageCommand>) => {
     case 'visibility':
       visible = message.visible; connections.visible = visible; checkpoint();
       send({ type: 'pause', screen: SCREEN, paused: !visible });
-      touch([]); clearDecoder();
+      touch([]); clearDecoder(visible ? 'renderResetFrames' : 'renderInactiveFrames');
       if (visible) {
         lastKeyRequest = -Infinity;
         if (!config && format) void configureFormat(format); else { startDecoder(); keyframe(); }
       } break;
-    case 'stop': if (socket) { connections.closed(socket, { code: 1006 }, message.cause ?? 'user'); checkpoint(); } updateHold('end'); clearAudio(); stopped = true; touch([]); clearTimeout(reconnectTimer); clearInterval(statsTimer); clearDecoder(); socket?.close(); break;
+    case 'stop': if (socket) { connections.closed(socket, { code: 1006 }, message.cause ?? 'user'); checkpoint(); } updateHold('end'); clearAudio(); stopped = true; touch([]); clearTimeout(reconnectTimer); clearInterval(statsTimer); clearDecoder('renderInactiveFrames'); socket?.close(); break;
   }
 };
 function resetMetrics(): void {
@@ -534,7 +544,7 @@ const statsTimer = setInterval(() => {
   if (mode === 'SMART') queueDepth = smart.evaluate();
   const now = performance.now(), seconds = Math.max(0.001, (now - statsAt) / 1000); statsAt = now;
   decodeSamples.sort((a, b) => a - b); renderSamples.sort((a, b) => a - b);
-  const stats: Stats = { ...pageMetrics, wsBytesPerSecond: wsBytes / seconds, videoFramesPerSecond: videoReceived / seconds,
+  const stats: Stats = { ...pageMetrics, ...renderDrops, wsBytesPerSecond: wsBytes / seconds, videoFramesPerSecond: videoReceived / seconds,
     decoderSubmittedPerSecond: submitted / seconds, decoderOutputPerSecond: output / seconds,
     decodeLatencyP50Ms: percentile(decodeSamples, 0.5), decodeLatencyP95Ms: percentile(decodeSamples, 0.95), decodeLatencyMaxMs: percentile(decodeSamples, 1),
     maxDecodeQueue, decoderErrors, decoderResets, renderedFps: (rendered - previousRendered) / seconds, droppedFrames: dropped + skipped - previousDropped,
@@ -549,4 +559,5 @@ const statsTimer = setInterval(() => {
   resetMetrics(); pageMetrics = {};
   if (active && sessionId !== null && sessionRendered > 0) stats.session = sessionId;
   send(stats); notice({ type: 'stats', stats, skipped, renderQueue: Math.max(0, frames.length - 1), queueDepth, playback: mode, audio, audioBuffers });
+  renderDrops = { renderSupersededFrames: 0, renderLateFrames: 0, renderResetFrames: 0, renderInactiveFrames: 0 };
 }, 1000);
