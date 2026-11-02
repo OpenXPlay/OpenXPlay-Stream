@@ -111,8 +111,8 @@ const relaySettings = (rate?: DisplaySettings['frameRate']): DisplaySettings => 
 });
 const welcome = (features?: string[]) => worker().receive({ type: 'welcome', token: '', sourceUrl: 'https://example.org/linux-source', features });
 const frame = () => worker().receive({ type: 'format', format: { codec: 'H264', codecString: 'avc1.4D4028', width: 1440, height: 900, config: '' } });
-function pointer(type: string, target = node('video'), pointerId = 7) {
-  const event = page.emit(type, { target, pointerId, pointerType: 'touch', button: 0, clientX: 400, clientY: 250, pressure: .5 });
+function pointer(type: string, target = node('video'), pointerId = 7, pointerType = 'touch') {
+  const event = page.emit(type, { target, pointerId, pointerType, button: 0, clientX: 400, clientY: 250, pressure: .5 });
   if (!event.stopped) target.emit(type, event);
   return event;
 }
@@ -169,13 +169,33 @@ it('reports a DPR-only change after 500 ms stability and resizes the worker canv
     viewport: { width: 1824, height: 1080 }, safeArea: { top: 4, right: 8, bottom: 12, left: 16 } });
   await vi.advanceTimersByTimeAsync(1000); expect(sent('hello')).toHaveLength(1); expect(sent('resize')).toHaveLength(1);
 });
-it('reports screen shrink, rotation and safe-area changes without CSS resize events', async () => {
+it('keeps the screen maximum while reporting rotation and safe-area changes without CSS resize events', async () => {
   await start(); Object.assign(screen, { width: 1024, height: 600 });
   await vi.advanceTimersByTimeAsync(600);
-  expect(sent('hello').at(-1)!.hello.displays[0]).toMatchObject({ width: 1280, height: 750 });
+  expect(sent('hello')).toEqual([]);
+  insets.top = 4; await vi.advanceTimersByTimeAsync(600);
+  expect(sent('hello').at(-1)!.hello.displays[0]).toMatchObject({ width: 1708, height: 960, safeArea: { top: 5 } });
   Object.assign(screen, { width: 600, height: 1024 }); insets.left = 10;
   await vi.advanceTimersByTimeAsync(600);
   expect(sent('hello').at(-1)!.hello.displays[0]).toMatchObject({ width: 750, height: 1280, safeArea: { left: 12.5 } });
+  Object.assign(screen, { width: 1024, height: 600 }); await vi.advanceTimersByTimeAsync(600);
+  expect(sent('hello').at(-1)!.hello.displays[0]).toMatchObject({ width: 1708, height: 960 });
+});
+it('keeps 2402 physical screen pixels across fullscreen toggles while reporting the actual viewport', async () => {
+  page.fullscreenEnabled = true; vi.stubGlobal('devicePixelRatio', 2.625);
+  Object.assign(screen, { width: 915, height: 412 }); viewport = { width: 915, height: 412 };
+  await start(); welcome(['view-area']);
+  Object.assign(screen, { width: 887 }); viewport = { width: 887, height: 412 };
+  page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  await vi.advanceTimersByTimeAsync(600);
+  expect(sent('hello').at(-1)!.hello.displays[0]).toMatchObject({ width: 2402, height: 1082, dpr: 2.625,
+    fullscreen: true, viewport: { width: 2328, height: 1082 } });
+  node('fullscreen-restore').click();
+  Object.assign(screen, { width: 915 }); viewport = { width: 800, height: 400 };
+  page.fullscreenElement = undefined; page.emit('fullscreenchange');
+  await vi.advanceTimersByTimeAsync(600);
+  expect(sent('hello').at(-1)!.hello.displays[0]).toMatchObject({ width: 2402, height: 1082, dpr: 2.625,
+    fullscreen: false, viewport: { width: 2100, height: 1050 } });
 });
 it('keeps resize immediate while debouncing the physical viewport report and renders aspect ratios', async () => {
   await start(); frame(); viewport = { width: 1000, height: 600 }; resizeObserved();
@@ -274,16 +294,45 @@ it('wires quick tiles, plugin preferences and live playback without a restart', 
   node('reset-plugin-positions').click(); expect(bindings.plugins.resetPositions).toHaveBeenCalledOnce();
   change('playback', 'SPEED'); expect(sent('hello').at(-1)!.hello.playback).toBe('SPEED'); expect(sent('restart')).toEqual([]);
 });
-it('retries fullscreen on the next gesture after rejection and consumes both ends of the restore touch', async () => {
-  page.fullscreenEnabled = true; await start();
+it('retries fullscreen through the explicit intent after rejection and releases later touches', async () => {
+  page.fullscreenEnabled = true; await start(); frame(); worker().commands = [];
   page.documentElement.requestFullscreen.mockRejectedValueOnce(Error('Denied'));
-  const down = pointer('pointerdown'); await vi.advanceTimersByTimeAsync(0);
+  const down = pointer('pointerdown');
   expect(down.preventDefault).toHaveBeenCalled(); expect(sent('touch')).toEqual([]);
-  expect(node('fullscreen-hint').hidden).toBe(false); expect(node('fullscreen-state').textContent).toBe('Unavailable in this browser');
+  expect(page.documentElement.requestFullscreen).not.toHaveBeenCalled();
   expect(pointer('pointerup').preventDefault).toHaveBeenCalled();
-  pointer('pointerdown'); expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
-  page.fullscreenElement = page.documentElement; page.emit('fullscreenchange'); pointer('pointerup');
-  expect(node('fullscreen-hint').hidden).toBe(true); expect(sent('touch')).toEqual([]);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(sent('touch')).toEqual([]); expect(page.documentElement.requestFullscreen).toHaveBeenCalledOnce();
+  expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('Unavailable in this browser');
+  expect(pointer('pointerdown').stopped).toBe(false); expect(pointer('pointerup').stopped).toBe(false);
+  expect(sent('touch').map(command => command.contacts[0].pressed)).toEqual([true, false]);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledOnce();
+  node('fullscreen').click(); expect(saved.get('oxp.fullscreen')).toBe('false');
+  expect(node('fullscreen-state').textContent).toBe('');
+  node('fullscreen').click(); expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
+  page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('');
+});
+it.each(['mouse', 'touch', 'pen'])('requests fullscreen at the activation event for %s and consumes the entire gesture', async pointerType => {
+  page.fullscreenEnabled = true; await start(); frame(); worker().commands = [];
+  expect(pointer('pointerdown', node('video'), 7, pointerType).stopped).toBe(true);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(pointerType === 'mouse' ? 1 : 0);
+  expect(pointer('pointerup', node('video'), 8, pointerType).stopped).toBe(false);
+  pointer('pointermove', node('video'), 7, pointerType);
+  if (pointerType === 'mouse') { page.fullscreenElement = page.documentElement; page.emit('fullscreenchange'); }
+  expect(pointer('pointerup', node('video'), 7, pointerType).stopped).toBe(true);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledOnce(); expect(sent('touch')).toEqual([]);
+  if (pointerType !== 'mouse') { page.fullscreenElement = page.documentElement; page.emit('fullscreenchange'); }
+  expect(node('fullscreen-hint').hidden).toBe(true);
+});
+it.each(['touch', 'pen'])('cancels a %s restore without requesting and consumes the next completed gesture', async pointerType => {
+  page.fullscreenEnabled = true; await start(); frame(); worker().commands = [];
+  pointer('pointerdown', node('video'), 7, pointerType);
+  expect(pointer('pointercancel', node('video'), 7, pointerType).stopped).toBe(true);
+  pointer('pointerup', node('video'), 7, pointerType);
+  expect(page.documentElement.requestFullscreen).not.toHaveBeenCalled(); expect(sent('touch')).toEqual([]);
+  pointer('pointerdown', node('video'), 7, pointerType); pointer('pointerup', node('video'), 7, pointerType);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledOnce(); expect(sent('touch')).toEqual([]);
 });
 it('defers an involuntary fullscreen-exit report until visible and reports raw physical window geometry', async () => {
   page.fullscreenEnabled = true; await start(); welcome(['view-area']);
@@ -295,6 +344,66 @@ it('defers an involuntary fullscreen-exit report until visible and reports raw p
   await vi.advanceTimersByTimeAsync(516);
   expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
   expect(sent('fullscreen-exit')).toEqual([{ type: 'fullscreen-exit', hiddenMs: 1000, autoRestore: 'denied', display: expect.objectContaining({ fullscreen: false, viewport: { width: 1000, height: 563 } }) }]);
+  expect(node('fullscreen-hint').hidden).toBe(false); expect(node('fullscreen-state').textContent).toBe('');
+});
+it('keeps tap-to-restore pending after automatic denial and restores on touch release without CarPlay input', async () => {
+  page.fullscreenEnabled = true; await start(); frame();
+  page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  page.fullscreenElement = undefined; page.emit('fullscreenchange');
+  page.documentElement.requestFullscreen.mockRejectedValue(Error('Denied'));
+  await vi.advanceTimersByTimeAsync(516);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
+  expect(sent('fullscreen-exit')).toEqual([expect.objectContaining({ autoRestore: 'denied' })]);
+  expect(node('fullscreen-hint').hidden).toBe(false); expect(node('fullscreen-state').textContent).toBe('');
+  worker().commands = [];
+  page.documentElement.requestFullscreen.mockImplementationOnce(async () => {
+    page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  });
+  expect(pointer('pointerdown').stopped).toBe(true);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
+  pointer('pointermove');
+  expect(pointer('pointerup').stopped).toBe(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(3);
+  expect(page.fullscreenElement).toBe(page.documentElement); expect(sent('touch')).toEqual([]);
+  expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('');
+});
+it.each(['mouse', 'touch', 'pen'])('releases taps after a rejected %s gesture and re-arms after the next involuntary exit', async pointerType => {
+  page.fullscreenEnabled = true; await start(); frame(); worker().commands = [];
+  page.documentElement.requestFullscreen.mockRejectedValue(Error('Denied'));
+  expect(pointer('pointerdown', node('video'), 7, pointerType).stopped).toBe(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(pointer('pointerup', node('video'), 7, pointerType).stopped).toBe(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledOnce(); expect(sent('touch')).toEqual([]);
+  expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('Unavailable in this browser');
+  expect(pointer('pointerdown').stopped).toBe(false); expect(pointer('pointerup').stopped).toBe(false);
+  expect(sent('touch').map(command => command.contacts[0].pressed)).toEqual([true, false]);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledOnce();
+  page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  page.fullscreenElement = undefined; page.emit('fullscreenchange');
+  await vi.advanceTimersByTimeAsync(516);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(3);
+  expect(sent('fullscreen-exit')).toEqual([expect.objectContaining({ autoRestore: 'denied' })]);
+  expect(node('fullscreen-hint').hidden).toBe(false); expect(node('fullscreen-state').textContent).toBe('');
+  worker().commands = []; expect(pointer('pointerdown').stopped).toBe(true);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(3);
+  expect(pointer('pointerup').stopped).toBe(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(4); expect(sent('touch')).toEqual([]);
+  expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('Unavailable in this browser');
+});
+it('keeps the automatic fullscreen retry and reports success after the first request is rejected', async () => {
+  page.fullscreenEnabled = true; await start();
+  page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  page.fullscreenElement = undefined; page.emit('fullscreenchange');
+  page.documentElement.requestFullscreen.mockRejectedValueOnce(Error('Denied')).mockImplementationOnce(async () => {
+    page.fullscreenElement = page.documentElement; page.emit('fullscreenchange');
+  });
+  await vi.advanceTimersByTimeAsync(516);
+  expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
+  expect(sent('fullscreen-exit')).toEqual([expect.objectContaining({ autoRestore: 'restored' })]);
+  expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('');
 });
 it('shows decoded throughput and every render drop reason in the existing debug overlay', async () => {
   await start(); node('debug').hidden = false;
