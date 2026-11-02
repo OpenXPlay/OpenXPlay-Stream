@@ -42,7 +42,7 @@ it('names and explains every mode in both languages', () => {
 });
 it('keeps the documented parameters for each mode', () => {
   expect(playbackParameters.SPEED).toEqual({ minDepth: 0, maxDepth: 0, lateBudgetMs: 50, maxDecodeQueue: 2, paced: false });
-  expect(playbackParameters.SMART).toEqual({ minDepth: 0, maxDepth: 2, lateBudgetMs: 80, maxDecodeQueue: 3, paced: false });
+  expect(playbackParameters.SMART).toEqual({ minDepth: 1, maxDepth: 2, lateBudgetMs: 80, maxDecodeQueue: 3, paced: false });
   expect(playbackParameters.QUALITY).toEqual({ minDepth: 3, maxDepth: 3, lateBudgetMs: 1000, maxDecodeQueue: 60, paced: true });
   expect(QUALITY_BUFFER_MS).toBe(150);
 });
@@ -82,13 +82,26 @@ function second(depth: SmartDepth, index: number, offset: (frame: number) => num
 const smooth = () => 0;
 const jitter = (ms: number) => (frame: number) => frame % 2 ? ms : 0;
 it('lowers Smart depth after five smooth seconds and raises it after two jittery ones', () => {
-  const depth = new SmartDepth(1);
-  expect([0, 1, 2, 3, 4].map(index => second(depth, index, smooth))).toEqual([1, 1, 1, 1, 0]);
+  const depth = new SmartDepth(2);
+  expect([0, 1, 2, 3, 4].map(index => second(depth, index, smooth))).toEqual([2, 2, 2, 2, 1]);
   // Jitter of 0.6 frame intervals asks for one frame, 1.8 intervals for two; never more than two.
-  expect([5, 6].map(index => second(depth, index, jitter(10)))).toEqual([0, 1]);
+  expect([5, 6].map(index => second(depth, index, jitter(10)))).toEqual([1, 1]);
   expect([7, 8, 9, 10].map(index => second(depth, index, jitter(30)))).toEqual([1, 2, 2, 2]);
   // A single smooth second between jittery ones does not lower the depth.
   expect([11, 12, 13].map(index => second(depth, index, (frame) => index === 12 ? 0 : jitter(30)(frame)))).toEqual([2, 2, 2]);
+});
+it('reserves the next refresh for decoder bursts even after smooth arrival windows', () => {
+  const depth = new SmartDepth(1);
+  for (let index = 0; index < 20; index++) expect(second(depth, index, smooth)).toBe(1);
+  const first = renderQueuePolicy<number>([], 1, depth.depth);
+  expect(renderQueuePolicy(first.frames, 2, depth.depth)).toEqual({ frames: [1, 2], skipped: [] });
+});
+it('lets late evidence disable the spare frame and holds raises even on smooth input', () => {
+  const depth = new SmartDepth(1);
+  for (let frame = 0; frame < 3; frame++) depth.lateFrame();
+  expect(second(depth, 0, smooth)).toBe(0);
+  expect([1, 2, 3, 4, 5, 6].map(index => second(depth, index, smooth))).toEqual([0, 0, 0, 0, 0, 1]);
+  expect(renderQueuePolicy([1], 2, depth.depth, () => true)).toEqual({ frames: [2], skipped: [1] });
 });
 it('backs off on late frames at once and holds raises for five seconds', () => {
   const depth = new SmartDepth(2);

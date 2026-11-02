@@ -71,6 +71,8 @@ class PageElement extends Events {
     return { ...size, x: 0, y: 0, left: 0, top: 0 };
   }
   contains(node: unknown) { return node === this; }
+  append(...children: PageElement[]) { this.children.push(...children); }
+  replaceChildren(...children: PageElement[]) { this.children = children; }
   click() {
     if (this.disabled) return;
     if (inputTypes.get(this.id) === 'checkbox') { this.checked = !this.checked; this.onchange?.({ target: this }); }
@@ -122,6 +124,7 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', store); vi.stubGlobal('sessionStorage', store);
   page = Object.assign(new Events(), {
     documentElement: new PageElement(), hidden: false, fullscreenEnabled: false,
+    createElement: () => new PageElement(),
     getElementById: node, querySelector: (selector: string) => node(selector.slice(1)), querySelectorAll: () => [], getAnimations: () => [],
   });
   vi.stubGlobal('document', page); vi.stubGlobal('window', new Events()); vi.stubGlobal('Node', PageElement);
@@ -401,4 +404,15 @@ it('keeps the automatic fullscreen retry and reports success after the first req
   expect(page.documentElement.requestFullscreen).toHaveBeenCalledTimes(2);
   expect(sent('fullscreen-exit')).toEqual([expect.objectContaining({ autoRestore: 'restored' })]);
   expect(node('fullscreen-hint').hidden).toBe(true); expect(node('fullscreen-state').textContent).toBe('');
+});
+it('shows decoded throughput and every render drop reason in the existing debug overlay', async () => {
+  await start(); node('debug').hidden = false;
+  const stats = JSON.parse(readFileSync(new URL('../spec/vectors/web/stats.json', import.meta.url), 'utf8'));
+  worker().receive({ type: 'stats', stats: { ...stats, decoderOutputPerSecond: 60, renderedFps: 59,
+    renderSupersededFrames: 1, renderLateFrames: 2, renderResetFrames: 3, renderInactiveFrames: 4 },
+    skipped: 10, renderQueue: 1, queueDepth: 1, playback: 'SMART', audio: [], audioBuffers: [] });
+  const text = node('statistics').children[0].children.map(child => child.textContent);
+  expect(text).toContain('Decoded / shown (fps)'); expect(text).toContain('60.0 / 59.0');
+  expect(text).toContain('Decoded drops: superseded / late / reset / inactive');
+  expect(text).toContain('1 / 2 / 3 / 4');
 });
