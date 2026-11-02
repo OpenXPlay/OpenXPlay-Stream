@@ -285,6 +285,8 @@ function statistics(message: Extract<WorkerNotice, { type: 'stats' }>): void {
   if (debug.hidden) return;
   const rows: [string, unknown][] = [['Protocol', protocolState], ['Video', `${videoWidth} × ${videoHeight}`],
     ['Rendered / dropped / skipped', `${message.stats.rendered} / ${message.stats.dropped} / ${message.skipped}`],
+    ['Decoded / shown (fps)', `${message.stats.decoderOutputPerSecond?.toFixed(1) ?? '—'} / ${message.stats.renderedFps?.toFixed(1) ?? '—'}`],
+    ['Decoded drops: superseded / late / reset / inactive', `${message.stats.renderSupersededFrames ?? 0} / ${message.stats.renderLateFrames ?? 0} / ${message.stats.renderResetFrames ?? 0} / ${message.stats.renderInactiveFrames ?? 0}`],
     ['Decode / display latency (ms)', `${message.stats.decodeMs?.toFixed(1) ?? '—'} / ${message.stats.renderedLatencyMs?.toFixed(1) ?? '—'}`],
     ['Decode / render queue', `${message.stats.decodeQueue} / ${message.renderQueue} (depth ${message.queueDepth}, ${message.playback})`],
     ['Audio buffered (ms) / underruns', `${message.stats.audioBufferedMs?.toFixed(1) ?? '—'} / ${message.stats.audioUnderruns ?? 0}`],
