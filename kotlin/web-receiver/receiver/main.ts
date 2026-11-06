@@ -24,7 +24,7 @@ import { playbackUi, type PlaybackUi, type PlaybackEvent } from './video-hold';
 import { version, shouldReload } from './version';
 import { frameRatePreference, RestartGate, withFrameRate } from './frame-rate';
 import { playbackMode, withPlayback } from '../shared/playback';
-import { autoRestoreFullscreen, FullscreenExitHistory, FullscreenIntent } from './fullscreen';
+import { autoRestoreFullscreen, FullscreenExitHistory, FullscreenIntent, requestHeldFullscreen } from './fullscreen';
 import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#video')!;
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -197,9 +197,12 @@ async function reportFullscreenExit(): Promise<void> {
   post({ type: 'fullscreen-exit', hiddenMs, display, autoRestore });
 }
 async function requestFullscreen(): Promise<void> {
-  try { await document.documentElement.requestFullscreen(); }
-  catch { fullscreen.denied(); }
+  const pending = requestHeldFullscreen({
+    request: () => document.documentElement.requestFullscreen(), held: () => !!document.fullscreenElement,
+    delay: ms => new Promise(resolve => setTimeout(resolve, ms)), denied: () => { fullscreen.denied(); fullscreenState(); },
+  });
   fullscreenState();
+  await pending;
 }
 // Capture before canvas controls: the restore gesture must never become a CarPlay touch.
 document.addEventListener('pointerdown', event => {
