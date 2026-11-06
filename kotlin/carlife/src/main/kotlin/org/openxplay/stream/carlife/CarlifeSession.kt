@@ -64,6 +64,12 @@ internal class CarlifeSession(
         diagnosticSink("session=${origin.clientId} phase=$phase elapsedMs=${(System.nanoTime() - createdAt) / 1_000_000} $event")
     }
 
+    private fun diagnosticVersion(value: Long?): String = when (value) {
+        null -> "absent"
+        in 0L..999L -> value.toString()
+        else -> "out_of_range"
+    }
+
     private fun stage(next: String) {
         phase = next
         diagnostic("phase_changed")
@@ -101,7 +107,11 @@ internal class CarlifeSession(
         when (message.id) {
             98305 -> {
                 protocolRequire(!version, "unexpected_phase")
-                protocolRequire(payload.number(1) in 3L..4L, "version_mismatch")
+                val major = payload.number(1)
+                if (major !in 3L..4L) {
+                    diagnostic("version_rejected major=${diagnosticVersion(major)} minor=${diagnosticVersion(payload.number(2))}")
+                    throw CarlifeProtocolException("version_mismatch")
+                }
                 version = true
                 stage("version_matched")
                 send(1, 65538, ProtoWriter().number(1, 1).number(2, 4).build())
