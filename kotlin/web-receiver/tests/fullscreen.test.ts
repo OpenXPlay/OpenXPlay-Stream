@@ -4,7 +4,7 @@
 
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { autoRestoreFullscreen, FullscreenExitHistory, FullscreenIntent } from '../receiver/fullscreen';
+import { autoRestoreFullscreen, FULLSCREEN_HOLD_MS, FullscreenExitHistory, FullscreenIntent, requestHeldFullscreen } from '../receiver/fullscreen';
 import { strings, type Store } from '../receiver/ui';
 import type { Hello } from '../protocol/json';
 const display = (JSON.parse(readFileSync(new URL('../spec/vectors/web/hello-viewport.json', import.meta.url), 'utf8')) as Hello).displays[0];
@@ -190,4 +190,39 @@ it('does not retry after a manual restoration during the timer', async () => {
   const options = automatic(); options.request.mockRejectedValue(Error('gesture'));
   options.delay.mockImplementation(async () => { options.restored.mockReturnValue(true); });
   expect(await autoRestoreFullscreen(options)).toBe('restored'); expect(options.request).toHaveBeenCalledOnce();
+});
+
+function held(request: () => Promise<void>, fullscreen: () => boolean) {
+  const state = new FullscreenIntent(true, store);
+  state.changed(true); state.changed(false);
+  const options = { request: vi.fn(request), held: vi.fn(fullscreen), delay: vi.fn(async (_ms: number) => {}), denied: vi.fn(() => state.denied()) };
+  return { state, options };
+}
+it('lets CarPlay touches through when the browser accepts fullscreen but never shows it', async () => {
+  const { state, options } = held(async () => {}, () => false);
+  expect(state.pointerDown(pointer('touch'), vi.fn())).toBe(true);
+  await requestHeldFullscreen(options);
+  expect(options.delay).toHaveBeenCalledWith(FULLSCREEN_HOLD_MS); expect(options.denied).toHaveBeenCalledOnce();
+  expect(state.pending).toBe(false); expect(state.pointerDown(pointer('touch', 2), vi.fn())).toBe(false);
+  expect(state.intent).toBe(true);
+});
+it('treats fullscreen the browser drops at once, or a request that never answers, as a refusal', async () => {
+  let on = true;
+  const dropped = held(async () => { on = false; }, () => on);
+  await requestHeldFullscreen(dropped.options);
+  expect(dropped.state.pending).toBe(false);
+  const silent = held(() => new Promise<void>(() => {}), () => false);
+  await requestHeldFullscreen(silent.options);
+  expect(silent.options.delay).toHaveBeenCalledOnce(); expect(silent.state.pending).toBe(false);
+});
+it('keeps restoring after fullscreen that holds, and refuses at once on a rejection', async () => {
+  const kept = held(async () => {}, () => true);
+  await requestHeldFullscreen(kept.options);
+  expect(kept.options.denied).not.toHaveBeenCalled();
+  const rejected = held(async () => { throw Error('gesture'); }, () => false);
+  await requestHeldFullscreen(rejected.options);
+  expect(rejected.options.denied).toHaveBeenCalledOnce(); expect(rejected.state.pending).toBe(false);
+  const thrown = held(() => { throw Error('sync'); }, () => false);
+  await requestHeldFullscreen(thrown.options);
+  expect(thrown.state.pending).toBe(false);
 });

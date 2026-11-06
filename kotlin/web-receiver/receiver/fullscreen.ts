@@ -72,6 +72,24 @@ export class FullscreenIntent {
   }
 }
 
+/** How long fullscreen must last after a request before the browser counts as holding it. */
+export const FULLSCREEN_HOLD_MS = 1500;
+
+/**
+ * Some head-unit browsers accept a request without entering fullscreen, drop out of it at once, or never
+ * answer. Each counts as a refusal, so a pending restore stops consuming touches meant for CarPlay.
+ */
+export async function requestHeldFullscreen(options: {
+  request: () => Promise<void>; held: () => boolean; delay: (ms: number) => Promise<void>; denied: () => void;
+}): Promise<void> {
+  let settled: Promise<boolean>;
+  try { settled = options.request().then(() => true, () => false); } catch { settled = Promise.resolve(false); }
+  const answer = await Promise.race([settled, options.delay(FULLSCREEN_HOLD_MS).then(() => null)]);
+  if (answer === false) { options.denied(); return; }
+  if (answer === true) await options.delay(FULLSCREEN_HOLD_MS);
+  if (!options.held()) options.denied();
+}
+
 export class FullscreenExitHistory {
   private hiddenAt: number | null = null;
   private visibleAt: number | null = null;
