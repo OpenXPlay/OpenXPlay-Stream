@@ -85,6 +85,21 @@ class CarlifeSessionTest {
         assertFalse(fixture.session.authenticated)
     }
 
+    @Test fun rejectedVersionReportsOnlyBoundedProtocolFields() {
+        val fixture = Fixture()
+        val unsupported = ProtoWriter().number(1, 2).number(2, 11).build()
+        val missingMajor = ProtoWriter().number(2, 1_000_000_000).build()
+
+        for (request in listOf(unsupported, missingMajor)) {
+            val error = assertFailsWith<CarlifeProtocolException> { fixture.receive(98305, request) }
+            assertEquals("version_mismatch", error.code)
+        }
+        assertTrue(fixture.diagnostics.any { it.endsWith("version_rejected major=2 minor=11") })
+        assertTrue(fixture.diagnostics.any { it.endsWith("version_rejected major=absent minor=out_of_range") })
+        assertTrue(fixture.messages().isEmpty())
+        assertTrue(fixture.states.isEmpty())
+    }
+
     @Test fun displayNegotiationIsH264OnlyWithinPanelAnd1080pBounds() {
         val fixture = Fixture()
         fixture.authenticate()
