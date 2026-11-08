@@ -119,6 +119,34 @@ class CarlifeSessionTest {
         assertFalse(fixture.session.video(byteArrayOf(1)))
     }
 
+    @Test fun protocolOneReceiverEstablishesWithoutChallengeAndDefaultsAZeroFrameRate() {
+        val fixture = Fixture()
+        fixture.receive(98305, ProtoWriter().number(1, 1).number(2, 0).build())
+        assertEquals(1L, Proto.parse(fixture.messages().single().payload).number(2))
+        fixture.receive(98343)
+        fixture.receive(98307)
+        fixture.receive(98311, ProtoWriter().number(1, 2327).number(2, 1041).number(3, 0).build())
+        assertTrue(fixture.session.authenticated)
+        assertFalse(fixture.session.parameterSetsInEveryKeyframe)
+        assertEquals(30L, Proto.parse(fixture.messages().last { it.id == 65544 }.payload).number(3))
+        assertTrue(fixture.states.any { it.state == CarlifeState.AUTHENTICATED })
+        fixture.receive(98313)
+        assertTrue(fixture.session.video(byteArrayOf(0, 0, 0, 1, 0x65)))
+    }
+
+    @Test fun receiverProfileIsSelectedFromTheAnnouncedMajor() {
+        assertEquals(ReceiverProfile.Legacy, ReceiverProfile.of(1))
+        assertEquals(ReceiverProfile.Current, ReceiverProfile.of(3))
+        assertEquals(ReceiverProfile.Current, ReceiverProfile.of(4))
+        assertNull(ReceiverProfile.of(5))
+    }
+
+    @Test fun protocolFourReceiverKeepsParameterSetsInBand() {
+        val fixture = Fixture()
+        fixture.receive(98305, ProtoWriter().number(1, 4).number(2, 1).build())
+        assertTrue(fixture.session.parameterSetsInEveryKeyframe)
+    }
+
     @Test fun fixedSourceSpsSizeIsUsedInTheFirstEncoderReply() {
         val fixture = Fixture(testFormat())
         fixture.authenticate()
