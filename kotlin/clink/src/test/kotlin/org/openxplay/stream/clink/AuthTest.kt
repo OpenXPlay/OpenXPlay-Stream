@@ -34,7 +34,8 @@ class AuthTest {
         val actual = Fields.decode(frame.body)
         val expected = Fields.decode(vector("m1"))
         assertEquals(expected.numbers, actual.numbers)
-        for (id in expected.numbers - 5) when (val field = expected[id]) {
+        assertEquals(0x0701uL, actual.number(1))
+        for (id in expected.numbers - setOf(1, 5)) when (val field = expected[id]) {
             is FieldValue.Varint -> assertEquals(field.value, actual.number(id))
             is FieldValue.Bytes -> assertContentEquals(field.value, actual.bytes(id))
             null -> error("missing fixture field")
@@ -47,9 +48,11 @@ class AuthTest {
         })
     }
     @Test fun fullResponseVersionsProduceOracleKeyAndSealedIpv4() {
-        for (fixture in listOf("m2", "m2_0901")) {
+        val base = Fields.decode(vector("m2"))
+        for (version in listOf(1uL, 0x0501uL, 0x0701uL, 0x0901uL)) {
+            val body = Fields(base.numbers.associateWith { if (it == 1) FieldValue.Varint(version) else base[it]!! }).encode()
             val auth = client(); start(auth)
-            val output = auth.receive(response(vector(fixture)), 125)
+            val output = auth.receive(response(body), 125)
             assertContentEquals(vector("session_key"), output.sessionKey)
             val confirm = output.frames.single()
             assertEquals(3, confirm.method); assertEquals(0, confirm.kind); assertEquals(8L, confirm.sequence)
@@ -67,7 +70,7 @@ class AuthTest {
         val fields = Fields.decode(request.body)
         val expected = Fields.decode(vector("m1_quick"))
         assertEquals(expected.numbers, fields.numbers)
-        assertNull(fields[2]); assertNull(fields[3]); assertEquals(1uL, fields.number(9))
+        assertNull(fields[2]); assertNull(fields[3]); assertEquals(1uL, fields.number(9)); assertEquals(0x0701uL, fields.number(1))
         for (id in listOf(4, 6, 7, 8)) assertContentEquals(expected.bytes(id), fields.bytes(id))
         // Same oracle car signature transcript; quick responses may omit identity and proof entirely.
         val full = Fields.decode(vector("m2"))
@@ -77,7 +80,7 @@ class AuthTest {
     @Test fun resultCodesAllowExplicitFreshRetry() {
         val cases = mapOf(1uL to AuthResult.PIN_REQUIRED, 2uL to AuthResult.CONFIRMATION_REQUIRED,
             3uL to AuthResult.INTERNAL_ERROR, 4uL to AuthResult.REJECTED, ULong.MAX_VALUE to AuthResult.REJECTED)
-        for (version in listOf(1uL, 0x0901uL)) for ((code, expected) in cases) {
+        for (version in listOf(1uL, 0x0501uL, 0x0701uL, 0x0901uL)) for ((code, expected) in cases) {
             val auth = client(); start(auth)
             val body = Fields(mapOf(1 to FieldValue.Varint(version), 7 to FieldValue.Varint(code))).encode()
             val output = auth.receive(response(body), 125)

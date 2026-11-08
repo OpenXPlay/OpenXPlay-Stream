@@ -158,7 +158,7 @@ impl Auth {
         let signing = SigningKey::from(&self.identity.secret);
         let signature: Signature = signing.sign_with_rng(&mut OsRng, &transcript);
         let mut values = std::collections::BTreeMap::from([
-            (1, V::Varint(1)),
+            (1, V::Varint(0x0701)),
             (4, V::Bytes(ep)),
             (5, V::Bytes(signature.to_der().as_bytes().to_vec())),
             (6, V::Bytes(nonce.to_vec())),
@@ -218,7 +218,7 @@ impl Auth {
         )?;
         let f = Fields::decode(&frame.body)?;
         require(
-            [1, 0x0901].contains(&f.number(1)?),
+            [1, 0x0501, 0x0701, 0x0901].contains(&f.number(1)?),
             "auth_version_unsupported",
         )?;
         let result = f.number(7)?;

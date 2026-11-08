@@ -120,7 +120,7 @@ public class Auth(
         val signature = Signature.getInstance("SHA256withECDSA").run {
             initSign(identity.pair.private, random); update(raw + nonce); sign()
         }
-        val values = mutableMapOf<Int, FieldValue>(1 to FieldValue.Varint(1uL),
+        val values = mutableMapOf<Int, FieldValue>(1 to FieldValue.Varint(0x0701uL),
             4 to FieldValue.Bytes(raw), 5 to FieldValue.Bytes(signature), 6 to FieldValue.Bytes(nonce),
             7 to FieldValue.Bytes(deviceId.toByteArray()), 8 to FieldValue.Bytes(name.toByteArray()),
             9 to FieldValue.Varint(if (confirmed) 1uL else 0uL))
@@ -136,7 +136,7 @@ public class Auth(
             require(frame.category == 3 && frame.method == 2 && frame.kind == 2 && frame.sequence == sequence)
             require(frame.source == 0 && frame.format == 1) { "invalid_auth_header" }
             val f = Fields.decode(frame.body)
-            require(f.number(1) == 1uL || f.number(1) == 0x0901uL) { "auth_version_unsupported" }
+            require(f.number(1) in setOf(1uL, 0x0501uL, 0x0701uL, 0x0901uL)) { "auth_version_unsupported" }
             val result = f.number(7)
             if (result != 0uL) {
                 agreement = null

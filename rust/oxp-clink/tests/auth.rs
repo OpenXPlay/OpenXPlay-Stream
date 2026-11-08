@@ -66,9 +66,13 @@ fn full_request_matches_oracle_and_signature_transcript() {
     let actual = Fields::decode(&request.body).unwrap();
     let mut expected = Fields::decode(&vector("m1")).unwrap();
     let signature = actual.bytes(5).unwrap().to_vec();
+    let version = actual.number(1).unwrap();
     let mut compare = actual;
+    compare.0.remove(&1);
     compare.0.remove(&5);
+    expected.0.remove(&1);
     expected.0.remove(&5);
+    assert_eq!(0x0701, version);
     assert_eq!(expected, compare);
     let verifying = VerifyingKey::from(decode_public(&vector("identity_public")).unwrap());
     verifying
@@ -80,10 +84,12 @@ fn full_request_matches_oracle_and_signature_transcript() {
 }
 #[test]
 fn full_response_versions_oracle_key_confirm_ipv4_and_complete() {
-    for fixture in ["m2", "m2_0901"] {
+    for version in [1, 0x0501, 0x0701, 0x0901] {
+        let mut reply = Fields::decode(&vector("m2")).unwrap();
+        reply.0.insert(1, FieldValue::Varint(version));
         let mut auth = client(None);
         start(&mut auth, false, false);
-        let out = auth.receive(&response(vector(fixture)), 125).unwrap();
+        let out = auth.receive(&response(reply.encode().unwrap()), 125).unwrap();
         assert_eq!(vector("session_key"), out.session_key.unwrap());
         let confirm = &out.frames[0];
         assert_eq!((3, 0, 8), (confirm.method, confirm.kind, confirm.sequence));
@@ -103,7 +109,7 @@ fn full_response_versions_oracle_key_confirm_ipv4_and_complete() {
                 .unwrap()
                 .to_vec()
         )));
-        assert!(auth.receive(&response(vector(fixture)), 126).is_err());
+        assert!(auth.receive(&response(reply.encode().unwrap()), 126).is_err());
     }
 }
 #[test]
@@ -120,8 +126,12 @@ fn quick_reconnect_omits_identity_proof_and_confirms() {
     assert!(!actual.0.contains_key(&3));
     assert_eq!(1, actual.number(9).unwrap());
     let mut expected = Fields::decode(&vector("m1_quick")).unwrap();
+    let version = actual.number(1).unwrap();
+    actual.0.remove(&1);
     actual.0.remove(&5);
+    expected.0.remove(&1);
     expected.0.remove(&5);
+    assert_eq!(0x0701, version);
     assert_eq!(expected, actual);
     let mut response_fields = Fields::decode(&vector("m2")).unwrap();
     response_fields.0.remove(&2);
@@ -136,7 +146,7 @@ fn quick_reconnect_omits_identity_proof_and_confirms() {
 }
 #[test]
 fn result_codes_allow_fresh_explicit_retry() {
-    for version in [1, 0x0901] {
+    for version in [1, 0x0501, 0x0701, 0x0901] {
         for (code, expected) in [
             (1, AuthResult::PinRequired),
             (2, AuthResult::ConfirmationRequired),
