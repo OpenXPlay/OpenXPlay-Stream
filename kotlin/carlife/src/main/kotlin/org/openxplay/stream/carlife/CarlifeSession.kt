@@ -26,6 +26,8 @@ internal class CarlifeSession(
     private val channels = ConcurrentHashMap<Int, CarlifeConnection>()
     private val crypto = CarlifeCrypto()
     private var version = false
+    private var peerMajor = 0L
+    private var profile: ReceiverProfile? = null
     private var deviceSent = false
     private var authAnswered = false
     private var authAccepted = false
@@ -39,6 +41,9 @@ internal class CarlifeSession(
         private set
     @Volatile var fps = config.fps
         private set
+    /** The selected receiver generation; available after 98305. */
+    internal val receiver: ReceiverProfile get() = checkNotNull(profile)
+    internal val parameterSetsInEveryKeyframe: Boolean get() = receiver.parameterSetsInEveryKeyframe
     private var encoderChannel = 1
     private var encryptionRequested = false
     private var lastKeyframeRequest = 0L
@@ -107,14 +112,19 @@ internal class CarlifeSession(
         when (message.id) {
             98305 -> {
                 protocolRequire(!version, "unexpected_phase")
-                val major = payload.number(1)
-                if (major !in 3L..4L) {
-                    diagnostic("version_rejected major=${diagnosticVersion(major)} minor=${diagnosticVersion(payload.number(2))}")
+                val announced = payload.number(1) ?: run {
+                    diagnostic("version_rejected major=absent minor=${diagnosticVersion(payload.number(2))}")
                     throw CarlifeProtocolException("version_mismatch")
                 }
+                val selected = ReceiverProfile.of(announced) ?: run {
+                    diagnostic("version_rejected major=${diagnosticVersion(announced)} minor=${diagnosticVersion(payload.number(2))}")
+                    throw CarlifeProtocolException("version_mismatch")
+                }
+                peerMajor = announced
+                profile = selected
                 version = true
                 stage("version_matched")
-                send(1, 65538, ProtoWriter().number(1, 1).number(2, 4).build())
+                send(1, 65538, ProtoWriter().number(1, 1).number(2, announced).build())
                 report(CarlifeState.CONNECTED)
             }
             98343, 98307 -> sendDevice()
@@ -159,6 +169,14 @@ internal class CarlifeSession(
             98413 -> { protocolRequire(!crypto.active, "unexpected_phase"); send(1, 65646) }
             98415 -> { crypto.activate(); diagnostic("encryption active=true") }
             98311 -> {
+                // A receiver that does not challenge the sender establishes the session at video
+                // negotiation, as a 4.x receiver does at 98380.
+                if (!authenticated && !receiver.challenges) {
+                    authenticated = true
+                    stage("established")
+                    diagnostic("authentication absent peerMajor=$peerMajor")
+                    report(CarlifeState.AUTHENTICATED)
+                }
                 protocolRequire(authenticated, "unexpected_phase")
                 val rawWidth = payload.number(1)
                 val rawHeight = payload.number(2)
@@ -173,7 +191,8 @@ internal class CarlifeSession(
                     width = it.width
                     height = it.height
                 }
-                fps = (payload.number(3)?.toInt() ?: config.fps).coerceIn(1, config.fps)
+                val requestedFps = payload.number(3)?.toInt() ?: 0
+                fps = if (requestedFps > 0) requestedFps.coerceIn(1, config.fps) else config.fps
                 encoderChannel = message.channel
                 diagnostic("video_negotiated requested=${requestedWidth}x$requestedHeight selected=${width}x$height fps=$fps codec=H264")
                 stage("video_negotiated")
@@ -187,6 +206,8 @@ internal class CarlifeSession(
                 stage("video_requested")
                 requestKeyframe()
             }
+            98389 -> runCatching { Proto.parse(message.payload).text(1) }.getOrNull()
+                ?.let { diagnostic("peer_code code=$it") }
             98314 -> {
                 streaming = false
                 stage("video_stopped")

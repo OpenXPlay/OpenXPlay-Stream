@@ -38,6 +38,16 @@ class CarlifeOutputTest {
             }
             error("Expected CarLife response $id")
         }
+        fun handshakeLegacy() {
+            send(98305, ProtoWriter().number(1, 1).number(2, 0).build())
+            assertEquals(1L, Proto.parse(next(65538).payload).number(1))
+            send(98343)
+            next(65540)
+            send(98307)
+            send(98311, ProtoWriter().number(1, 1280).number(2, 720).number(3, 0).build())
+            assertEquals(30L, Proto.parse(next(65544).payload).number(3))
+            send(98313)
+        }
         fun handshake() {
             send(98305, ProtoWriter().number(1, 4).number(2, 1).build())
             assertEquals(1L, Proto.parse(next(65538).payload).number(1))
@@ -85,6 +95,32 @@ class CarlifeOutputTest {
                 peer.handshake()
                 await { output.status.state == CarlifeState.AUTHENTICATED }
                 assertEquals(0L, output.status.frames)
+            }
+        } finally { output.close() }
+    }
+
+    @Test fun protocolOneReceiverGetsParameterSetsOnceAndKeyframesStartWithIdr() {
+        val host = RecordingHost()
+        val output = CarlifeOutput(CarlifeConfig(bindAddress = "127.0.0.1", discovery = false, ports = List(7) { 0 }))
+        try {
+            output.open(host)
+            val session = SessionId(21)
+            output.onSession(SessionState(session, SessionPhase.ACTIVE), SessionConfig(emptyMap()))
+            output.onVideoFormat(ScreenId.MAIN, testFormat())
+            await { output.boundPorts.size == 7 }
+            Peer(output).use { peer ->
+                peer.handshakeLegacy()
+                await { host.events.any { it is ControlEvent.KeyFrameRequest } }
+                fun key(marker: Byte) = VideoFrame(ScreenId.MAIN, session,
+                    byteArrayOf(0, 0, 0, 2, 0x09, 0x30, 0, 0, 0, 2, 0x65, marker), 0, true, 0)
+                output.onVideoFrame(key(1))
+                val first = Nal.units(peer.next(131073, 2).payload, Nal.Format.ANNEX_B)
+                    .map { it[0].toInt() and 0x1f }.toList()
+                assertEquals(listOf(7, 8, 5), first)
+                output.onVideoFrame(key(2))
+                val second = Nal.units(peer.next(131073, 2).payload, Nal.Format.ANNEX_B)
+                    .map { it[0].toInt() and 0x1f }.toList()
+                assertEquals(listOf(5), second)
             }
         } finally { output.close() }
     }

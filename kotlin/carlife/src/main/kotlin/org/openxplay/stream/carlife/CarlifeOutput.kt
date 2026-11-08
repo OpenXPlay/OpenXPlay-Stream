@@ -332,25 +332,47 @@ public class CarlifeOutput(
     private fun media(current: Run) {
         var nextSend = 0L
         var previous: CarlifeSession? = null
+        var videoFormat: VideoFormat? = null
+        var parameterSetsSent = false
         while (current.active.get()) {
             val pending = try { current.queue.poll(250, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { null }
                 ?: continue
             val selected = current.session ?: continue
-            if (selected !== previous) { nextSend = 0; previous = selected }
+            if (selected !== previous) {
+                nextSend = 0; previous = selected; videoFormat = null; parameterSetsSent = false
+            }
             if (pending.epoch != current.epoch.get() || pending.format !== current.format || !selected.streaming) continue
+            if (pending.format !== videoFormat) { videoFormat = pending.format; parameterSetsSent = false }
             try {
                 val period = 1_000_000_000L / selected.fps
                 val wait = nextSend - System.nanoTime()
                 if (wait > 0) TimeUnit.NANOSECONDS.sleep(wait)
                 if (pending.epoch != current.epoch.get() || current.session !== selected) continue
                 val annex = Nal.avccToAnnexB(pending.frame.data)
-                val bytes = if (pending.frame.keyFrame) {
-                    val parsed = AvcConfig.parse(pending.format.config)
-                    val sets = (parsed.sps + parsed.pps).fold(byteArrayOf()) { all, nal ->
-                        all + byteArrayOf(0, 0, 0, 1) + nal
+                val bytes = when {
+                    selected.parameterSetsInEveryKeyframe -> if (pending.frame.keyFrame) {
+                        val parsed = AvcConfig.parse(pending.format.config)
+                        val sets = (parsed.sps + parsed.pps).fold(byteArrayOf()) { all, nal ->
+                            all + byteArrayOf(0, 0, 0, 1) + nal
+                        }
+                        sets + annex
+                    } else annex
+                    // A 3.x receiver keeps the first frame's parameter sets and supplies them
+                    // itself after a decoder reset, but only to a keyframe whose first NAL is IDR.
+                    pending.frame.keyFrame -> {
+                        val idr = Nal.units(pending.frame.data, Nal.Format.AVCC)
+                            .dropWhile { it[0].toInt() and 0x1f != 5 }.toList()
+                        if (idr.isEmpty()) annex else {
+                            val sets = if (parameterSetsSent) byteArrayOf() else AvcConfig.parse(pending.format.config)
+                                .let { parsed -> (parsed.sps + parsed.pps).fold(byteArrayOf()) { all, nal ->
+                                    all + byteArrayOf(0, 0, 0, 1) + nal
+                                } }
+                            parameterSetsSent = true
+                            sets + idr.fold(byteArrayOf()) { all, nal -> all + byteArrayOf(0, 0, 0, 1) + nal }
+                        }
                     }
-                    sets + annex
-                } else annex
+                    else -> annex
+                }
                 try {
                     if (selected.video(bytes)) {
                         val now = System.nanoTime()
