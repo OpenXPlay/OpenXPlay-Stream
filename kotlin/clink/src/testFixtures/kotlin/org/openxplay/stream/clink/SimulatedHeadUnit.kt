@@ -199,7 +199,7 @@ public class SimulatedHeadUnit(
         val input = DataInputStream(socket.getInputStream())
         val request = readFrame(input)
         require(request.source == 1 && request.format == 1 && request.category == 3 && request.method == 1 && request.kind == 1)
-        val f = Fields.decode(request.body); require(f.number(1) == 1uL && f.number(9) <= 1uL)
+        val f = Fields.decode(request.body); require(f.number(1) in setOf(1uL, 0x0501uL, 0x0701uL) && f.number(9) <= 1uL)
         require(f.bytes(7).isNotEmpty() && f.bytes(8).isNotEmpty())
         val agreement = f.bytes(4, 64); val nonce = f.bytes(6, 32)
         val phone = if (2 in f.numbers) f.bytes(2, 64).also {
