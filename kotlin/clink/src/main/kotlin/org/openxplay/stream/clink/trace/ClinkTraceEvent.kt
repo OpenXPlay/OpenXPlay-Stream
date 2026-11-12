@@ -10,6 +10,7 @@ public sealed interface ClinkTraceEvent {
     public val type: String get() = when (this) {
         is Rtsp -> "Rtsp"; is Frame -> "Frame"; is Socket -> "Socket"; is Negotiation -> "Negotiation"
         is Media -> "Media"; is Video -> "Video"; is Input -> "Input"; is Error -> "Error"; is Link -> "Link"
+        is Audio -> "Audio"
     }
     public val atNanos: Long
     public val session: Long
@@ -36,6 +37,15 @@ public sealed interface ClinkTraceEvent {
         val exceptionClass: String, val location: String) : ClinkTraceEvent
     public data class Link(override val atNanos: Long, override val session: Long, val stage: String,
         val fields: Map<String, String> = emptyMap()) : ClinkTraceEvent
+    /**
+     * Audio slot and voice-channel state: "format" when a slot is (re)declared, "reject" when a packet
+     * reached no queue, "stats" once a second with the gate counters.
+     */
+    public data class Audio(override val atNanos: Long, override val session: Long, val event: String,
+        val stream: Int, val detail: String = "", val role: String = "", val codec: String = "",
+        val rate: Int = 0, val channels: Int = 0, val voiced: Boolean = false, val packets: Long = 0,
+        val audible: Long = 0, val silent: Long = 0, val dropped: Long = 0,
+        val voiceOpen: Boolean = false) : ClinkTraceEvent
 }
 
 public sealed interface ClinkTraceField {

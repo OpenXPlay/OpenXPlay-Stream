@@ -7,6 +7,7 @@ package org.openxplay.stream.clink
 import java.util.ArrayDeque
 import org.openxplay.stream.core.*
 import org.openxplay.stream.core.audio.PcmMixer
+import org.openxplay.stream.core.audio.opensVoiceChannel
 
 /** Dedicated, paced voice sender. Callback work only retains commands in a bounded queue. */
 internal class VoiceDelivery {
@@ -84,7 +85,7 @@ internal class VoiceDelivery {
                         streams.remove(command.stream)
                         formats.remove(command.stream)
                         val f = command.format
-                        if (f != null && (f.role == AudioRole.VOICE || f.role == AudioRole.TELEPHONY) &&
+                        if (f != null && opensVoiceChannel(f.role) &&
                             f.codec == AudioCodec.PCM_S16LE &&
                             f.sampleRate in 8000..48000 && f.channels in 1..2) {
                             mixer.removeStream(command.stream)

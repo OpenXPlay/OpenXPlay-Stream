@@ -161,6 +161,21 @@ class ClinkAudioLoopbackTest {
         assertTrue(loop.vehicle.voiceFrames.filter { it.kind == 0 }.drop(1).all { it.data.size == 640 })
     }
 
+    @Test fun `a navigation prompt never opens the voice channel`() = Loop().use { loop ->
+        loop.output.onAudioFormat(0, AudioFormat(0, AudioRole.MEDIA, AudioCodec.AAC_LC, 48000, 2,
+            byteArrayOf(0x11, 0x90.toByte())))
+        loop.output.onAudioFormat(2, AudioFormat(2, AudioRole.OTHER, AudioCodec.PCM_S16LE, 16000, 1))
+        loop.packet(0, byteArrayOf(1, 2, 3), 8_000_000_000L)
+        loop.vehicle.await("music keeps its AAC track") { loop.vehicle.audioUnits.size == 1 }
+        // The relay mixes a prompt into the music and never sends it here: opening the voice channel
+        // makes the G6 pause media playback, and one such prompt left it silent for good (2026-11-11).
+        repeat(8) { loop.packet(2, loop.pcm(4000, 320)); Thread.sleep(20) }
+        assertTrue(loop.vehicle.audioCommands.none { it.method == 8 },
+            "a prompt must never open the voice channel")
+        assertTrue(loop.vehicle.voiceFrames.isEmpty())
+        assertEquals(1, loop.vehicle.audioUnits.size)
+    }
+
     @Test fun `microphone stops on input session end and output close`() = Loop().use { loop ->
         loop.output.onMicrophone(2, MicRequest(2, AudioCodec.PCM_S16LE, 16000, 1, 20))
         loop.mic()
