@@ -15,6 +15,7 @@ import org.openxplay.stream.clink.media.RtpSender
 import org.openxplay.stream.core.*
 import org.openxplay.stream.core.audio.Adts
 import org.openxplay.stream.core.audio.AudioSpecificConfig
+import org.openxplay.stream.core.audio.opensVoiceChannel
 import org.openxplay.stream.core.codec.HevcConfig
 import org.openxplay.stream.core.codec.AvcConfig
 import org.openxplay.stream.core.codec.Nal
@@ -81,10 +82,12 @@ public class ClinkOutput(
     @Volatile private var lastAudioPts = -1L
 
     /**
-     * Only voice and phone calls open the head unit's voice channel: system sounds such as keyboard
-     * clicks sent here made Carlink duck or pause media (2026-10-19). Other roles are not delivered here.
+     * Only voice and phone calls open the head unit's voice channel. A navigation prompt must not:
+     * on the G6 the voice channel pauses media playback, and the 2026-11-11 trace shows it does not
+     * always resume afterwards — one prompt left the car silent for the remaining 147 s while music
+     * kept arriving at 47 access units a second. The relay mixes the prompt into the music instead,
+     * so it never reaches this side. See [opensVoiceChannel].
      */
-    private fun voiceRole(role: AudioRole): Boolean = role == AudioRole.VOICE || role == AudioRole.TELEPHONY
     private val opened = AtomicBoolean(false)
     private fun endWithoutSession(run: Run, event: String, reason: ClinkEndReason) {
         if (run.endReported.compareAndSet(false, true)) runCatching {
@@ -222,37 +225,50 @@ public class ClinkOutput(
                 audioOffset = null; lastAudioPts = -1
             }
             run.voiceStreams.remove(stream)
-            if (format != null && voiceRole(format.role) && format.codec == AudioCodec.PCM_S16LE &&
-                format.sampleRate in 8000..48000 && format.channels in 1..2) run.voiceStreams.add(stream)
-            run.voice.format(stream, format?.takeIf { voiceRole(it.role) })
+            val incoming = format
+            val voiced = incoming != null && opensVoiceChannel(incoming.role) &&
+                incoming.codec == AudioCodec.PCM_S16LE && incoming.sampleRate in 8000..48000 &&
+                incoming.channels in 1..2
+            if (incoming != null && voiced) run.voiceStreams.add(stream)
+            run.voice.format(stream, incoming?.takeIf { opensVoiceChannel(it.role) })
+            if (run.diagnostics.size < 31) run.diagnostics.addLast(
+                "audio_in stream=$stream role=${incoming?.role} codec=${incoming?.codec} " +
+                    "rate=${incoming?.sampleRate} ch=${incoming?.channels} voiced=$voiced")
+            if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Audio(System.nanoTime(), run.traceSession,
+                "format", stream, "voiced=$voiced media=${run.mediaStream}", role = incoming?.role?.name.orEmpty(),
+                codec = incoming?.codec?.name.orEmpty(), rate = incoming?.sampleRate ?: 0,
+                channels = incoming?.channels ?: 0, voiced = voiced))
         }
     }
     override fun onAudioPacket(packet: AudioPacket) {
         val run = current ?: return
         synchronized(run.lock) {
-            if (!run.active.get()) { audioReject("inactive"); return }
-            if (packet.session != run.inputSession) { audioReject("session=${packet.session}/${run.inputSession}"); return }
+            if (!run.active.get()) { audioReject(run, "inactive", packet.stream); return }
+            if (packet.session != run.inputSession) { audioReject(run, "session=${packet.session}/${run.inputSession}", packet.stream); return }
             if (packet.stream == run.mediaStream) {
-                if (packet.data.size !in 1..8184) { audioReject("size=${packet.data.size}"); return }
+                if (packet.data.size !in 1..8184) { audioReject(run, "size=${packet.data.size}", packet.stream); return }
                 while (run.audio.isNotEmpty() && mediaQueueFull(run.audio.size, run.audioBytes + packet.data.size,
                         mediaQueueSpanUs(packet.ptsUs, run.audio.first.ptsUs))) {
                     run.audioBytes -= run.audio.removeFirst().data.size; run.audioDrops++
                 }
                 run.audio.addLast(packet); run.audioBytes += packet.data.size
             } else if (packet.stream in run.voiceStreams) run.voice.packet(packet)
-            else audioReject("stream=${packet.stream}/media=${run.mediaStream}/voice=${run.voiceStreams}")
+            else audioReject(run, "stream=${packet.stream}/media=${run.mediaStream}/voice=${run.voiceStreams}", packet.stream)
         }
     }
+
     // Diagnostic: why an audio packet never reached the queue. Rate-limited to one line a second.
     @Volatile private var audioRejectAt = 0L
     @Volatile private var audioRejectReason = ""
-    private fun audioReject(reason: String) {
+    private fun audioReject(run: Run, reason: String, stream: Int) {
         val now = System.currentTimeMillis()
         if (now - audioRejectAt < 1_000) return
         audioRejectAt = now
         audioRejectReason = reason
         // clink is a plain JVM module: no android.util.Log here. println lands in logcat as System.out.
         println("OXP-Audio packet_rejected $reason")
+        if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Audio(System.nanoTime(), run.traceSession,
+            "reject", stream, reason))
     }
     override fun onMicrophone(stream: Int, request: MicRequest?) {
         val run = current ?: return
@@ -658,6 +674,15 @@ public class ClinkOutput(
                     if (trace !== ClinkTrace.NONE) trace.emit(ClinkTraceEvent.Media(now, session.traceSession,
                         liveFrames, placeholderFrames, dropped + failedVideo, keyframes, videoBytes, run.rtpPackets.get(), run.rtpBytes.get(),
                         sendStalls, audioFrames, overflows))
+                    // Audio counters every second: the slot the head unit is fed, its backlog, and the
+                    // voice streams that are open. Without this a silent car cannot be told apart from
+                    // a dead audio path (2026-11-11).
+                    if (trace !== ClinkTrace.NONE) {
+                        val queued = synchronized(run.lock) { run.audio.size }
+                        val voice = synchronized(run.lock) { run.voiceStreams.toList() }
+                        trace.emit(ClinkTraceEvent.Audio(now, session.traceSession, "stats", run.mediaStream ?: -1,
+                            "media=${session.mediaAudio} queued=$queued voice=$voice", packets = audioFrames))
+                    }
                     listener.statistics(ClinkStatistics(liveFrames - liveBase, placeholderFrames - placeholderBase,
                         dropped - queueDropBase + failedVideo - failedBase + codecMismatchDrops, liveBytes, sendStalls - stallBase, statsFormat?.codec, statsFormat?.width ?: 0, statsFormat?.height ?: 0))
                     withHost(run) { it.stats(OutputStats(origin, ScreenId.MAIN, null, 0, dropped, 0, null)) }
